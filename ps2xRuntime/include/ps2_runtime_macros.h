@@ -141,11 +141,11 @@ static inline uint32_t ps2_plzcw32(uint32_t x)
 #define PS2_PNOR(a, b) _mm_xor_si128(_mm_or_si128((__m128i)(a), (__m128i)(b)), _mm_set1_epi32(0xFFFFFFFF))
 
 // PS2 VU (Vector Unit) operations
-#define PS2_VADD(a, b) _mm_add_ps((__m128)(a), (__m128)(b))
-#define PS2_VSUB(a, b) _mm_sub_ps((__m128)(a), (__m128)(b))
-#define PS2_VMUL(a, b) _mm_mul_ps((__m128)(a), (__m128)(b))
-#define PS2_VDIV(a, b) _mm_div_ps((__m128)(a), (__m128)(b))
-#define PS2_VMULQ(a, q) _mm_mul_ps((__m128)(a), _mm_set1_ps(q))
+#define PS2_VADD(a, b) Ps2VuClamp(_mm_add_ps(Ps2VuClamp((__m128)(a)), Ps2VuClamp((__m128)(b))))
+#define PS2_VSUB(a, b) Ps2VuClamp(_mm_sub_ps(Ps2VuClamp((__m128)(a)), Ps2VuClamp((__m128)(b))))
+#define PS2_VMUL(a, b) Ps2VuClamp(_mm_mul_ps(Ps2VuClamp((__m128)(a)), Ps2VuClamp((__m128)(b))))
+#define PS2_VDIV(a, b) Ps2VuClamp(_mm_div_ps((__m128)(a), (__m128)(b)))
+#define PS2_VMULQ(a, q) Ps2VuClamp(_mm_mul_ps(Ps2VuClamp((__m128)(a)), _mm_set1_ps(q)))
 #define PS2_VBLEND(a, b, mask) PS2_BLENDV_PS((__m128)(a), (__m128)(b), (__m128)(mask))
 
 // Memory access helpers - Hybrid Fast/Slow Path
@@ -617,13 +617,84 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
 #define PS2_PMFHL_LH(hi, lo) _mm_shuffle_epi32(_mm_packs_epi32(ps2_u64_to_epi64_pair(lo), ps2_u64_to_epi64_pair(hi)), _MM_SHUFFLE(3, 1, 2, 0))
 #define PS2_PMFHL_SH(hi, lo) _mm_shufflehi_epi16(_mm_shufflelo_epi16(_mm_packs_epi32(ps2_u64_to_epi64_pair(lo), ps2_u64_to_epi64_pair(hi)), _MM_SHUFFLE(3, 1, 2, 0)), _MM_SHUFFLE(3, 1, 2, 0))
 
+// PS2 FPU / VU float semantics: there is no Inf or NaN. Results past the
+// largest finite value clamp to +/-FLT_MAX, denormals flush to signed zero,
+// x/0 yields +/-FLT_MAX (sign = sign(x) ^ sign(0)), and SQRT/RSQRT use |x|.
+// Plain IEEE math lets a single Inf/NaN poison later results (e.g. camera
+// matrices), so arithmetic results are normalized back into PS2 range.
+static inline float Ps2FloatClamp(float value)
+{
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const uint32_t exponent = bits & 0x7F800000u;
+    if (exponent == 0x7F800000u)
+        bits = (bits & 0x80000000u) | 0x7F7FFFFFu;
+    else if (exponent == 0u)
+        bits &= 0x80000000u;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static inline float Ps2FloatSignedMax(uint32_t signBit)
+{
+    const uint32_t bits = (signBit & 0x80000000u) | 0x7F7FFFFFu;
+    float value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static inline uint32_t Ps2FloatSign(float value)
+{
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits & 0x80000000u;
+}
+
+static inline float Ps2FloatDiv(float a, float b)
+{
+    a = Ps2FloatClamp(a);
+    b = Ps2FloatClamp(b);
+    if (b == 0.0f)
+        return Ps2FloatSignedMax(Ps2FloatSign(a) ^ Ps2FloatSign(b));
+    return Ps2FloatClamp(a / b);
+}
+
+static inline float Ps2FloatSqrt(float a)
+{
+    return sqrtf(fabsf(Ps2FloatClamp(a)));
+}
+
+// R5900 RSQRT.S / VU RSQRT: fs / sqrt(|ft|).
+static inline float Ps2FloatRsqrt(float a, float b)
+{
+    a = Ps2FloatClamp(a);
+    b = fabsf(Ps2FloatClamp(b));
+    if (b == 0.0f)
+        return Ps2FloatSignedMax(Ps2FloatSign(a));
+    return Ps2FloatClamp(a / sqrtf(b));
+}
+
+static inline __m128 Ps2VuClamp(__m128 value)
+{
+    const __m128i bits = _mm_castps_si128(value);
+    const __m128i exponent = _mm_and_si128(bits, _mm_set1_epi32(0x7F800000));
+    const __m128i isSpecial = _mm_cmpeq_epi32(exponent, _mm_set1_epi32(0x7F800000));
+    const __m128i isDenormal = _mm_cmpeq_epi32(exponent, _mm_setzero_si128());
+    const __m128i sign = _mm_and_si128(bits, _mm_set1_epi32(static_cast<int>(0x80000000u)));
+    const __m128i maxed = _mm_or_si128(sign, _mm_set1_epi32(0x7F7FFFFF));
+    __m128i out = _mm_or_si128(_mm_and_si128(isSpecial, maxed), _mm_andnot_si128(isSpecial, bits));
+    out = _mm_or_si128(_mm_and_si128(isDenormal, sign), _mm_andnot_si128(isDenormal, out));
+    return _mm_castsi128_ps(out);
+}
+
 // FPU (COP1) operations
 #define FPU_SET_ACC(ctx, res) (ctx->f_acc = res)
-#define FPU_ADD_S(a, b) ((float)(a) + (float)(b))
-#define FPU_SUB_S(a, b) ((float)(a) - (float)(b))
-#define FPU_MUL_S(a, b) ((float)(a) * (float)(b))
-#define FPU_DIV_S(a, b) ((float)(a) / (float)(b))
-#define FPU_SQRT_S(a) sqrtf((float)(a))
+#define FPU_ADD_S(a, b) Ps2FloatClamp(Ps2FloatClamp((float)(a)) + Ps2FloatClamp((float)(b)))
+#define FPU_SUB_S(a, b) Ps2FloatClamp(Ps2FloatClamp((float)(a)) - Ps2FloatClamp((float)(b)))
+#define FPU_MUL_S(a, b) Ps2FloatClamp(Ps2FloatClamp((float)(a)) * Ps2FloatClamp((float)(b)))
+#define FPU_DIV_S(a, b) Ps2FloatDiv((float)(a), (float)(b))
+#define FPU_SQRT_S(a) Ps2FloatSqrt((float)(a))
+#define FPU_RSQRT_S(a, b) Ps2FloatRsqrt((float)(a), (float)(b))
 #define FPU_ABS_S(a) fabsf((float)(a))
 #define FPU_MOV_S(a) ((float)(a))
 #define FPU_NEG_S(a) (-(float)(a))
@@ -744,8 +815,8 @@ inline __m128i ps2_qfsrv(__m128i rs, __m128i rt, uint32_t sa)
 #define PS2_PROT3W(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(0, 3, 2, 1))
 
 // Additional VU0 operations
-#define PS2_VSQRT(x) sqrtf(x)
-#define PS2_VRSQRT(x) (1.0f / sqrtf(x))
+#define PS2_VSQRT(x) Ps2FloatSqrt(x)
+#define PS2_VRSQRT(x) Ps2FloatRsqrt(1.0f, (x))
 
 #define GPR_U32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0U : static_cast<uint32_t>(PS2_EXTRACT_EPI32_0(ctx_ptr->r[reg_idx])))
 #define GPR_S32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0 : PS2_EXTRACT_EPI32_0(ctx_ptr->r[reg_idx]))

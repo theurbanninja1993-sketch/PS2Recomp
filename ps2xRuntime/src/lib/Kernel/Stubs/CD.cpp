@@ -379,7 +379,8 @@ namespace ps2_stubs
         {
             return false;
         }
-        return readCdSectors(lbn, sectors, dst, static_cast<size_t>(sectors) * kCdSectorSize);
+        const bool ok = readCdSectors(lbn, sectors, dst, static_cast<size_t>(sectors) * kCdSectorSize);
+        return ok;
     }
 
     void sceCdGetDiskType(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
