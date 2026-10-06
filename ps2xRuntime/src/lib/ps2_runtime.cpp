@@ -682,11 +682,11 @@ bool PS2Runtime::syncCoreSubsystems()
                                      ps2Vu1TraceMscal(m_memory.getVU1Data(), startPC, top, itop);
                                      if (const char *dumpDir = std::getenv("PS2X_VU1_DUMP_DIR"))
                                      {
-                                         static bool s_codeDumped = false;
-                                         if (!s_codeDumped && g_ps2Vu1TraceRemaining.load() > 0)
+                                         // Microcode changes via MPG, so dump it with every traced MSCAL.
+                                         const int32_t traceIndex = g_ps2Vu1TraceRemaining.load();
+                                         if (traceIndex > 0)
                                          {
-                                             s_codeDumped = true;
-                                             if (FILE *f = std::fopen((std::string(dumpDir) + "/vu1code.bin").c_str(), "wb"))
+                                             if (FILE *f = std::fopen((std::string(dumpDir) + "/vu1code_" + std::to_string(traceIndex) + ".bin").c_str(), "wb"))
                                              {
                                                  std::fwrite(m_memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, f);
                                                  std::fclose(f);
@@ -2622,6 +2622,30 @@ void PS2Runtime::run()
                 if (s_traceOn)
                     std::cout << "[gs:frame] " << s_presentedFrames << " vsync=" << m_eeScheduler->currentVSyncTick() << std::endl;
             });
+            // PS2X_DUMP_RAM_FRAME=<frame>: write EE RAM + scratchpad to ram_<frame>.bin / spr_<frame>.bin.
+            {
+                static const uint64_t s_dumpFrame = []() -> uint64_t
+                {
+                    const char *env = std::getenv("PS2X_DUMP_RAM_FRAME");
+                    return env ? std::strtoull(env, nullptr, 10) : 0u;
+                }();
+                if (s_dumpFrame != 0u && s_presentedFrames == s_dumpFrame)
+                {
+                    const std::string ramPath = "ram_" + std::to_string(s_presentedFrames) + ".bin";
+                    if (FILE *f = std::fopen(ramPath.c_str(), "wb"))
+                    {
+                        std::fwrite(m_memory.getRDRAM(), 1, PS2_RAM_SIZE, f);
+                        std::fclose(f);
+                    }
+                    const std::string sprPath = "spr_" + std::to_string(s_presentedFrames) + ".bin";
+                    if (FILE *f = std::fopen(sprPath.c_str(), "wb"))
+                    {
+                        std::fwrite(m_memory.getScratchpad(), 1, PS2_SCRATCHPAD_SIZE, f);
+                        std::fclose(f);
+                    }
+                    std::cerr << "[ram:dump] frame=" << s_presentedFrames << std::endl;
+                }
+            }
             if (s_shotEvery != 0u && (s_presentedFrames % s_shotEvery) == 0u)
             {
                 Image shot = LoadImageFromTexture(frameTex);

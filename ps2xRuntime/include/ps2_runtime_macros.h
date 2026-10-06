@@ -708,7 +708,18 @@ static inline __m128 Ps2VuClamp(__m128 value)
 #define FPU_FLOOR_W_S(a) ((int32_t)floorf((float)(a)))
 #define FPU_CVT_S_W(a) ((float)(int32_t)(a))
 #define FPU_CVT_S_L(a) ((float)(int64_t)(a))
-#define FPU_CVT_W_S(a) ((int32_t)nearbyintf((float)(a)))
+// EE CVT.W.S always truncates toward zero and saturates out-of-range values.
+static inline int32_t Ps2FloatToInt32(float value)
+{
+    if (value >= 2147483648.0f)
+        return INT32_MAX;
+    if (value <= -2147483648.0f)
+        return INT32_MIN;
+    if (value != value)
+        return INT32_MAX;
+    return static_cast<int32_t>(value);
+}
+#define FPU_CVT_W_S(a) Ps2FloatToInt32((float)(a))
 #define FPU_CVT_L_S(a) ((int64_t)(float)(a))
 #define FPU_C_F_S(a, b) (0)
 #define FPU_C_UN_S(a, b) (isnan((float)(a)) || isnan((float)(b)))

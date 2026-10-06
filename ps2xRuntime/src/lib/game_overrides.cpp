@@ -7,6 +7,10 @@
 #include "ps2_syscalls.h"
 #include "ps2_log.h"
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <sstream>
+#include <utility>
 #include <cstring>
 #include <cctype>
 #include <filesystem>
@@ -14,6 +18,8 @@
 #include <mutex>
 #include <optional>
 #include <vector>
+
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 
 namespace
 {
@@ -299,6 +305,72 @@ namespace
         }
     }
 
+    // PS2X_COUNT_CALLS=0xA,0xB,...: debug wrapper that counts calls to up to 16 guest
+    // functions and prints the counts (and the first calls' args) every 600 frames.
+    constexpr int kVcsMaxCounted = 16;
+    PS2Runtime::RecompiledFunction g_vcsCountOrig[kVcsMaxCounted]{};
+    uint32_t g_vcsCountAddr[kVcsMaxCounted]{};
+    std::atomic<uint64_t> g_vcsCountHits[kVcsMaxCounted]{};
+    int g_vcsCountUsed = 0;
+
+    void vcsReportCounts()
+    {
+        static uint64_t s_lastFrame = 0;
+        const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        if (frame < s_lastFrame + 600u)
+            return;
+        s_lastFrame = frame;
+        std::ostringstream out;
+        out << "[calls] frame=" << frame;
+        for (int i = 0; i < g_vcsCountUsed; ++i)
+            out << " " << std::hex << g_vcsCountAddr[i] << std::dec << "=" << g_vcsCountHits[i].load();
+        std::cerr << out.str() << std::endl;
+    }
+
+    template <int N>
+    void vcsCountWrapper(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint64_t hit = g_vcsCountHits[N].fetch_add(1u, std::memory_order_relaxed);
+        if (hit < 4u)
+        {
+            std::cerr << "[calls:first] fn=0x" << std::hex << g_vcsCountAddr[N] << " a0=0x" << getRegU32(ctx, 4)
+                      << " a1=0x" << getRegU32(ctx, 5) << " a2=0x" << getRegU32(ctx, 6) << " a3=0x" << getRegU32(ctx, 7)
+                      << " ra=0x" << getRegU32(ctx, 31) << std::dec << std::endl;
+        }
+        vcsReportCounts();
+        g_vcsCountOrig[N](rdram, ctx, runtime);
+    }
+
+    template <int... Is>
+    constexpr std::array<PS2Runtime::RecompiledFunction, sizeof...(Is)> vcsMakeCountWrappers(std::integer_sequence<int, Is...>)
+    {
+        return {&vcsCountWrapper<Is>...};
+    }
+
+    void vcsInstallCallCounters(PS2Runtime &runtime)
+    {
+        const char *env = std::getenv("PS2X_COUNT_CALLS");
+        if (!env)
+            return;
+        static const auto wrappers = vcsMakeCountWrappers(std::make_integer_sequence<int, kVcsMaxCounted>{});
+        const char *cursor = env;
+        while (*cursor && g_vcsCountUsed < kVcsMaxCounted)
+        {
+            char *end = nullptr;
+            const uint32_t addr = static_cast<uint32_t>(std::strtoul(cursor, &end, 0));
+            if (end == cursor)
+                break;
+            if (PS2Runtime::RecompiledFunction orig = runtime.lookupFunction(addr))
+            {
+                const int slot = g_vcsCountUsed++;
+                g_vcsCountOrig[slot] = orig;
+                g_vcsCountAddr[slot] = addr;
+                runtime.replaceFunction(addr, wrappers[slot]);
+            }
+            cursor = (*end == ',') ? end + 1 : end;
+        }
+    }
+
     void applyGtaVcsUs(PS2Runtime &runtime)
     {
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
@@ -317,6 +389,8 @@ namespace
         // libmpeg sceMpegIsEnd (`return mpeg->sys->active == 0`): the HLE decoder never
         // updates that internal field, so route it to the HLE end-of-stream check.
         ps2_game_overrides::bindAddressHandler(runtime, 0x00452F68u, "sceMpegIsEnd");
+
+        vcsInstallCallCounters(runtime);
     }
 }
 

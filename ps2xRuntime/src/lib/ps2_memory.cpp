@@ -1360,7 +1360,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
                     uint32_t asp = (chcr >> 4) & 0x3u;
                     const bool tieEnabled = (chcr & (1u << 7)) != 0u;
-                    const int kMaxChainTags = 4096;
+                    // Big frames (world sectors) easily exceed thousands of tags per chain;
+                    // the cap only guards against looping chains.
+                    const int kMaxChainTags = 1 << 20;
                     std::vector<uint8_t> chainBuf;
 
                     auto appendData = [&](uint32_t srcAddr, uint32_t qwCount)
@@ -1458,6 +1460,29 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
                         ++tagsProcessed;
 
+                        // PS2X_DMA_RANGE=lo,hi: log chain tags that live in or point into [lo,hi).
+                        {
+                            static const std::pair<uint32_t, uint32_t> s_range = []()
+                            {
+                                const char *env = std::getenv("PS2X_DMA_RANGE");
+                                if (!env)
+                                    return std::pair<uint32_t, uint32_t>{0u, 0u};
+                                char *end = nullptr;
+                                const uint32_t lo = static_cast<uint32_t>(std::strtoul(env, &end, 0));
+                                const uint32_t hi = (end && *end == ',') ? static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0)) : 0u;
+                                return std::pair<uint32_t, uint32_t>{lo, hi};
+                            }();
+                            static std::atomic<uint32_t> s_rangeLogs{0};
+                            const uint32_t ta = currentTagAddr & 0x01FFFFFFu;
+                            const uint32_t aa = addr & 0x01FFFFFFu;
+                            if (s_range.second != 0u &&
+                                ((ta >= s_range.first && ta < s_range.second) || (aa >= s_range.first && aa < s_range.second)) &&
+                                s_rangeLogs.fetch_add(1, std::memory_order_relaxed) < 200u)
+                            {
+                                std::cerr << "[dma:range] ch=0x" << std::hex << channelBase << " tag@0x" << currentTagAddr
+                                          << " id=" << id << " qwc=0x" << tagQwc << " addr=0x" << addr << std::dec << std::endl;
+                            }
+                        }
                         uint32_t dataAddr = 0;
                         bool hasPayload = (tagQwc > 0);
                         bool endChain = false;
@@ -1537,6 +1562,13 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             break;
                     }
 
+                    if (tagsProcessed >= kMaxChainTags)
+                    {
+                        static std::atomic<uint32_t> s_capLogs{0};
+                        if (s_capLogs.fetch_add(1, std::memory_order_relaxed) < 8u)
+                            std::cerr << "[dma:chain-cap] ch=0x" << std::hex << channelBase << " tadr=0x" << tagAddr << std::dec
+                                      << " tags=" << tagsProcessed << std::endl;
+                    }
                     m_ioRegisters[channelBase + 0x30] = tagAddr;
                     m_ioRegisters[channelBase + 0x40] = asr0;
                     m_ioRegisters[channelBase + 0x50] = asr1;

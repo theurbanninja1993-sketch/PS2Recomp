@@ -380,6 +380,17 @@ namespace ps2_stubs
             return false;
         }
         const bool ok = readCdSectors(lbn, sectors, dst, static_cast<size_t>(sectors) * kCdSectorSize);
+        // PS2X_CD_TRACE=1 logs every IOP-side sector read with its backing file.
+        static const bool s_trace = std::getenv("PS2X_CD_TRACE") != nullptr;
+        if (s_trace)
+        {
+            CdFileEntry entry{};
+            const bool known = findRegisteredCdFileForLbn(lbn, entry);
+            std::cerr << "[cd:read] lbn=0x" << std::hex << lbn << std::dec << " sectors=" << sectors << " ok=" << ok
+                      << " file=" << (known ? entry.hostPath.filename().string() : std::string("?"))
+                      << " off=0x" << std::hex << (known ? static_cast<uint64_t>(lbn - entry.baseLbn) * kCdSectorSize : 0u)
+                      << std::dec << std::endl;
+        }
         return ok;
     }
 

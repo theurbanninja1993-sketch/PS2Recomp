@@ -1845,6 +1845,13 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             break;
     }
 
+    if (!programEnded && m_cycle >= budgetEnd)
+    {
+        static std::atomic<uint32_t> s_budgetLogs{0};
+        if (s_budgetLogs.fetch_add(1, std::memory_order_relaxed) < 16u)
+            std::cerr << "[vu:budget] unit=" << (m_unit == Unit::VU1 ? 1 : 0) << " pc=0x" << std::hex << m_state.pc
+                      << std::dec << " maxCycles=" << maxCycles << " exhausted" << std::endl;
+    }
     if (programEnded)
     {
         flushPipelines();
