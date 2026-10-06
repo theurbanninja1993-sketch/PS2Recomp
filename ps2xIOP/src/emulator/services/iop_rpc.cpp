@@ -1,3 +1,6 @@
+#include <map>
+#include <iostream>
+#include <cstdlib>
 #include "iop_rpc.h"
 
 #include "../core/iop_cpu.h"
@@ -275,6 +278,16 @@ namespace ps2x::iop::detail
 
     RpcResult IopRpcBridge::handleRpc(const RpcRequest &request, IopGuestExecutor &executor)
     {
+        static const bool s_spuTrace = std::getenv("PS2X_SPU_TRACE") != nullptr;
+        if (s_spuTrace && request.sid != 0x80000701u)
+        {
+            static std::map<std::pair<uint32_t, uint32_t>, uint32_t> s_counts;
+            if (++s_counts[{request.sid, request.function}] <= 3u || (s_counts[{request.sid, request.function}] % 500u) == 0u)
+                std::cerr << "[iop:rpc] sid=0x" << std::hex << request.sid << " fn=0x" << request.function
+                          << " send=0x" << request.send.size << " server=" << (m_servers.count(request.sid) ? 1 : 0)
+                          << std::dec << std::endl;
+        }
+
         RpcResult result{};
         const auto serverIt = m_servers.find(request.sid);
         if (serverIt == m_servers.end() || serverIt->second.function == 0u)

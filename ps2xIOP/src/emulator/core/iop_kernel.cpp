@@ -419,6 +419,23 @@ namespace ps2x::iop::detail
                 cpu.yielded = true;
                 setV0(0);
             }
+            else if (m_nestedWait)
+            {
+                const bool acquired = m_nestedWait([this, id]()
+                                                   {
+                                                       const auto sema = m_semaphores.find(id);
+                                                       return sema == m_semaphores.end() || sema->second.current > 0; });
+                const auto sema = m_semaphores.find(id);
+                if (acquired && sema != m_semaphores.end())
+                {
+                    --sema->second.current;
+                    setV0(0);
+                }
+                else
+                {
+                    setV0(static_cast<uint32_t>(-1));
+                }
+            }
             return true;
         }
         case 11:
@@ -620,6 +637,27 @@ namespace ps2x::iop::detail
                 m_currentThread->waitResultAddress = cpu.gpr[7];
                 setV0(0);
                 cpu.yielded = true;
+            }
+            else if (m_nestedWait)
+            {
+                const int id = event->second.id;
+                const bool satisfied = m_nestedWait([this, id, bits, mode]()
+                                                    {
+                                                        const auto flag = m_eventFlags.find(id);
+                                                        return flag == m_eventFlags.end() || eventSatisfied(flag->second, bits, mode); });
+                const auto flag = m_eventFlags.find(id);
+                if (satisfied && flag != m_eventFlags.end())
+                {
+                    if (cpu.gpr[7] != 0u)
+                        m_memory.write32(cpu.gpr[7], flag->second.bits);
+                    if ((mode & 0x10u) != 0u)
+                        flag->second.bits = 0u;
+                    setV0(0);
+                }
+                else
+                {
+                    setV0(-418);
+                }
             }
             else
                 setV0(-418);

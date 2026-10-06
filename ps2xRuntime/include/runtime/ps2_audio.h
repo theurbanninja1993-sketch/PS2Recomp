@@ -23,7 +23,10 @@ public:
               uint32_t voiceIndex = 0xFFFFFFFFu);
     void stop(uint32_t voiceId);
     void stopAll();
-    void setAudioReady(bool ready) { m_audioReady = ready; }
+    void setAudioReady(bool ready);
+
+    // SPU2 output (interleaved stereo 16-bit at 48 kHz) to the host device.
+    void submitStream(const int16_t *stereoFrames, uint32_t frameCount);
 
 private:
     struct DecodedSample

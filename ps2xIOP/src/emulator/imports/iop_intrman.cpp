@@ -4,6 +4,9 @@
 #include "../core/iop_memory.h"
 #include "../services/iop_rpc.h"
 
+#include <cstdlib>
+#include <iostream>
+
 namespace ps2x::iop::detail
 {
     IopIntrman::IopIntrman(IopMemory &memory) noexcept
@@ -28,6 +31,10 @@ namespace ps2x::iop::detail
             cpu.gpr[2] = value;
         };
 
+        static const bool s_trace = std::getenv("PS2X_SPU_TRACE") != nullptr;
+        if (s_trace)
+            std::cerr << "[intrman] ordinal=" << ordinal << " a0=" << a0 << " a1=0x" << std::hex << a1
+                      << " a2=0x" << a2 << std::dec << std::endl;
         switch (ordinal)
         {
         case 3:

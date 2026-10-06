@@ -72,6 +72,7 @@ public:
                       size_t &bytesRead) override;
     void closeHostFile(uint64_t handle) override;
     bool readCdSectors(uint32_t lsn, uint32_t sectors, void *destination) override;
+    void submitAudio(const int16_t *stereoFrames, uint32_t frameCount) override;
 
     int32_t memoryCard(const ps2x::iop::MemoryCardRequest &request) override;
 

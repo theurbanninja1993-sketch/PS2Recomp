@@ -1346,7 +1346,10 @@ namespace ps2_stubs
                 else if (isAudioStreamId(streamId))
                 {
                     const MpegPesHeader pes = parsePesHeader(buffer.data(), packetEnd);
-                    const size_t payloadStart = pes.payloadOffset;
+                    // PSS private_stream_1 payloads start with a 4-byte sub-stream
+                    // header (e.g. FF A0 00 00); libmpeg hands only the audio
+                    // bytes after it to the PCM/ADPCM callbacks.
+                    const size_t payloadStart = pes.payloadOffset + (streamId == kMpegPrivateStream1 ? 4u : 0u);
                     if (payloadStart < packetEnd && payloadStart < playback.pssGuestAddrs.size())
                     {
                         queueStreamCallbackEvent(

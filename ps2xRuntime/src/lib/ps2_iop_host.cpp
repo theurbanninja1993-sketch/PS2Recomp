@@ -536,3 +536,8 @@ bool PS2IopHostAdapter::readCdSectors(uint32_t lsn, uint32_t sectors, void *dest
 {
     return ps2_stubs::readRegisteredCdSectors(lsn, sectors, static_cast<uint8_t *>(destination));
 }
+
+void PS2IopHostAdapter::submitAudio(const int16_t *stereoFrames, uint32_t frameCount)
+{
+    m_runtime.audioBackend().submitStream(stereoFrames, frameCount);
+}

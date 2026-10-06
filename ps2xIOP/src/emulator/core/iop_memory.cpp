@@ -37,6 +37,7 @@ namespace ps2x::iop::detail
         m_interruptMask = 0;
         m_interruptControl = 1;
         m_dmaStart.reset();
+        m_spu2.reset();
     }
 
     uint32_t IopMemory::physicalAddress(uint32_t address) noexcept
@@ -51,6 +52,8 @@ namespace ps2x::iop::detail
             return m_ram[phys];
         if (phys >= ScratchBase && phys < ScratchBase + ScratchSize)
             return m_scratch[phys - ScratchBase];
+        if (isSpu2Register(phys))
+            return static_cast<uint8_t>(const_cast<Spu2 &>(m_spu2).read16(phys & ~1u) >> ((phys & 1u) * 8u));
         const uint32_t value = readHardware32(phys & ~3u);
         return static_cast<uint8_t>(value >> ((phys & 3u) * 8u));
     }
@@ -64,6 +67,8 @@ namespace ps2x::iop::detail
             std::memcpy(&value, m_ram.data() + phys, sizeof(value));
             return value;
         }
+        if (isSpu2Register(phys) && (phys & 1u) == 0u)
+            return const_cast<Spu2 &>(m_spu2).read16(phys);
         return static_cast<uint16_t>(read8(address) | (static_cast<uint16_t>(read8(address + 1u)) << 8u));
     }
 
@@ -81,6 +86,11 @@ namespace ps2x::iop::detail
             uint32_t value;
             std::memcpy(&value, m_scratch.data() + (phys - ScratchBase), sizeof(value));
             return value;
+        }
+        if ((phys & 3u) == 0u && isSpu2Register(phys))
+        {
+            Spu2 &spu = const_cast<Spu2 &>(m_spu2);
+            return static_cast<uint32_t>(spu.read16(phys)) | (static_cast<uint32_t>(spu.read16(phys + 2u)) << 16u);
         }
         if ((phys & 3u) == 0u && isHardwareAddress(phys))
             return readHardware32(phys);
@@ -105,6 +115,14 @@ namespace ps2x::iop::detail
             m_scratch[phys - ScratchBase] = value;
             return;
         }
+        if (isSpu2Register(phys))
+        {
+            const uint32_t aligned16 = phys & ~1u;
+            const uint32_t shift16 = (phys & 1u) * 8u;
+            const uint16_t current16 = m_spu2.read16(aligned16);
+            m_spu2.write16(aligned16, static_cast<uint16_t>((current16 & ~(0xFFu << shift16)) | (static_cast<uint32_t>(value) << shift16)));
+            return;
+        }
         const uint32_t aligned = phys & ~3u;
         uint32_t current = readHardware32(aligned);
         const uint32_t shift = (phys & 3u) * 8u;
@@ -119,6 +137,11 @@ namespace ps2x::iop::detail
         {
             std::memcpy(m_ram.data() + phys, &value, sizeof(value));
             markOwned(phys, sizeof(value));
+            return;
+        }
+        if (isSpu2Register(phys) && (phys & 1u) == 0u)
+        {
+            m_spu2.write16(phys, value);
             return;
         }
         write8(address, static_cast<uint8_t>(value));
@@ -137,6 +160,12 @@ namespace ps2x::iop::detail
         if ((phys & 3u) == 0u && phys >= ScratchBase && phys + 3u < ScratchBase + ScratchSize)
         {
             std::memcpy(m_scratch.data() + (phys - ScratchBase), &value, sizeof(value));
+            return;
+        }
+        if ((phys & 3u) == 0u && isSpu2Register(phys))
+        {
+            m_spu2.write16(phys, static_cast<uint16_t>(value));
+            m_spu2.write16(phys + 2u, static_cast<uint16_t>(value >> 16u));
             return;
         }
         if ((phys & 3u) == 0u)
@@ -213,6 +242,18 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::readHardware32(uint32_t address) const
     {
+        // SPU2 DMA channels (4: core 0, 7: core 1) report AutoDMA progress:
+        // libsd derives sceSdBlockTransStatus from MADR and the busy bit.
+        for (uint32_t core = 0; core < 2u; ++core)
+        {
+            const uint32_t chcr = core == 0u ? kDmaSpu0Chcr : kDmaSpu1Chcr;
+            if ((address != chcr && address != chcr - 8u) || !m_spu2.autoDmaActive(core))
+                continue;
+            if (address == chcr - 8u)
+                return m_spu2.autoDmaAddress(core);
+            const auto stored = m_hardware.find(address);
+            return (stored != m_hardware.end() ? stored->second : 0u) | kDmaStart;
+        }
         const auto value = m_hardware.find(address);
         if (value != m_hardware.end())
             return value->second;
@@ -253,26 +294,16 @@ namespace ps2x::iop::detail
         const bool secondCore = address == kDmaSpu1Chcr;
         m_hardware[address] = value & ~kDmaStart;
 
-        const uint32_t statusAddress = 0x1F900344u + (secondCore ? 0x400u : 0u);
-        const uint32_t alignedStatus = statusAddress & ~3u;
-        const uint32_t shift = (statusAddress & 2u) * 8u;
-        uint32_t status = 0u;
-        if (const auto current = m_hardware.find(alignedStatus); current != m_hardware.end())
-            status = current->second;
-        status |= 0x80u << shift;
-        m_hardware[alignedStatus] = status;
-
-        const uint32_t blockControlAddress = address - sizeof(uint32_t);
-        uint32_t blockControl = 0u;
-        if (const auto current = m_hardware.find(blockControlAddress); current != m_hardware.end())
-            blockControl = current->second;
-        const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
-        const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
-        const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
-        m_dmaStart = DmaStart{
-            secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
-            std::max<uint64_t>(transferWords * 2u, 64u),
-        };
+        uint32_t madr = 0u;
+        uint32_t bcr = 0u;
+        if (const auto it = m_hardware.find(address - 8u); it != m_hardware.end())
+            madr = it->second;
+        if (const auto it = m_hardware.find(address - 4u); it != m_hardware.end())
+            bcr = it->second;
+        const uint64_t delay = m_spu2.startDma(secondCore ? 1u : 0u, m_ram.data(), m_ram.size(), madr, bcr, value);
+        // AutoDMA transfers complete as the SPU2 plays them (see Spu2::takeDmaIrqMask).
+        if (delay != 0u)
+            m_dmaStart = DmaStart{secondCore ? kDmaSpu1Irq : kDmaSpu0Irq, delay};
     }
 
     std::optional<IopMemory::DmaStart> IopMemory::takeDmaStart() noexcept

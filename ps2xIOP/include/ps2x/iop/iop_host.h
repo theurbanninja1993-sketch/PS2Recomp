@@ -119,6 +119,14 @@ namespace ps2x::iop
             return false;
         }
 
+        // Mixed SPU2 output: interleaved stereo 16-bit frames at 48 kHz, produced
+        // in emulated IOP time.
+        virtual void submitAudio(const int16_t *stereoFrames, uint32_t frameCount)
+        {
+            (void)stereoFrames;
+            (void)frameCount;
+        }
+
         virtual int32_t memoryCard(const MemoryCardRequest &request) = 0;
 
         virtual bool hasGuestFunction(uint32_t address) const = 0;

@@ -1,3 +1,4 @@
+#include <iostream>
 #include "iop_cdvd.h"
 
 #include "../core/iop_cpu.h"
@@ -612,7 +613,12 @@ namespace ps2x::iop::detail
             const std::string guestPath = memory.readString(nameAddress, 1024u);
             IsoNode *node = findVirtualIsoNode(guestPath);
             if (!node)
+            {
+                static uint32_t s_failureLogs = 0;
+                if (s_failureLogs++ < 32u)
+                    std::cerr << "[iop:cdsearch] not found: \"" << guestPath << "\"" << std::endl;
                 return false;
+            }
 
             // sceCdlFILE: lsn, size, name[16], date/flags[8].
             std::array<uint8_t, 32u> result{};

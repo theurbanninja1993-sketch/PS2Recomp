@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -51,6 +52,12 @@ namespace ps2x::iop::detail
 
         void reset();
 
+        // Runs other IOP work until `done` holds (or gives up); used when a
+        // synchronous guest call (no current thread, e.g. an RPC handler)
+        // makes a blocking wait.
+        using NestedWaitHook = std::function<bool(const std::function<bool()> &done)>;
+        void setNestedWaitHook(NestedWaitHook hook) { m_nestedWait = std::move(hook); }
+
         [[nodiscard]] bool dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
         [[nodiscard]] bool dispatchSemaphoreImport(uint16_t ordinal, IopCpuState &cpu);
         [[nodiscard]] bool dispatchEventImport(uint16_t ordinal, IopCpuState &cpu);
@@ -63,6 +70,7 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] IopThread *beginNextReady(uint64_t currentCycle);
         [[nodiscard]] uint64_t nextWakeCycle(uint64_t fallback) const;
+        [[nodiscard]] const std::vector<IopThread *> &threadsInOrder() const noexcept { return m_threadOrder; }
         void endTimeslice(IopThread &thread, uint32_t returnSentinel);
         void cleanupDeadThreads();
         void terminateThreadsInRange(uint32_t base, uint32_t size);
@@ -93,6 +101,7 @@ namespace ps2x::iop::detail
         void wakeEventWaiters(EventFlag &event);
 
         IopMemory &m_memory;
+        NestedWaitHook m_nestedWait;
         std::map<int, IopThread> m_threads;
         // m_threads in id order as flat pointers (map nodes are stable); the
         // scheduler walks this on every timeslice.

@@ -1,6 +1,9 @@
 #include "runtime/ps2_audio.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_host_backend.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -77,7 +80,42 @@ struct PS2AudioBackend::Impl
         uint32_t sampleKey;
     };
     std::vector<TrackedSound> activeSounds;
+    AudioStream stream{};
+    bool streamLoaded = false;
 };
+
+namespace
+{
+    // SPU2 output ring, filled by the IOP (emulation thread) and drained by the
+    // audio device callback. raylib callbacks carry no user pointer, hence the
+    // single global stream.
+    struct StreamRing
+    {
+        static constexpr size_t kFrames = 48000u; // one second
+        std::mutex mutex;
+        std::vector<int16_t> samples = std::vector<int16_t>(kFrames * 2u, 0);
+        size_t readFrame = 0;
+        size_t queuedFrames = 0;
+    };
+
+    StreamRing g_streamRing;
+
+    void streamCallback(void *bufferData, unsigned int frames)
+    {
+        int16_t *out = static_cast<int16_t *>(bufferData);
+        std::lock_guard<std::mutex> lock(g_streamRing.mutex);
+        const size_t available = std::min<size_t>(frames, g_streamRing.queuedFrames);
+        for (size_t i = 0; i < available; ++i)
+        {
+            const size_t frame = (g_streamRing.readFrame + i) % StreamRing::kFrames;
+            out[i * 2u] = g_streamRing.samples[frame * 2u];
+            out[i * 2u + 1u] = g_streamRing.samples[frame * 2u + 1u];
+        }
+        std::memset(out + available * 2u, 0, (frames - available) * 2u * sizeof(int16_t));
+        g_streamRing.readFrame = (g_streamRing.readFrame + available) % StreamRing::kFrames;
+        g_streamRing.queuedFrames -= available;
+    }
+}
 
 PS2AudioBackend::PS2AudioBackend() : m_impl(std::make_unique<Impl>())
 {
@@ -87,6 +125,57 @@ PS2AudioBackend::~PS2AudioBackend()
 {
     if (m_impl)
         stopAll();
+}
+
+void PS2AudioBackend::setAudioReady(bool ready)
+{
+    if (ready == m_audioReady)
+        return;
+    if (ready)
+    {
+        m_impl->stream = LoadAudioStream(48000, 16, 2);
+        SetAudioStreamCallback(m_impl->stream, &streamCallback);
+        PlayAudioStream(m_impl->stream);
+        m_impl->streamLoaded = true;
+    }
+    else if (m_impl->streamLoaded)
+    {
+        StopAudioStream(m_impl->stream);
+        UnloadAudioStream(m_impl->stream);
+        m_impl->streamLoaded = false;
+    }
+    m_audioReady = ready;
+}
+
+void PS2AudioBackend::submitStream(const int16_t *stereoFrames, uint32_t frameCount)
+{
+    if (!stereoFrames || frameCount == 0u)
+        return;
+    // PS2X_AUDIO_DUMP=<file>: append the raw output (48 kHz stereo s16le).
+    static FILE *s_dump = []() -> FILE *
+    {
+        const char *path = std::getenv("PS2X_AUDIO_DUMP");
+        return path ? std::fopen(path, "wb") : nullptr;
+    }();
+    if (s_dump)
+    {
+        std::fwrite(stereoFrames, sizeof(int16_t) * 2u, frameCount, s_dump);
+        std::fflush(s_dump);
+    }
+    std::lock_guard<std::mutex> lock(g_streamRing.mutex);
+    for (uint32_t i = 0; i < frameCount; ++i)
+    {
+        if (g_streamRing.queuedFrames == StreamRing::kFrames)
+        {
+            // Full: drop the oldest frame rather than stall the emulator.
+            g_streamRing.readFrame = (g_streamRing.readFrame + 1u) % StreamRing::kFrames;
+            --g_streamRing.queuedFrames;
+        }
+        const size_t frame = (g_streamRing.readFrame + g_streamRing.queuedFrames) % StreamRing::kFrames;
+        g_streamRing.samples[frame * 2u] = stereoFrames[i * 2u];
+        g_streamRing.samples[frame * 2u + 1u] = stereoFrames[i * 2u + 1u];
+        ++g_streamRing.queuedFrames;
+    }
 }
 
 void PS2AudioBackend::onVagTransfer(const uint8_t *rdram, uint32_t srcAddr, uint32_t sizeBytes)
