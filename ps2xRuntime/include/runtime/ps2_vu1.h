@@ -209,6 +209,9 @@ private:
     uint64_t m_cachedCodeGeneration = 0;
     bool m_decodedCodeCacheValid = false;
 
+    // Earliest readyCycle among queued pipeline entries; commitReadyPipelines
+    // returns immediately before then instead of scanning every queue.
+    uint64_t m_nextCommitCycle = 0;
     std::array<FlagPipelineEntry, kMaxFlagEntries> m_flagPipeline{};
     ScalarPipelineEntry m_fdiv{};
     std::array<ScalarPipelineEntry, 2> m_efu{};
