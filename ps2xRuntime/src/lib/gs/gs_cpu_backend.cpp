@@ -725,6 +725,13 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
     return result;
 }
 
+void GSCpuBackend::SetRowBand(uint32_t index, uint32_t count)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_bandCount = std::max<uint32_t>(count, 1u);
+    m_bandIndex = index % m_bandCount;
+}
+
 // Presented-frame counter published by the host present loop; PS2X_GS_TRACE_FRAME=<n>
 // logs every primitive drawn while frame n is current (debug aid).
 std::atomic<uint64_t> g_ps2PresentedFrameCounter{0};
@@ -907,6 +914,8 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
 {
     const auto &ctx = state.context;
     if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
+        return;
+    if (!ownsRow(y))
         return;
 
     if (state.prim.fge)
@@ -1269,6 +1278,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
 
         for (int y = drawY0; y <= drawY1; ++y)
         {
+            if (!ownsRow(y))
+                continue;
             float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
             float texVf = v0f + (v1f - v0f) * ty;
 
@@ -1303,8 +1314,12 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
     else
     {
         for (int y = drawY0; y <= drawY1; ++y)
+        {
+            if (!ownsRow(y))
+                continue;
             for (int x = drawX0; x <= drawX1; ++x)
                 WritePixel(state, x, y, z1, r, g, b, a, v1.fog);
+        }
     }
 }
 
@@ -1355,6 +1370,8 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
 
     for (int y = minY; y <= maxY; ++y)
     {
+        if (!ownsRow(y))
+            continue;
         float py = static_cast<float>(y) + 0.5f;
         for (int x = minX; x <= maxX; ++x)
         {

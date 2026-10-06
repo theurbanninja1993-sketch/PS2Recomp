@@ -32,6 +32,7 @@ public:
     void WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value) override;
     void SnapshotVram(std::vector<uint8_t> &out) const override;
     GSTransferSnapshot GetTransferSnapshot() const override;
+    void SetRowBand(uint32_t index, uint32_t count) override;
 
 private:
     void ResetUnlocked();
@@ -73,6 +74,12 @@ private:
     std::array<uint16_t, 512> m_clut{};
     std::array<uint32_t, 2> m_clutCbp{};
     GSMem::TexturePageCache m_texturePageCache;
+    uint32_t m_bandIndex = 0;
+    uint32_t m_bandCount = 1;
+    bool ownsRow(int y) const
+    {
+        return m_bandCount <= 1u || (static_cast<uint32_t>(y >> 3) % m_bandCount) == m_bandIndex;
+    }
 
     GSTransferCommand m_transfer{};
     GSTransferSnapshot m_transferState{};

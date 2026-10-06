@@ -11,6 +11,7 @@
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <thread>
 
 namespace
 {
@@ -114,7 +115,13 @@ namespace
     {
         if (std::getenv("PS2X_GS_SYNC"))
             return std::make_unique<GSCpuBackend>();
-        return std::make_unique<GSThreadedBackend>(std::make_unique<GSCpuBackend>());
+        // PS2X_GS_THREADS picks the number of banded rasterizer workers.
+        uint32_t workers = std::clamp<uint32_t>(std::thread::hardware_concurrency() / 2u, 1u, 8u);
+        if (const char *env = std::getenv("PS2X_GS_THREADS"))
+            workers = std::clamp<uint32_t>(static_cast<uint32_t>(std::strtoul(env, nullptr, 10)), 1u, 32u);
+        return std::make_unique<GSThreadedBackend>([]()
+                                                   { return std::make_unique<GSCpuBackend>(); },
+                                                   workers);
     }
 }
 

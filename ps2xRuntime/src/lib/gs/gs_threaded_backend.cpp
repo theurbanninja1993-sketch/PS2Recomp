@@ -1,122 +1,402 @@
 #include "runtime/gs/gs_threaded_backend.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
 #include <utility>
 
-GSThreadedBackend::GSThreadedBackend(std::unique_ptr<GSRasterBackend> inner)
-    : m_inner(std::move(inner))
+namespace
 {
-    m_worker = std::thread([this]()
-                           { workerLoop(); });
+    constexpr uint32_t kLocalMemoryBytes = 4u * 1024u * 1024u;
+    constexpr uint32_t kPageBytes = 8192u;
+    // How far (in commands) the producer may run ahead of the slowest worker.
+    constexpr uint64_t kMaxCommandsAhead = 32768u;
+
+    struct PageShape
+    {
+        uint32_t width;
+        uint32_t height;
+    };
+
+    // GS page dimensions per pixel storage format (each page is 8 KiB).
+    PageShape pageShapeForPsm(uint8_t psm)
+    {
+        switch (psm)
+        {
+        case 0x02: // CT16
+        case 0x0A: // CT16S
+        case 0x32: // Z16
+        case 0x3A: // Z16S
+            return {64u, 64u};
+        case 0x13: // T8
+            return {128u, 64u};
+        case 0x14: // T4
+            return {128u, 128u};
+        default: // 32-bit layouts, incl. T8H/T4HL/T4HH stored in 32-bit pages
+            return {64u, 32u};
+        }
+    }
+
+    // Conservative byte range covered by a buffer of `width` x `height` pixels
+    // starting at `baseBytes` with a row stride of `bufferWidth64` * 64 pixels.
+    void bufferRange(uint32_t baseBytes, uint32_t bufferWidth64, uint32_t height, uint8_t psm,
+                     uint32_t &begin, uint32_t &end)
+    {
+        const PageShape shape = pageShapeForPsm(psm);
+        const uint32_t strideWidth = std::max<uint32_t>(bufferWidth64, 1u) * 64u;
+        const uint32_t pagesWide = (strideWidth + shape.width - 1u) / shape.width;
+        const uint32_t pagesHigh = (std::max<uint32_t>(height, 1u) + shape.height - 1u) / shape.height;
+        begin = baseBytes & ~(kPageBytes - 1u);
+        // One extra page covers a base that isn't page aligned.
+        const uint64_t bytes = static_cast<uint64_t>(pagesWide) * pagesHigh * kPageBytes + kPageBytes;
+        end = static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(begin) + bytes, kLocalMemoryBytes));
+    }
+}
+
+GSThreadedBackend::GSThreadedBackend(BackendFactory factory, uint32_t workerCount)
+{
+    m_statsEnabled = std::getenv("PS2X_GS_STATS") != nullptr;
+    workerCount = std::max<uint32_t>(workerCount, 1u);
+    for (uint32_t index = 0; index < workerCount; ++index)
+    {
+        auto worker = std::make_unique<Worker>();
+        worker->backend = factory();
+        worker->backend->SetRowBand(index, workerCount);
+        m_workers.push_back(std::move(worker));
+    }
+    for (uint32_t index = 0; index < workerCount; ++index)
+    {
+        m_workers[index]->thread = std::thread([this, index]()
+                                               { workerLoop(index); });
+    }
 }
 
 GSThreadedBackend::~GSThreadedBackend()
 {
     {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_stop = true;
     }
     m_workAvailable.notify_all();
-    if (m_worker.joinable())
-        m_worker.join();
+    for (auto &worker : m_workers)
+    {
+        if (worker->thread.joinable())
+            worker->thread.join();
+    }
+}
+
+uint64_t GSThreadedBackend::slowestPosition() const
+{
+    uint64_t slowest = UINT64_MAX;
+    for (const auto &worker : m_workers)
+        slowest = std::min(slowest, worker->position.load(std::memory_order_acquire));
+    return slowest;
+}
+
+GSThreadedBackend::Command &GSThreadedBackend::commandAt(uint64_t sequence)
+{
+    // Caller holds m_mutex.
+    const uint64_t offset = sequence - m_firstChunkSequence;
+    return m_chunks[static_cast<size_t>(offset / kChunkSize)]->commands[offset % kChunkSize];
 }
 
 void GSThreadedBackend::enqueue(Command &&command)
 {
-    bool wake = false;
     {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
-        wake = m_queue.empty() && !m_busy;
-        m_queue.push_back(std::move(command));
+        std::unique_lock<std::mutex> lock(m_mutex);
+        if (m_statsEnabled)
+            ++m_statCounts[static_cast<uint32_t>(command.type)];
+        if (m_published - slowestPosition() >= kMaxCommandsAhead)
+        {
+            ++m_statBackpressureWaits;
+            m_progressWaiters.fetch_add(1u);
+            m_progress.wait(lock, [this]()
+                            { return m_published - slowestPosition() < kMaxCommandsAhead; });
+            m_progressWaiters.fetch_sub(1u);
+        }
+
+        // Drop chunks every worker has finished with.
+        const uint64_t slowest = slowestPosition();
+        while (!m_chunks.empty() && m_firstChunkSequence + kChunkSize <= slowest)
+        {
+            m_chunks.pop_front();
+            m_firstChunkSequence += kChunkSize;
+        }
+        if (m_chunks.empty())
+            m_firstChunkSequence = m_published - (m_published % kChunkSize);
+
+        const uint64_t offset = m_published - m_firstChunkSequence;
+        if (offset / kChunkSize >= m_chunks.size())
+            m_chunks.push_back(std::make_unique<Chunk>());
+        commandAt(m_published) = std::move(command);
+        ++m_published;
+        if (m_statsEnabled)
+            reportStats();
+        if (m_sleepingWorkers == 0u)
+            return;
     }
-    if (wake)
-        m_workAvailable.notify_one();
+    m_workAvailable.notify_all();
+}
+
+void GSThreadedBackend::reportStats()
+{
+    const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                                                   std::chrono::steady_clock::now().time_since_epoch())
+                                                   .count());
+    if (now < m_statLastReport + 10u)
+        return;
+    m_statLastReport = now;
+    static const char *kNames[] = {"submit", "clut", "xfer", "upload", "texflush", "present", "barrier", "?"};
+    std::cerr << "[gs:stats]";
+    for (uint32_t i = 0; i < 7u; ++i)
+        std::cerr << " " << kNames[i] << "=" << m_statCounts[i];
+    std::cerr << " hazard=" << m_statHazardBarriers << " backpressure=" << m_statBackpressureWaits << std::endl;
 }
 
 void GSThreadedBackend::drain() const
 {
-    std::unique_lock<std::mutex> lock(m_queueMutex);
-    m_idle.wait(lock, [this]()
-                { return m_queue.empty() && !m_busy; });
+    std::unique_lock<std::mutex> lock(m_mutex);
+    m_progressWaiters.fetch_add(1u);
+    m_progress.wait(lock, [this]()
+                    { return slowestPosition() >= m_published; });
+    m_progressWaiters.fetch_sub(1u);
 }
 
-void GSThreadedBackend::workerLoop()
+void GSThreadedBackend::runExclusive(Command &command)
 {
-    std::vector<Command> batch;
-    for (;;)
-    {
-        {
-            std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_busy = false;
-            if (m_queue.empty())
-                m_idle.notify_all();
-            m_workAvailable.wait(lock, [this]()
-                                 { return m_stop || !m_queue.empty(); });
-            if (m_stop && m_queue.empty())
-                return;
-            batch.swap(m_queue);
-            m_busy = true;
-        }
-        for (Command &command : batch)
-            execute(command);
-        batch.clear();
-    }
-}
-
-void GSThreadedBackend::execute(Command &command)
-{
+    GSRasterBackend &backend = *m_workers[0]->backend;
     switch (command.type)
     {
-    case CommandType::Submit:
-        m_inner->Submit(command.batch);
-        break;
-    case CommandType::LoadClut:
-        m_inner->LoadClut(command.tex0, command.texclut);
-        break;
     case CommandType::BeginTransfer:
-        m_inner->BeginTransfer(command.transfer);
-        break;
-    case CommandType::UploadImage:
-        m_inner->UploadImage(command.data.data(), static_cast<uint32_t>(command.data.size()));
-        break;
-    case CommandType::Flush:
-        m_inner->Flush();
-        break;
-    case CommandType::TextureFlush:
-        m_inner->TextureFlush();
+        backend.BeginTransfer(command.transfer);
         break;
     case CommandType::Present:
     {
-        m_inner->Sync(GSSyncReason::Presentation);
-        PresentationFrame frame = m_inner->Present(command.presentRequest);
+        backend.Sync(GSSyncReason::Presentation);
+        PresentationFrame frame = backend.Present(command.presentRequest);
         std::lock_guard<std::mutex> lock(m_presentMutex);
         m_lastPresented = std::move(frame);
         break;
     }
+    default:
+        break;
+    }
+}
+
+void GSThreadedBackend::workerLoop(uint32_t index)
+{
+    Worker &self = *m_workers[index];
+    GSRasterBackend &backend = *self.backend;
+    const uint32_t workerCount = static_cast<uint32_t>(m_workers.size());
+    uint64_t position = 0;
+    for (;;)
+    {
+        uint64_t available = 0;
+        Chunk *chunk = nullptr;
+        uint64_t chunkBase = 0;
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            if (!m_stop && m_published <= position)
+            {
+                ++m_sleepingWorkers;
+                m_workAvailable.wait(lock, [&]()
+                                     { return m_stop || m_published > position; });
+                --m_sleepingWorkers;
+            }
+            if (m_published <= position)
+                return;
+            available = m_published;
+        }
+
+        while (position < available)
+        {
+            if (chunk == nullptr || position >= chunkBase + kChunkSize)
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                const uint64_t offset = position - m_firstChunkSequence;
+                chunkBase = position - (offset % kChunkSize);
+                chunk = m_chunks[static_cast<size_t>(offset / kChunkSize)].get();
+            }
+            Command &command = chunk->commands[position - chunkBase];
+
+            switch (command.type)
+            {
+            case CommandType::Submit:
+                backend.Submit(command.batch);
+                break;
+            case CommandType::LoadClut:
+                backend.LoadClut(command.tex0, command.texclut);
+                break;
+            case CommandType::TextureFlush:
+                backend.TextureFlush();
+                break;
+            case CommandType::UploadImage:
+                // Every worker writes the (identical) host->local data itself, so
+                // its own later draws see it without waiting for the others.
+                backend.UploadImage(command.data.data(), static_cast<uint32_t>(command.data.size()));
+                backend.TextureFlush();
+                break;
+            case CommandType::BeginTransfer:
+                if (command.transfer.direction == 0u)
+                {
+                    backend.BeginTransfer(command.transfer);
+                    break;
+                }
+                [[fallthrough]];
+            case CommandType::Present:
+            case CommandType::Barrier:
+            {
+                std::unique_lock<std::mutex> lock(m_barrierMutex);
+                const uint64_t generation = m_barrierGeneration;
+                ++m_barrierArrived;
+                if (index == 0u)
+                {
+                    m_barrierCv.wait(lock, [&]()
+                                     { return m_barrierArrived == workerCount; });
+                    runExclusive(command);
+                    m_barrierArrived = 0;
+                    ++m_barrierGeneration;
+                    lock.unlock();
+                    m_barrierCv.notify_all();
+                }
+                else
+                {
+                    if (m_barrierArrived == workerCount)
+                        m_barrierCv.notify_all();
+                    m_barrierCv.wait(lock, [&]()
+                                     { return m_barrierGeneration != generation; });
+                }
+                // Local memory may have changed under every worker's texture cache.
+                if (command.type == CommandType::BeginTransfer)
+                    backend.TextureFlush();
+                break;
+            }
+            }
+
+            ++position;
+            self.position.store(position);
+            if ((position & 255u) == 0u && m_progressWaiters.load() != 0u)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                }
+                m_progress.notify_all();
+            }
+        }
+        if (m_progressWaiters.load() != 0u)
+        {
+            {
+                // Pair with waiters in enqueue()/drain().
+                std::lock_guard<std::mutex> lock(m_mutex);
+            }
+            m_progress.notify_all();
+        }
+    }
+}
+
+bool GSThreadedBackend::overlaps(const std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte)
+{
+    for (const Range &range : ranges)
+    {
+        if (beginByte < range.end && range.begin < endByte)
+            return true;
+    }
+    return false;
+}
+
+void GSThreadedBackend::addRange(std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte)
+{
+    for (const Range &range : ranges)
+    {
+        if (range.begin <= beginByte && endByte <= range.end)
+            return;
+    }
+    if (ranges.size() >= 16u)
+    {
+        // Too many distinct ranges: keep one conservative span.
+        Range merged{beginByte, endByte};
+        for (const Range &range : ranges)
+        {
+            merged.begin = std::min(merged.begin, range.begin);
+            merged.end = std::max(merged.end, range.end);
+        }
+        ranges.assign(1u, merged);
+        return;
+    }
+    ranges.push_back(Range{beginByte, endByte});
+}
+
+void GSThreadedBackend::enqueueBarrier()
+{
+    if (m_statsEnabled)
+        ++m_statHazardBarriers;
+    Command barrier;
+    barrier.type = CommandType::Barrier;
+    enqueue(std::move(barrier));
+    m_dirtyTargets.clear();
+    m_readSources.clear();
+}
+
+void GSThreadedBackend::noteDrawTargets(const GSDrawState &state)
+{
+    const auto &ctx = state.context;
+    const uint32_t height = static_cast<uint32_t>(ctx.scissor.y1) + 1u;
+    uint32_t begin = 0;
+    uint32_t end = 0;
+    bufferRange(ctx.frame.fbp * kPageBytes, ctx.frame.fbw, height, ctx.frame.psm, begin, end);
+    addRange(m_dirtyTargets, begin, end);
+    const bool zWrites = !ctx.zbuf.zmask && ((ctx.test >> 16) & 1u) != 0u;
+    if (zWrites)
+    {
+        bufferRange(ctx.zbuf.zbp * kPageBytes, ctx.frame.fbw, height, ctx.zbuf.psm, begin, end);
+        addRange(m_dirtyTargets, begin, end);
     }
 }
 
 void GSThreadedBackend::Initialize(uint8_t *vram, uint32_t vramSize)
 {
     drain();
-    m_inner->Initialize(vram, vramSize);
+    for (auto &worker : m_workers)
+        worker->backend->Initialize(vram, vramSize);
 }
 
 void GSThreadedBackend::Reset()
 {
     drain();
-    m_inner->Reset();
+    for (auto &worker : m_workers)
+        worker->backend->Reset();
+    m_dirtyTargets.clear();
+    m_readSources.clear();
 }
 
 void GSThreadedBackend::Submit(const GSPrimitiveBatch &batch)
 {
+    const GSDrawState &state = batch.state;
+    if (state.prim.tme)
+    {
+        const auto &tex0 = state.context.tex0;
+        uint32_t begin = 0;
+        uint32_t end = 0;
+        bufferRange(tex0.tbp0 * 256u, tex0.tbw, 1u << std::min<uint32_t>(tex0.th, 11u), tex0.psm, begin, end);
+        if (overlaps(m_dirtyTargets, begin, end))
+            enqueueBarrier();
+        addRange(m_readSources, begin, end);
+    }
+
     Command command;
     command.type = CommandType::Submit;
     command.batch = batch;
     enqueue(std::move(command));
+    noteDrawTargets(state);
 }
 
 void GSThreadedBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
+    const uint32_t begin = tex0.cbp * 256u;
+    if (overlaps(m_dirtyTargets, begin, begin + 1024u))
+        enqueueBarrier();
+    addRange(m_readSources, begin, begin + 1024u);
     Command command;
     command.type = CommandType::LoadClut;
     command.tex0 = tex0;
@@ -126,10 +406,28 @@ void GSThreadedBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texc
 
 void GSThreadedBackend::BeginTransfer(const GSTransferCommand &command)
 {
+    if (command.direction == 0u)
+    {
+        // Host->local: every worker performs the upload in stream order. It
+        // only has to wait for the others if a worker may still read or draw
+        // that memory for earlier commands.
+        const auto &buf = command.bitbltbuf;
+        uint32_t begin = 0;
+        uint32_t end = 0;
+        bufferRange(buf.dbp * 256u, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh,
+                    buf.dpsm, begin, end);
+        if (overlaps(m_dirtyTargets, begin, end) || overlaps(m_readSources, begin, end))
+            enqueueBarrier();
+    }
     Command queued;
     queued.type = CommandType::BeginTransfer;
     queued.transfer = command;
     enqueue(std::move(queued));
+    if (command.direction != 0u)
+    {
+        m_dirtyTargets.clear();
+        m_readSources.clear();
+    }
 }
 
 void GSThreadedBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
@@ -142,13 +440,13 @@ void GSThreadedBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
 
 void GSThreadedBackend::Flush()
 {
-    Command command;
-    command.type = CommandType::Flush;
-    enqueue(std::move(command));
+    // Commands are already handed to the workers as they arrive.
 }
 
 void GSThreadedBackend::TextureFlush()
 {
+    // Each worker drops its own texture page cache in stream order; draws that
+    // read freshly rendered memory are already fenced by the hazard tracking.
     Command command;
     command.type = CommandType::TextureFlush;
     enqueue(std::move(command));
@@ -157,23 +455,22 @@ void GSThreadedBackend::TextureFlush()
 void GSThreadedBackend::Sync(GSSyncReason reason)
 {
     // FINISH only raises the CSR flag (done by the frontend), and presentation
-    // is captured in order on the worker (see Present); waiting for the
-    // rasterizer in either case would serialize the EE with the GS every frame.
+    // is captured in order by the workers (see Present); waiting for the
+    // rasterizer in either case would serialize the EE with the GS.
     if (reason == GSSyncReason::Finish || reason == GSSyncReason::Presentation)
         return;
     drain();
-    m_inner->Sync(reason);
+    m_workers[0]->backend->Sync(reason);
 }
 
 PresentationFrame GSThreadedBackend::Present(const GSPresentationRequest &request)
 {
-    // Capture the display buffer at this point of the command stream on the
-    // worker, and hand back the most recently completed capture (at most one
-    // vblank behind) instead of stalling the EE until the GS catches up.
     Command command;
     command.type = CommandType::Present;
     command.presentRequest = request;
     enqueue(std::move(command));
+    m_dirtyTargets.clear();
+    m_readSources.clear();
     std::lock_guard<std::mutex> lock(m_presentMutex);
     return m_lastPresented;
 }
@@ -181,36 +478,44 @@ PresentationFrame GSThreadedBackend::Present(const GSPresentationRequest &reques
 bool GSThreadedBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 {
     drain();
-    return m_inner->ClearFramebuffer(context, rgba);
+    GSRasterBackend &backend = *m_workers[0]->backend;
+    backend.SetRowBand(0u, 1u);
+    const bool cleared = backend.ClearFramebuffer(context, rgba);
+    backend.SetRowBand(0u, static_cast<uint32_t>(m_workers.size()));
+    for (auto &worker : m_workers)
+        worker->backend->TextureFlush();
+    return cleared;
 }
 
 uint32_t GSThreadedBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
     drain();
-    return m_inner->ConsumeLocalToHostBytes(dst, maxBytes);
+    return m_workers[0]->backend->ConsumeLocalToHostBytes(dst, maxBytes);
 }
 
 uint32_t GSThreadedBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
 {
     drain();
-    return m_inner->ReadVram(psm, base, bw, x, y);
+    return m_workers[0]->backend->ReadVram(psm, base, bw, x, y);
 }
 
 void GSThreadedBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
 {
     drain();
-    m_inner->WriteVram(psm, base, bw, x, y, value);
+    m_workers[0]->backend->WriteVram(psm, base, bw, x, y, value);
+    for (auto &worker : m_workers)
+        worker->backend->TextureFlush();
 }
 
 void GSThreadedBackend::SnapshotVram(std::vector<uint8_t> &out) const
 {
     drain();
-    m_inner->SnapshotVram(out);
+    m_workers[0]->backend->SnapshotVram(out);
 }
 
 GSTransferSnapshot GSThreadedBackend::GetTransferSnapshot() const
 {
-    // Debug bookkeeping only; reading the inner backend's (mutex-guarded)
-    // transfer state without draining keeps uploads asynchronous.
-    return m_inner->GetTransferSnapshot();
+    // Debug bookkeeping only; reading worker 0's (mutex-guarded) transfer
+    // state without draining keeps uploads asynchronous.
+    return m_workers[0]->backend->GetTransferSnapshot();
 }
