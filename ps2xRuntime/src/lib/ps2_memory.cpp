@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+std::vector<uint8_t> &vif1StreamCarry(const PS2Memory *memory);
+
 namespace
 {
     inline void inRange(uint32_t offset, size_t bytes, size_t regionSize, const char *op, uint32_t address)
@@ -201,13 +203,26 @@ namespace
         uint32_t upper = 0;
     };
 
+    // DMA addresses (tag ADDR, MADR, TADR) select scratchpad with bit 31 (SPR) and
+    // carry only the 16KB scratchpad offset; map them onto the 0x70000000 window the
+    // rest of the runtime uses. Masking bit 31 off instead turns scratchpad sources
+    // (e.g. RenderWare's per-object matrices) into reads of low main RAM.
+    inline uint32_t normalizeDmaAddress(uint32_t address)
+    {
+        if ((address & 0x80000000u) != 0u && (address & 0x7FFFFFFFu) < PS2_SCRATCHPAD_SIZE)
+        {
+            return PS2_SCRATCHPAD_BASE | (address & 0x7FFFFFFFu);
+        }
+        return address & 0x7FFFFFFFu;
+    }
+
     inline DmaTagView decodeDmaTag(uint64_t tag)
     {
         DmaTagView out{};
         out.qwc = static_cast<uint16_t>(tag & 0xFFFFu);
         out.id = static_cast<uint8_t>((tag >> 28u) & 0x7u);
         out.irq = ((tag >> 31u) & 0x1ull) != 0ull;
-        out.addr = static_cast<uint32_t>((tag >> 32u) & 0x7FFFFFFFu);
+        out.addr = normalizeDmaAddress(static_cast<uint32_t>(tag >> 32u));
         out.upper = static_cast<uint32_t>((tag >> 16u) & 0xFFFFu);
         return out;
     }
@@ -1229,6 +1244,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             {
                 const bool wasPath3Masked = m_path3Masked;
                 std::memset(&vif1_regs, 0, sizeof(vif1_regs));
+                vif1StreamCarry(this).clear(); // drop any partially received command
                 m_vif1PendingPath2ImageQwc = 0u;
                 m_vif1PendingPath2DirectHl = false;
                 m_path3Masked = false;
@@ -1302,7 +1318,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             }
 
             const uint32_t channelBase = address & 0xFFFFFF00;
-            const uint32_t madr = m_ioRegisters[channelBase + 0x10];
+            const uint32_t madr = normalizeDmaAddress(m_ioRegisters[channelBase + 0x10]);
             const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
 
@@ -1339,7 +1355,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 }
                 else if (mode == 1)
                 {
-                    uint32_t tagAddr = m_ioRegisters[channelBase + 0x30];
+                    uint32_t tagAddr = normalizeDmaAddress(m_ioRegisters[channelBase + 0x30]);
                     uint32_t asr0 = m_ioRegisters[channelBase + 0x40];
                     uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
                     uint32_t asp = (chcr >> 4) & 0x3u;
@@ -1438,7 +1454,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         uint16_t tagQwc = static_cast<uint16_t>(tag & 0xFFFF);
                         uint32_t id = static_cast<uint32_t>((tag >> 28) & 0x7);
                         const bool irq = ((tag >> 31) & 0x1ull) != 0ull;
-                        uint32_t addr = static_cast<uint32_t>((tag >> 32) & 0x7FFFFFFF);
+                        uint32_t addr = normalizeDmaAddress(static_cast<uint32_t>(tag >> 32));
                         lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
                         ++tagsProcessed;
 

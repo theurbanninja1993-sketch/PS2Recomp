@@ -27,6 +27,9 @@
 #include <unordered_map>
 #include <sstream>
 
+static void ps2Vu1TraceMscal(const uint8_t *vu1Data, uint32_t startPC, uint32_t top, uint32_t itop);
+extern std::atomic<int32_t> g_ps2Vu1TraceRemaining;
+
 namespace ps2_stubs
 {
     void resetSifState();
@@ -676,6 +679,20 @@ bool PS2Runtime::syncCoreSubsystems()
     m_memory.setGifArbiter(&m_gifArbiter);
     m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
                                  {
+                                     ps2Vu1TraceMscal(m_memory.getVU1Data(), startPC, top, itop);
+                                     if (const char *dumpDir = std::getenv("PS2X_VU1_DUMP_DIR"))
+                                     {
+                                         static bool s_codeDumped = false;
+                                         if (!s_codeDumped && g_ps2Vu1TraceRemaining.load() > 0)
+                                         {
+                                             s_codeDumped = true;
+                                             if (FILE *f = std::fopen((std::string(dumpDir) + "/vu1code.bin").c_str(), "wb"))
+                                             {
+                                                 std::fwrite(m_memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, f);
+                                                 std::fclose(f);
+                                             }
+                                         }
+                                     }
                                      R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
                                      if (!cpuContext)
                                      {
@@ -1140,6 +1157,65 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
 }
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
+// PS2X_VU1_TRACE=<frame>[,<count>]: from that presented frame on, log <count> (default 8)
+// VU1 microprogram starts with the input buffer at TOP, plus the GIF packets they XGKICK.
+std::atomic<int32_t> g_ps2Vu1TraceRemaining{0};
+std::atomic<int32_t> g_ps2Vu1TraceKicksRemaining{0};
+
+static void ps2Vu1TraceMscal(const uint8_t *vu1Data, uint32_t startPC, uint32_t top, uint32_t itop)
+{
+    static const char *s_env = std::getenv("PS2X_VU1_TRACE");
+    if (!s_env)
+    {
+        return;
+    }
+    static const uint64_t s_frame = std::strtoull(s_env, nullptr, 10);
+    static const int32_t s_count = []() -> int32_t
+    {
+        const char *comma = std::strchr(std::getenv("PS2X_VU1_TRACE"), ',');
+        return comma ? static_cast<int32_t>(std::strtol(comma + 1, nullptr, 10)) : 8;
+    }();
+    static bool s_armed = false;
+    if (!s_armed)
+    {
+        if (g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) < s_frame)
+        {
+            return;
+        }
+        s_armed = true;
+        g_ps2Vu1TraceRemaining.store(s_count, std::memory_order_relaxed);
+        g_ps2Vu1TraceKicksRemaining.store(s_count * 3, std::memory_order_relaxed);
+    }
+    if (g_ps2Vu1TraceRemaining.load(std::memory_order_relaxed) <= 0)
+    {
+        return;
+    }
+    const int32_t traceIndex = g_ps2Vu1TraceRemaining.fetch_sub(1, std::memory_order_relaxed);
+    if (const char *dumpDir = std::getenv("PS2X_VU1_DUMP_DIR"))
+    {
+        // Dump VU1 data memory at each traced MSCAL (before the program runs).
+        const std::string path = std::string(dumpDir) + "/vu1data_" + std::to_string(traceIndex) +
+                                 "_pc" + std::to_string(startPC) + ".bin";
+        if (FILE *f = std::fopen(path.c_str(), "wb"))
+        {
+            std::fwrite(vu1Data, 1, PS2_VU1_DATA_SIZE, f);
+            std::fclose(f);
+        }
+    }
+    std::ostringstream out;
+    out << "[vu1:mscal] pc=0x" << std::hex << startPC << " top=0x" << top << " itop=0x" << itop << " in@top:";
+    for (uint32_t q = 0; q < 6u; ++q)
+    {
+        const uint32_t off = ((top + q) & 0x3FFu) * 16u;
+        uint32_t w[4];
+        std::memcpy(w, vu1Data + off, 16u);
+        out << " [" << w[0] << " " << w[1] << " " << w[2] << " " << w[3] << "]";
+    }
+    std::cerr << out.str() << std::dec << std::endl;
+}
+
+
 
 uint32_t g_ps2WriteWatchAddr = []() -> uint32_t
 {

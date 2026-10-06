@@ -1240,14 +1240,16 @@ namespace
 
     uint32_t toDmaPhys(uint32_t addr)
     {
-        if ((addr & 0x80000000u) != 0)
+        const uint32_t lower = addr & 0x7FFFFFFFu;
+        // Scratchpad: either its 0x70000000 window, or the DMA encoding of bit 31 (SPR)
+        // plus a 16KB offset. Keep it in the 0x70000000 window the DMA engine expects.
+        if (lower >= PS2_SCRATCHPAD_BASE && lower < PS2_SCRATCHPAD_BASE + PS2_SCRATCHPAD_SIZE)
         {
-            uint32_t lower = addr & 0x7FFFFFFFu;
-            if (lower >= PS2_SCRATCHPAD_BASE &&
-                lower < PS2_SCRATCHPAD_BASE + PS2_SCRATCHPAD_SIZE)
-            {
-                return lower;
-            }
+            return lower;
+        }
+        if ((addr & 0x80000000u) != 0u && lower < PS2_SCRATCHPAD_SIZE)
+        {
+            return PS2_SCRATCHPAD_BASE | lower;
         }
         return addr & 0x1FFFFFFFu;
     }

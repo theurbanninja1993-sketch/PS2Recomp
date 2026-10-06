@@ -1,3 +1,6 @@
+#include <iostream>
+#include <atomic>
+#include <sstream>
 #include "runtime/ps2_vu1.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/gs/gs_frontend.h"
@@ -914,11 +917,29 @@ void VU1Interpreter::progressXgkick()
     }
 }
 
+extern std::atomic<int32_t> g_ps2Vu1TraceRemaining;
+extern std::atomic<int32_t> g_ps2Vu1TraceKicksRemaining;
+
 void VU1Interpreter::finishXgkick()
 {
     if (!m_xgkick.active)
         return;
 
+    if (g_ps2Vu1TraceKicksRemaining.load(std::memory_order_relaxed) > 0)
+    {
+        if (g_ps2Vu1TraceKicksRemaining.fetch_sub(1, std::memory_order_relaxed) > 0)
+        {
+            std::ostringstream out;
+            out << "[vu1:xgkick] src=0x" << std::hex << m_xgkick.sourceAddress << " bytes=" << std::dec << m_xgkick.totalBytes << std::hex << " :";
+            for (uint32_t q = 0; q < 6u && q * 16u < m_xgkick.totalBytes; ++q)
+            {
+                uint32_t w[4];
+                std::memcpy(w, m_xgkick.packet.data() + q * 16u, 16u);
+                out << " [" << w[0] << " " << w[1] << " " << w[2] << " " << w[3] << "]";
+            }
+            std::cerr << out.str() << std::dec << std::endl;
+        }
+    }
     if (m_activeMemory)
         m_activeMemory->submitGifPacket(GifPathId::Path1, m_xgkick.packet.data(), m_xgkick.totalBytes);
     else if (m_activeGs)
