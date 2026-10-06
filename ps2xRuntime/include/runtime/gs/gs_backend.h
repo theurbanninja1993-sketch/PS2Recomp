@@ -31,4 +31,8 @@ public:
     virtual void WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value) = 0;
     virtual void SnapshotVram(std::vector<uint8_t> &out) const = 0;
     virtual GSTransferSnapshot GetTransferSnapshot() const = 0;
+
+    // Restrict drawing to the 8-row strips with (y / 8) % count == index, for
+    // banded multi-threaded rasterization. Transfers and clears are unaffected.
+    virtual void SetRowBand(uint32_t index, uint32_t count) { (void)index; (void)count; }
 };
