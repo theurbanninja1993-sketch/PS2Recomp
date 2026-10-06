@@ -26,6 +26,7 @@ namespace ps2x::iop::detail
     void IopKernel::reset()
     {
         m_threads.clear();
+        rebuildThreadOrder();
         m_semaphores.clear();
         m_eventFlags.clear();
         m_nextThreadId = 1;
@@ -62,6 +63,7 @@ namespace ps2x::iop::detail
             }
             const int id = thread.id;
             m_threads.emplace(id, std::move(thread));
+            rebuildThreadOrder();
             setV0(id);
             return true;
         }
@@ -77,6 +79,7 @@ namespace ps2x::iop::detail
             if (it->second.stackBase != 0u)
                 (void)m_memory.freeAllocation(it->second.stackBase);
             m_threads.erase(it);
+            rebuildThreadOrder();
             setV0(0);
             return true;
         }
@@ -107,6 +110,7 @@ namespace ps2x::iop::detail
             if (m_currentThread != nullptr)
             {
                 m_currentThread->state = ordinal == 9 ? IopThreadState::Dead : IopThreadState::Dormant;
+                m_hasDeadThreads = m_hasDeadThreads || ordinal == 9;
                 cpu.stopped = true;
                 cpu.yielded = true;
             }
@@ -669,17 +673,21 @@ namespace ps2x::iop::detail
         cpu.yielded = true;
     }
 
+    void IopKernel::rebuildThreadOrder()
+    {
+        m_threadOrder.clear();
+        for (auto &[id, thread] : m_threads)
+            m_threadOrder.push_back(&thread);
+    }
+
     IopThread *IopKernel::beginNextReady(uint64_t currentCycle)
     {
-        for (auto &[id, thread] : m_threads)
+        IopThread *next = nullptr;
+        for (IopThread *threadPtr : m_threadOrder)
         {
+            IopThread &thread = *threadPtr;
             if (thread.state == IopThreadState::Delay && thread.wakeCycle <= currentCycle)
                 thread.state = IopThreadState::Ready;
-        }
-
-        IopThread *next = nullptr;
-        for (auto &[id, thread] : m_threads)
-        {
             if (thread.state != IopThreadState::Ready)
                 continue;
             if (next == nullptr || thread.priority < next->priority ||
@@ -699,10 +707,10 @@ namespace ps2x::iop::detail
     uint64_t IopKernel::nextWakeCycle(uint64_t fallback) const
     {
         uint64_t nextWake = fallback;
-        for (const auto &[id, thread] : m_threads)
+        for (const IopThread *thread : m_threadOrder)
         {
-            if (thread.state == IopThreadState::Delay)
-                nextWake = std::min(nextWake, thread.wakeCycle);
+            if (thread->state == IopThreadState::Delay)
+                nextWake = std::min(nextWake, thread->wakeCycle);
         }
         return nextWake;
     }
@@ -719,6 +727,9 @@ namespace ps2x::iop::detail
 
     void IopKernel::cleanupDeadThreads()
     {
+        if (!m_hasDeadThreads)
+            return;
+        m_hasDeadThreads = false;
         for (auto thread = m_threads.begin(); thread != m_threads.end();)
         {
             if (thread->second.state != IopThreadState::Dead)
@@ -730,6 +741,7 @@ namespace ps2x::iop::detail
                 (void)m_memory.freeAllocation(thread->second.stackBase);
             thread = m_threads.erase(thread);
         }
+        rebuildThreadOrder();
     }
 
     void IopKernel::terminateThreadsInRange(uint32_t base, uint32_t size)
@@ -738,7 +750,10 @@ namespace ps2x::iop::detail
         {
             const uint32_t pc = IopMemory::physicalAddress(thread.cpu.pc);
             if (pc >= base && pc < base + size)
+            {
                 thread.state = IopThreadState::Dead;
+                m_hasDeadThreads = true;
+            }
         }
     }
 }

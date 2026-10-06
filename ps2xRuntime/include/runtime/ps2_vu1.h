@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 
 class GS;
 class PS2Memory;
@@ -290,7 +291,35 @@ private:
     void markPairWrites(const DecodedInstructionPair &decoded);
     bool pipelinesPending() const;
 
-    float normalizeOperand(float value) const;
+    // PS2 operands: denormals read as signed zero, Inf/NaN as signed FLT_MAX.
+
+    float normalizeOperand(float value) const
+
+    {
+
+        uint32_t bits = 0;
+
+        std::memcpy(&bits, &value, sizeof(bits));
+
+        const uint32_t exponent = (bits >> 23) & 0xFFu;
+
+        if (exponent == 0u)
+
+            bits &= 0x80000000u;
+
+        else if (exponent == 0xFFu)
+
+            bits = (bits & 0x80000000u) | 0x7F7FFFFFu;
+
+        else
+
+            return value;
+
+        std::memcpy(&value, &bits, sizeof(value));
+
+        return value;
+
+    }
     float normalizeResult(float value, uint32_t &laneFlags) const;
     uint32_t microAddressMask() const;
     int32_t readBranchVi(uint8_t reg) const;
