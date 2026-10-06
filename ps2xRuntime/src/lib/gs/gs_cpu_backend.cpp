@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/ps2_gs_common.h"
 #include "runtime/gs/ps2_gs_psmct16.h"
@@ -708,13 +709,49 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
     return result;
 }
 
+// Presented-frame counter published by the host present loop; PS2X_GS_TRACE_FRAME=<n>
+// logs every primitive drawn while frame n is current (debug aid).
+std::atomic<uint64_t> g_ps2PresentedFrameCounter{0};
+
+static std::atomic<uint64_t> s_gsTraceLockedFrame{0};
+
+// Arms on the first frame >= PS2X_GS_TRACE_FRAME with GS activity (or, if
+// PS2X_GS_TRACE_FBP is set, the first draw into that frame buffer page), then
+// traces PS2X_GS_TRACE_FRAMES consecutive presented frames.
+static bool ps2GsFrameTraceActive(int32_t drawFbp = -1)
+{
+    static const char *s_frameEnv = std::getenv("PS2X_GS_TRACE_FRAME");
+    static const char *s_fbpEnv = std::getenv("PS2X_GS_TRACE_FBP");
+    if (!s_frameEnv && !s_fbpEnv)
+    {
+        return false;
+    }
+    static const uint64_t s_traceFrame = s_frameEnv ? std::strtoull(s_frameEnv, nullptr, 10) : 0u;
+    static const int64_t s_traceFbp = s_fbpEnv ? std::strtoll(s_fbpEnv, nullptr, 10) : -1;
+    static const uint64_t s_traceCount = []() -> uint64_t
+    {
+        const char *env = std::getenv("PS2X_GS_TRACE_FRAMES");
+        return env ? std::max<uint64_t>(1u, std::strtoull(env, nullptr, 10)) : 1u;
+    }();
+    const uint64_t current = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+    uint64_t locked = s_gsTraceLockedFrame.load(std::memory_order_relaxed);
+    if (locked == 0u && current >= s_traceFrame && (s_traceFbp < 0 || s_traceFbp == drawFbp))
+    {
+        if (s_gsTraceLockedFrame.compare_exchange_strong(locked, current))
+        {
+            locked = current;
+        }
+    }
+    return locked != 0u && current >= locked && current < locked + s_traceCount;
+}
+
 void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
 {
     const GSDrawState &state = batch.state;
     const auto &ctx = state.context;
     PS2_IF_AGRESSIVE_LOGS({
         const uint32_t primitiveIndex = s_debugPrimitiveCount.fetch_add(1u, std::memory_order_relaxed);
-        if (primitiveIndex < 64u)
+        if (primitiveIndex < 64u || ps2GsFrameTraceActive(static_cast<int32_t>(ctx.frame.fbp)))
         {
             std::cout << "[gs:prim] idx=" << primitiveIndex
                       << " type=" << static_cast<uint32_t>(state.prim.type)
@@ -751,6 +788,10 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
                       << "," << ctx.scissor.y1 << ")"
                       << " test=0x" << std::hex << ctx.test
                       << " alpha=0x" << ctx.alpha
+                      << " fbmsk=0x" << ctx.frame.fbmsk
+                      << " pabe=" << static_cast<uint32_t>(state.pabe)
+                      << " fba=" << static_cast<uint32_t>(ctx.fba)
+                      << " texa=(" << static_cast<uint32_t>(state.texa.ta0) << "," << static_cast<uint32_t>(state.texa.aem) << "," << static_cast<uint32_t>(state.texa.ta1) << ")"
                       << std::dec
                       << " v0=(" << batch.vertices[0].x << "," << batch.vertices[0].y << ")"
                       << " uv0=(" << (batch.vertices[0].u >> 4) << "," << (batch.vertices[0].v >> 4) << ")"
@@ -1462,6 +1503,19 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
 
 void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
 {
+    PS2_IF_AGRESSIVE_LOGS({
+        if (ps2GsFrameTraceActive())
+        {
+            std::cout << "[gs:xfer] dir=" << static_cast<uint32_t>(command.direction)
+                      << " sbp=" << command.bitbltbuf.sbp << " sbw=" << static_cast<uint32_t>(command.bitbltbuf.sbw)
+                      << " spsm=0x" << std::hex << static_cast<uint32_t>(command.bitbltbuf.spsm) << std::dec
+                      << " dbp=" << command.bitbltbuf.dbp << " dbw=" << static_cast<uint32_t>(command.bitbltbuf.dbw)
+                      << " dpsm=0x" << std::hex << static_cast<uint32_t>(command.bitbltbuf.dpsm) << std::dec
+                      << " src=(" << command.trxpos.ssax << "," << command.trxpos.ssay << ")"
+                      << " dst=(" << command.trxpos.dsax << "," << command.trxpos.dsay << ")"
+                      << " size=" << command.trxreg.rrw << "x" << command.trxreg.rrh << std::endl;
+        }
+    });
     std::lock_guard<std::mutex> lock(m_mutex);
     m_transfer = command;
     m_transferState.x = command.trxpos.dsax;

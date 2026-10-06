@@ -1139,6 +1139,8 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
     }
 }
 
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
 uint32_t g_ps2WriteWatchAddr = []() -> uint32_t
 {
     const char *env = std::getenv("PS2X_WATCH_WRITE");
@@ -1452,6 +1454,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
+    const uint32_t entrySp = static_cast<uint32_t>(_mm_extract_epi32(ctx->r[29], 0));
     targetFn(rdram, ctx, this);
 
     if (isStopRequested() || ctx->pc == 0u)
@@ -1459,7 +1462,13 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         return false;
     }
 
-    if (ctx->pc == entryPc)
+    // Handlers bound straight into the function table may return without touching
+    // pc; treat that as a completed call. Only when $sp is unchanged, though: in
+    // recursion a deeper call to this same target can stop at a scheduler safe point
+    // with pc == target, leaving its callers' frames live on the guest stack. Taking
+    // that for a return resumes the caller one or more frames too deep.
+    if (ctx->pc == entryPc &&
+        static_cast<uint32_t>(_mm_extract_epi32(ctx->r[29], 0)) == entrySp)
     {
         ctx->pc = fallthroughPc;
     }
@@ -2503,9 +2512,11 @@ void PS2Runtime::run()
         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
         const float screenWidth = static_cast<float>(GetScreenWidth());
         const float screenHeight = static_cast<float>(GetScreenHeight());
-        const float scale = std::min(screenWidth / srcWidth, screenHeight / srcHeight);
-        const float dstWidth = srcWidth * scale;
-        const float dstHeight = srcHeight * scale;
+        // A PS2 picture is always shown at 4:3, whatever its pixel dimensions (field-mode
+        // games present 640x224/240 per field, frame-mode ones 640x448/480).
+        constexpr float kDisplayAspect = 4.0f / 3.0f;
+        const float dstWidth = std::min(screenWidth, screenHeight * kDisplayAspect);
+        const float dstHeight = dstWidth / kDisplayAspect;
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,
@@ -2528,10 +2539,18 @@ void PS2Runtime::run()
                 return env ? std::strtoull(env, nullptr, 10) : 0u;
             }();
             static uint64_t s_presentedFrames = 0;
-            if (s_shotEvery != 0u && (++s_presentedFrames % s_shotEvery) == 0u)
+            ++s_presentedFrames;
+            g_ps2PresentedFrameCounter.store(s_presentedFrames, std::memory_order_relaxed);
+            PS2_IF_AGRESSIVE_LOGS({
+                static const bool s_traceOn = std::getenv("PS2X_GS_TRACE_FRAME") != nullptr;
+                if (s_traceOn)
+                    std::cout << "[gs:frame] " << s_presentedFrames << " vsync=" << m_eeScheduler->currentVSyncTick() << std::endl;
+            });
+            if (s_shotEvery != 0u && (s_presentedFrames % s_shotEvery) == 0u)
             {
                 Image shot = LoadImageFromTexture(frameTex);
                 ImageCrop(&shot, Rectangle{0.0f, 0.0f, srcWidth, srcHeight});
+                ImageResize(&shot, 640, 480); // 4:3 display aspect, like the window
                 char shotPath[64];
                 std::snprintf(shotPath, sizeof(shotPath), "frame_%06llu.png",
                               static_cast<unsigned long long>(s_presentedFrames));
