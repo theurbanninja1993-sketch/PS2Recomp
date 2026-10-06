@@ -1867,6 +1867,10 @@ void EeScheduler::processEvent(const EeEvent &event)
         requestStop();
         break;
     case EeEventType::VBlankStart:
+        // Latch the displayed frame here, on the executor thread: GIF/DMA packets are
+        // processed synchronously on this thread, so the snapshot never catches the
+        // game midway through copying its final image into the display buffer.
+        m_runtime.gs().latchHostPresentationFrame();
         ++m_vsyncTick;
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
         if ((m_vsyncTick & 1u) != 0u)
