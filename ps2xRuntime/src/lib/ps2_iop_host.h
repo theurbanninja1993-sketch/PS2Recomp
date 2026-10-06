@@ -71,6 +71,7 @@ public:
                       size_t size,
                       size_t &bytesRead) override;
     void closeHostFile(uint64_t handle) override;
+    bool readCdSectors(uint32_t lsn, uint32_t sectors, void *destination) override;
 
     int32_t memoryCard(const ps2x::iop::MemoryCardRequest &request) override;
 

@@ -79,6 +79,13 @@ if(PS2X_IS_ARM_TARGET)
     endif()
 endif()
 
+# x86-64 with GCC/Clang: the runtime uses SSE4.1 intrinsics (e.g. _mm_extract_epi32/64,
+# _mm_blendv_epi8). MSVC exposes these by default, but GCC/Clang require an explicit flag.
+if(NOT PS2X_IS_ARM_TARGET AND NOT MSVC AND (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86"))
+    message(STATUS "x86-64 GCC/Clang - enabling SSE4.1 compiler flags")
+    add_compile_options(-msse4.1)
+endif()
+
 if(PS2X_BUILD_RECOMP)
     add_subdirectory("ps2xRecomp")
 endif()

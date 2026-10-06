@@ -61,11 +61,10 @@ namespace ps2recomp
                     continue;
                 }
 
-                if (candidateFn.name.rfind("entry_", 0) == 0)
-                {
-                    continue;
-                }
-
+                // entry_ functions must be allowed to own external branch
+                // targets: cross-chunk direct branches (beq/bne/j) into an
+                // entry_ chunk's middle need a case + table registration,
+                // otherwise the target is silently dropped.
                 if (address < candidateFn.start || address >= candidateFn.end)
                 {
                     continue;

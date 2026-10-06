@@ -81,4 +81,9 @@ namespace ps2_stubs
     void sceCdStStop(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdSyncS(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdTrayReq(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+
+    // Reads sectors through the same LBN registry EE-side sceCdSearchFile/sceCdRead
+    // use. Lets emulated IOP drivers (e.g. a game's own stream IRX) read files at
+    // the LSNs the EE was given.
+    bool readRegisteredCdSectors(uint32_t lbn, uint32_t sectors, uint8_t *dst);
 }

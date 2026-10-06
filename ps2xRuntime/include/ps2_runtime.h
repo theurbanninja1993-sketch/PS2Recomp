@@ -255,6 +255,9 @@ inline void ps2TraceGuestWrite(uint8_t *rdram,
     // TODO we dont need this anymore so on next release it will be deleted
 }
 
+extern uint32_t g_ps2WriteWatchAddr;
+void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op);
+
 inline void ps2TraceGuestRangeWrite(uint8_t *rdram,
                                     uint32_t guestAddr,
                                     uint32_t size,
@@ -262,11 +265,11 @@ inline void ps2TraceGuestRangeWrite(uint8_t *rdram,
                                     const R5900Context *ctx)
 {
     (void)rdram;
-    (void)guestAddr;
-    (void)size;
-    (void)op;
-    (void)ctx;
-    // TODO we dont need this anymore so on next release it will be deleted
+    // Host-side (HLE) bulk writes into guest memory; see PS2X_WATCH_WRITE.
+    if (g_ps2WriteWatchAddr != 0u && (g_ps2WriteWatchAddr - (guestAddr & PS2_RAM_MASK)) < size)
+    {
+        ps2ReportWatchedWrite(guestAddr, size, 0u, ctx, op);
+    }
 }
 
 class PS2Runtime

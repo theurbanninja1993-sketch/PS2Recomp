@@ -280,6 +280,16 @@ namespace ps2x::iop::detail
                 cpu.gpr[2] = kCdvdReadyComplete;
                 return true;
 
+            case 14: // sceCdTrayReq(int mode, u32 *traycnt)
+                // The disc is never swapped: report "no tray change" for
+                // SCECdTrayCheck and accept open/close requests.
+                if (a1 != 0u)
+                {
+                    memory.write32(a1, 0u);
+                }
+                cpu.gpr[2] = 1u;
+                return true;
+
             case 28: // sceCdStatus
                 cpu.gpr[2] = kCdvdStatusPause;
                 return true;
@@ -667,8 +677,8 @@ namespace ps2x::iop::detail
             const size_t byteCount = static_cast<size_t>(byteCount64);
             std::vector<uint8_t> bytes(byteCount, 0u);
 
-            bool read = false;
-            const std::string imagePath = host.hostPath(HostPathKind::CdImage);
+            bool read = host.readCdSectors(lsn, sectors, bytes.data());
+            const std::string imagePath = read ? std::string{} : host.hostPath(HostPathKind::CdImage);
             if (!imagePath.empty())
             {
                 if (imageHandle == 0u)

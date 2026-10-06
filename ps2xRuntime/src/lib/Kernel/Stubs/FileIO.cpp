@@ -5,27 +5,32 @@ namespace ps2_stubs
 {
     void sceFsDbChk(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceFsDbChk", rdram, ctx, runtime);
+        // stdio semaphore helper; file I/O is HLE with host-side locking.
+        setReturnS32(ctx, 0);
     }
 
     void sceFsIntrSigSema(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceFsIntrSigSema", rdram, ctx, runtime);
+        // stdio semaphore helper; file I/O is HLE with host-side locking.
+        setReturnS32(ctx, 0);
     }
 
     void sceFsSemExit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceFsSemExit", rdram, ctx, runtime);
+        // stdio semaphore helper; file I/O is HLE with host-side locking.
+        setReturnS32(ctx, 0);
     }
 
     void sceFsSemInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceFsSemInit", rdram, ctx, runtime);
+        // stdio semaphore helper; file I/O is HLE with host-side locking.
+        setReturnS32(ctx, 0);
     }
 
     void sceFsSigSema(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceFsSigSema", rdram, ctx, runtime);
+        // stdio semaphore helper; file I/O is HLE with host-side locking.
+        setReturnS32(ctx, 0);
     }
 
     void close(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

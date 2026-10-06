@@ -1,10 +1,13 @@
 #include "game_overrides.h"
 #include "ps2_runtime.h"
+#include "ps2_runtime_macros.h"
 #include "ps2_runtime_calls.h"
 #include "ps2_stubs.h"
+#include "Kernel/Stubs/MPEG.h"
 #include "ps2_syscalls.h"
 #include "ps2_log.h"
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <filesystem>
 #include <iostream>
@@ -181,3 +184,140 @@ namespace ps2_game_overrides
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Grand Theft Auto: Vice City Stories (NTSC-U, SLUS_215.90)
+//
+// Lives in this TU (rather than its own file) so the static registration is
+// never dropped when ps2_runtime is linked as a static archive.
+// ---------------------------------------------------------------------------
+namespace
+{
+    uint32_t vcsRead32(const uint8_t *rdram, uint32_t addr)
+    {
+        uint32_t v = 0u;
+        std::memcpy(&v, rdram + (addr & PS2_RAM_MASK), sizeof(v));
+        return v;
+    }
+
+    uint64_t vcsRead64(const uint8_t *rdram, uint32_t addr)
+    {
+        uint64_t v = 0u;
+        std::memcpy(&v, rdram + (addr & PS2_RAM_MASK), sizeof(v));
+        return v;
+    }
+
+    void vcsWrite32(uint8_t *rdram, uint32_t addr, uint32_t v)
+    {
+        std::memcpy(rdram + (addr & PS2_RAM_MASK), &v, sizeof(v));
+    }
+
+    void vcsWrite64(uint8_t *rdram, uint32_t addr, uint64_t v)
+    {
+        std::memcpy(rdram + (addr & PS2_RAM_MASK), &v, sizeof(v));
+    }
+
+    // Exact libpkt semantics, translated from the game's own code. The generic
+    // runtime stubs also rewrite the open DMA tag's QWC on every pointer move,
+    // but this game closes DMA tags natively (0x448AB8: qwc += (cur-tag)/16 - 1),
+    // so the generic stubs double-count and corrupt every GIF chain (e.g. the
+    // movie's per-macroblock texture uploads).
+    //
+    // void sceGifPkAddGsAD(sceGifPacket *pkt, u_int addr, u_long data)
+    void vcsGifPkAddGsAD(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t pkt = getRegU32(ctx, 4);
+        const uint32_t cur = vcsRead32(rdram, pkt);
+        vcsWrite64(rdram, cur, GPR_U64(ctx, 6));
+        vcsWrite64(rdram, cur + 8u, static_cast<uint64_t>(getRegU32(ctx, 5)));
+        vcsWrite32(rdram, pkt, cur + 16u);
+        ctx->pc = getRegU32(ctx, 31);
+    }
+
+    // void sceGifPkCloseGifTag(sceGifPacket *pkt)
+    void vcsGifPkCloseGifTag(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t pkt = getRegU32(ctx, 4);
+        const uint32_t tagAddr = vcsRead32(rdram, pkt + 12u);
+        uint32_t cur = vcsRead32(rdram, pkt);
+        if (tagAddr != 0u)
+        {
+            uint64_t tag = vcsRead64(rdram, tagAddr);
+            uint32_t count = static_cast<uint32_t>(static_cast<int32_t>(cur - tagAddr) >> 3) - 2u;
+            const uint32_t flg = static_cast<uint32_t>(tag >> 58) & 3u;
+            if (flg != 1u)
+            {
+                count >>= 1u; // PACKED/IMAGE count qwords, REGLIST counts dwords
+            }
+            if (flg != 2u)
+            {
+                uint32_t nreg = static_cast<uint32_t>(tag >> 60);
+                if (nreg == 0u)
+                {
+                    nreg = 16u;
+                }
+                count = (count + nreg - 1u) / nreg;
+            }
+            vcsWrite32(rdram, pkt + 12u, 0u);
+            vcsWrite64(rdram, tagAddr, tag + count);
+        }
+        while ((cur & 0xCu) != 0u)
+        {
+            vcsWrite32(rdram, cur, 0u);
+            cur += 4u;
+        }
+        vcsWrite32(rdram, pkt, cur);
+        ctx->pc = getRegU32(ctx, 31);
+    }
+
+    // Movie player end-of-stream (0x31A5D0). The game streams exactly the PSS file's
+    // byte size, skips its trailing program_end, and instead retries writing
+    // 00 00 01 B7 into libmpeg's video ES ring until the IPU has drained room for it.
+    // The HLE decoder never reads that ring (so it never drains), and doesn't need the
+    // end code there: report it queued and finish the HLE playback instead. Without
+    // this the player deadlocks after every movie.
+    void vcsMoviePushEndCode(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        ps2_stubs::notifyMpegCdStreamEof(runtime);
+        setReturnS32(ctx, 1);
+        ctx->pc = getRegU32(ctx, 31);
+    }
+
+    // Movie player "finished?" (0x31A6A8: PSS ring drained && sceMpegIsEnd). The HLE
+    // demuxer accepts data faster than the IPU would, so when the main loop stops
+    // presenting, a few decoded fade-out pictures can still be owed to the decoder
+    // thread, which then waits forever for a display slot nobody frees. Report done
+    // once the HLE stream itself has ended; the undelivered tail frames are dropped.
+    PS2Runtime::RecompiledFunction g_vcsOrigMovieFinished = nullptr;
+    void vcsMovieFinished(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t player = getRegU32(ctx, 4);
+        g_vcsOrigMovieFinished(rdram, ctx, runtime);
+        if (getRegU32(ctx, 2) == 0u && ps2_stubs::isMpegStreamFinished(player))
+        {
+            setReturnS32(ctx, 1);
+        }
+    }
+
+    void applyGtaVcsUs(PS2Runtime &runtime)
+    {
+        g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
+        runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);
+
+        runtime.replaceFunction(0x0031A5D0u, &vcsMoviePushEndCode);
+
+        runtime.replaceFunction(0x00448D70u, &vcsGifPkAddGsAD);
+        runtime.replaceFunction(0x00448CC8u, &vcsGifPkCloseGifTag);
+
+        // libcdvd sceCdLayerSearchFile/sceCdSearchFile (one function in this
+        // build). Natively it binds the CDVDFSV search RPC (sid 0x80000597),
+        // which no IOP module provides, so the game spins in sceSifBindRpc.
+        ps2_game_overrides::bindAddressHandler(runtime, 0x0044E180u, "sceCdSearchFile");
+
+        // libmpeg sceMpegIsEnd (`return mpeg->sys->active == 0`): the HLE decoder never
+        // updates that internal field, so route it to the HLE end-of-stream check.
+        ps2_game_overrides::bindAddressHandler(runtime, 0x00452F68u, "sceMpegIsEnd");
+    }
+}
+
+PS2_REGISTER_GAME_OVERRIDE("GTA Vice City Stories (SLUS_215.90)", "SLUS_215.90", 0x001DD6A0u, 0u, &applyGtaVcsUs)

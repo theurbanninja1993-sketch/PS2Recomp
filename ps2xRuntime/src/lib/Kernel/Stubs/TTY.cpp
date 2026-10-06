@@ -34,26 +34,48 @@ namespace ps2_stubs
 
     void sceResetttyinit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceResetttyinit", rdram, ctx, runtime);
+        // Re-initialize TTY state; nothing host-side to reset. Report success.
+        setReturnS32(ctx, 0);
     }
 
     void sceTtyHandler(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceTtyHandler", rdram, ctx, runtime);
+        // Installs a TTY event handler. We have no async TTY events; report success.
+        setReturnS32(ctx, 0);
     }
 
     void sceTtyInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceTtyInit", rdram, ctx, runtime);
+        // TTY (debug terminal) init. Nothing host-side to set up; report success.
+        setReturnS32(ctx, 0);
     }
 
     void sceTtyRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceTtyRead", rdram, ctx, runtime);
+        // int sceTtyRead(char *buffer, int size)
+        // No host console input is wired up; report 0 bytes read.
+        setReturnS32(ctx, 0);
     }
 
     void sceTtyWrite(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceTtyWrite", rdram, ctx, runtime);
+        // int sceTtyWrite(const char *buffer, int size)
+        // Games route debug/diagnostic text here. Surface it in the host log.
+        uint32_t buffer_addr = getRegU32(ctx, 4);
+        int32_t size = static_cast<int32_t>(getRegU32(ctx, 5));
+
+        if (buffer_addr != 0 && size > 0)
+        {
+            const uint32_t capped = static_cast<uint32_t>(std::min<int32_t>(size, 4096));
+            std::string text = readPs2CStringBounded(rdram, runtime, buffer_addr, capped);
+            if (!text.empty())
+            {
+                std::cerr << "[TTY] " << text;
+                if (text.back() != '\n')
+                    std::cerr << std::endl;
+            }
+        }
+
+        setReturnS32(ctx, size);
     }
 }

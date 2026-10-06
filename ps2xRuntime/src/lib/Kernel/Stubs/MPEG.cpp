@@ -557,6 +557,7 @@ namespace ps2_stubs
         constexpr uint8_t kMpegPackHeader = 0xBAu;
         constexpr uint8_t kMpegSystemHeader = 0xBBu;
         constexpr uint8_t kMpegProgramEnd = 0xB9u;
+        constexpr uint8_t kMpegSequenceEndCode = 0xB7u;
         constexpr uint8_t kMpegSequenceEnd = 0xB7u;
         constexpr uint8_t kMpegPrivateStream1 = 0xBDu;
         constexpr size_t kStartCodeNotFound = std::numeric_limits<size_t>::max();
@@ -1214,7 +1215,10 @@ namespace ps2_stubs
 
                 const uint8_t streamId = buffer[3u];
 
-                if (streamId == kMpegProgramEnd)
+                // A bare sequence_end_code outside any PES packet: games that skip the
+                // file's trailing program_end (GTA VCS feeds exact-size data, then
+                // appends 00 00 01 B7 itself) use it to terminate playback.
+                if (streamId == kMpegProgramEnd || streamId == kMpegSequenceEndCode)
                 {
                     playback.streamEnded = true;
                     playback.cdStreamGeneration = g_mpeg_stub_state.cdStreamGeneration;
@@ -1419,8 +1423,22 @@ namespace ps2_stubs
             bool &changed)
         {
             g_mpeg_stub_state.cdStreamBytesDemuxed += consumed;
+            PS2_IF_AGRESSIVE_LOGS({
+                static uint32_t s_pendingDemuxLog = 0u;
+                if (g_mpeg_stub_state.cdStreamEofPending && s_pendingDemuxLog < 24u)
+                {
+                    ++s_pendingDemuxLog;
+                    std::cerr << "[MPEG:DemuxAfterEof] consumed=" << consumed
+                              << " demuxed=" << g_mpeg_stub_state.cdStreamBytesDemuxed
+                              << " produced=" << g_mpeg_stub_state.cdStreamBytesProduced << std::endl;
+                }
+            });
+            // Production is counted in whole 2048-byte sectors, but games that track the
+            // file's exact byte size (e.g. GTA VCS) never demux the final sector's padding.
+            // Treat the stream as drained once less than one sector remains unconsumed.
+            constexpr uint64_t kCdSectorBytes = 2048u;
             if (g_mpeg_stub_state.cdStreamEofPending &&
-                g_mpeg_stub_state.cdStreamBytesDemuxed >= g_mpeg_stub_state.cdStreamBytesProduced)
+                g_mpeg_stub_state.cdStreamBytesDemuxed + kCdSectorBytes > g_mpeg_stub_state.cdStreamBytesProduced)
             {
                 finalizeCdStreamEofUnlocked(completedMpegIds, changed);
             }
@@ -1695,6 +1713,20 @@ namespace ps2_stubs
 
             const uint32_t width = static_cast<uint32_t>(frame.width);
             const uint32_t height = static_cast<uint32_t>(frame.height);
+            PS2_IF_AGRESSIVE_LOGS({
+                static uint32_t s_lumaTraceCount = 0u;
+                if ((s_lumaTraceCount++ % 30u) == 0u)
+                {
+                    uint64_t sum = 0u;
+                    for (size_t i = 0; i + 3u < frame.rgba.size(); i += 4u)
+                    {
+                        sum += frame.rgba[i] + frame.rgba[i + 1u] + frame.rgba[i + 2u];
+                    }
+                    const size_t pixels = frame.rgba.size() / 4u;
+                    std::cerr << "[MPEG:frame-luma] n=" << s_lumaTraceCount - 1u << " dest=0x" << std::hex << destAddr
+                              << std::dec << " avg=" << (pixels ? sum / (pixels * 3u) : 0u) << std::endl;
+                }
+            });
             const uint32_t outWidth = align16(width);
             const uint32_t outHeight = align16(height);
             const uint32_t macroblockColumns = outWidth / 16u;
@@ -1817,7 +1849,20 @@ namespace ps2_stubs
         if (endOfStream)
         {
             g_mpeg_stub_state.cdStreamEofPending = true;
+            PS2_IF_AGRESSIVE_LOGS({
+                std::cerr << "[MPEG:CdStreamEofPending] produced=" << g_mpeg_stub_state.cdStreamBytesProduced
+                          << " demuxed=" << g_mpeg_stub_state.cdStreamBytesDemuxed << std::endl;
+            });
         }
+    }
+
+    bool isMpegStreamFinished(uint32_t mpegAddr)
+    {
+        std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
+        MpegPlaybackState &playback = getPlaybackState(mpegAddr);
+        return g_mpeg_stub_state.currentCdStreamEofSeen &&
+               playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration &&
+               (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
     }
 
     void notifyMpegCdStreamEof(PS2Runtime *runtime)
@@ -2089,11 +2134,13 @@ namespace ps2_stubs
         size_t decodedCount = 0u;
         uint32_t traceIdx = 0u;
         bool eofChanged = false;
+        bool streamEndedNow = false;
         bool backpressured = false;
         {
             std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
             MpegPlaybackState &playback = getPlaybackState(mpegAddr);
             decodedBefore = playback.decodedFrames.size();
+            const bool streamEndedBefore = playback.streamEnded;
             backpressured = mpegDemuxBackpressured(playback);
             if (!backpressured)
             {
@@ -2101,6 +2148,9 @@ namespace ps2_stubs
                 recordCdStreamBytesDemuxedUnlocked(consumed, completedMpegIds, eofChanged);
             }
             decodedCount = playback.decodedFrames.size();
+            // An end code can finish the stream without decoding a new frame;
+            // a GetPicture waiter must still be released to observe the end.
+            streamEndedNow = !streamEndedBefore && playback.streamEnded;
             traceIdx = g_mpeg_stub_state.demuxPssTraceCount++;
         }
 
@@ -2116,7 +2166,7 @@ namespace ps2_stubs
             return;
         }
         const bool currentStreamCompleted = std::find(completedMpegIds.begin(), completedMpegIds.end(), mpegAddr) != completedMpegIds.end();
-        if (decodedCount != decodedBefore || eofChanged || currentStreamCompleted)
+        if (decodedCount != decodedBefore || eofChanged || currentStreamCompleted || streamEndedNow)
         {
             runtime->eeScheduler().completeExternalWait(kMpegPictureWaitType, mpegAddr, KE_OK);
         }
@@ -2164,6 +2214,19 @@ namespace ps2_stubs
         const uint32_t availableBytes = getRegU32(ctx, 6);
         const uint32_t ringBaseAddr = getRegU32(ctx, 7);
         const uint32_t ringSize = readAbiArg4(rdram, ctx);
+        PS2_IF_AGRESSIVE_LOGS({
+            static uint32_t s_smallDemuxLog = 0u;
+            if (availableBytes < 64u && s_smallDemuxLog < 16u)
+            {
+                ++s_smallDemuxLog;
+                const uint8_t *p = getConstMemPtr(rdram, dataAddr);
+                std::cerr << "[MPEG:DemuxPssRing:small] avail=" << availableBytes << " data=0x" << std::hex << dataAddr
+                          << " ring=0x" << ringBaseAddr << "/" << ringSize << " bytes=";
+                for (uint32_t i = 0; p && i < std::min<uint32_t>(availableBytes, 8u); ++i)
+                    std::cerr << static_cast<uint32_t>(p[i]) << " ";
+                std::cerr << std::dec << std::endl;
+            }
+        });
 
         std::vector<MpegStreamCallbackEvent> callbackEvents;
         std::vector<uint32_t> completedMpegIds;
@@ -2172,11 +2235,13 @@ namespace ps2_stubs
         size_t decodedCount = 0u;
         uint32_t traceIdx = 0u;
         bool eofChanged = false;
+        bool streamEndedNow = false;
         bool backpressured = false;
         {
             std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
             MpegPlaybackState &playback = getPlaybackState(mpegAddr);
             decodedBefore = playback.decodedFrames.size();
+            const bool streamEndedBefore = playback.streamEnded;
             backpressured = mpegDemuxBackpressured(playback);
             if (!backpressured)
             {
@@ -2192,6 +2257,9 @@ namespace ps2_stubs
                 recordCdStreamBytesDemuxedUnlocked(consumed, completedMpegIds, eofChanged);
             }
             decodedCount = playback.decodedFrames.size();
+            // An end code can finish the stream without decoding a new frame;
+            // a GetPicture waiter must still be released to observe the end.
+            streamEndedNow = !streamEndedBefore && playback.streamEnded;
             traceIdx = g_mpeg_stub_state.demuxRingTraceCount++;
         }
 
@@ -2209,7 +2277,7 @@ namespace ps2_stubs
             return;
         }
         const bool currentStreamCompleted = std::find(completedMpegIds.begin(), completedMpegIds.end(), mpegAddr) != completedMpegIds.end();
-        if (decodedCount != decodedBefore || eofChanged || currentStreamCompleted)
+        if (decodedCount != decodedBefore || eofChanged || currentStreamCompleted || streamEndedNow)
         {
             runtime->eeScheduler().completeExternalWait(kMpegPictureWaitType, mpegAddr, KE_OK);
         }

@@ -9,6 +9,9 @@ namespace ps2_stubs
     void notifyMpegCdStreamStart(PS2Runtime *runtime = nullptr);
     void notifyMpegCdStreamDataProduced(uint32_t byteCount, bool endOfStream);
     void notifyMpegCdStreamEof(PS2Runtime *runtime = nullptr);
+    // True once the stream feeding this MPEG has hit producer EOF and its end code,
+    // regardless of decoded pictures the game has not collected yet.
+    bool isMpegStreamFinished(uint32_t mpegAddr);
     void sceMpegFlush(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceMpegAddBs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceMpegAddCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);

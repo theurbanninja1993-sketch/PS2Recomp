@@ -180,9 +180,18 @@ namespace ps2_syscalls
         setReturnS32(ctx, KE_OK);
     }
 
-    void InitThread(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    void InitThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        setReturnS32(ctx, EeScheduler::kMainThreadId);
+        // libkernel InitThread() ends with ChangeThreadPriority(GetThreadId(), 1).
+        // Games rely on the caller sharing priority 1 with their worker threads so
+        // RotateThreadReadyQueue(1) yields to them (e.g. GTA VCS's movie player
+        // spins on it while its MPEG thread decodes); left at 0 the caller starves them.
+        EeScheduler &ee = scheduler(rdram, ctx, runtime);
+        const int self = ee.currentThreadId();
+        int oldPriority = 0;
+        (void)ee.changePriority(self, 1, false, oldPriority);
+        setReturnS32(ctx, self);
+        ee.transferIfRequested(false);
     }
 
     void CreateThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

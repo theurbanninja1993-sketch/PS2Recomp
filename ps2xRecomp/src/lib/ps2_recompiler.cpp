@@ -1969,11 +1969,9 @@ namespace ps2recomp
                     continue;
                 }
 
-                if (isEntryFunctionName(function.name))
-                {
-                    continue;
-                }
-
+                // entry_ functions must be allowed to own external branch
+                // targets: cross-chunk direct branches (beq/bne/j) into an
+                // entry_ chunk's middle need a resume case + registration.
                 if (address < function.start || address >= function.end)
                 {
                     continue;

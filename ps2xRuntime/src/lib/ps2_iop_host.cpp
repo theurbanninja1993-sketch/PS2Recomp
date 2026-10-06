@@ -1,4 +1,5 @@
 #include "ps2_iop_host.h"
+#include "Kernel/Stubs/CD.h"
 
 #include "ps2_runtime.h"
 #include "ps2_stubs.h"
@@ -529,4 +530,9 @@ void PS2IopHostAdapter::log(ps2x::iop::LogLevel level, std::string_view message)
         prefix = "[ps2xIOP:error]";
     }
     std::cerr << prefix << ' ' << message << std::endl;
+}
+
+bool PS2IopHostAdapter::readCdSectors(uint32_t lsn, uint32_t sectors, void *destination)
+{
+    return ps2_stubs::readRegisteredCdSectors(lsn, sectors, static_cast<uint8_t *>(destination));
 }

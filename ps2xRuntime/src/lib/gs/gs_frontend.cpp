@@ -665,6 +665,15 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
                                         << " ctx0fbp=" << m_ctx[0].frame.fbp
                                         << " ctx1fbp=" << m_ctx[1].frame.fbp
                                         << std::endl);
+            if (packetIndex < 8u && sizeBytes <= 288u)
+            {
+                std::ostringstream hex;
+                for (uint32_t q = 0; q + 16u <= sizeBytes; q += 16u)
+                {
+                    hex << " [" << std::hex << loadLE64(data + q + 8u) << ":" << loadLE64(data + q) << "]";
+                }
+                RUNTIME_LOG("[gs:gif-raw] idx=" << std::dec << packetIndex << hex.str() << std::endl);
+            }
         }
     });
 

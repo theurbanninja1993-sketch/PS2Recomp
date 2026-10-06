@@ -1,3 +1,4 @@
+#include <sstream>
 #include <algorithm>
 #include <cctype>
 
@@ -1423,6 +1424,18 @@ namespace
                                                               << " w2=0x" << w2
                                                               << " w3=0x" << w3
                                                               << std::dec << std::endl);
+                        if (g_dmaStubLogCount < 8u)
+                        {
+                            std::ostringstream dump;
+                            for (uint32_t q = 0; q < 24u; ++q)
+                            {
+                                uint64_t lo = 0u, hi = 0u;
+                                std::memcpy(&lo, tagPtr + q * 16u, 8u);
+                                std::memcpy(&hi, tagPtr + q * 16u + 8u, 8u);
+                                dump << " [" << std::hex << hi << ":" << lo << "]";
+                            }
+                            RUNTIME_LOG("[sceDmaSend:dump] tadr=0x" << std::hex << tadr << dump.str() << std::dec << std::endl);
+                        }
                     }
                 }
                 ++g_dmaStubLogCount;

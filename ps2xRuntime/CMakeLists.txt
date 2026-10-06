@@ -12,6 +12,7 @@ option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
 
 option(PS2X_ENABLE_RUNTIME_LOGS "Enable PS2 runtime logs" ON)
 option(PS2X_ENABLE_AGRESSIVE_LOGS "Enable very verbose/agressive PS2 runtime logs" ON)
+option(PS2X_ENABLE_FUNCTION_LOG_TRACKER "Log every recompiled function entry/exit to ps2_log.txt (very slow, GBs per minute)" OFF)
 option(PS2X_ENABLE_IOP_RPC_TRACE "Log unhandled IOP/SIF RPC trace suggestions" ON)
 option(PS2X_STRICT_RETURN_DIAGNOSTICS "Route generated JR $ra returns through runtime branch diagnostics" OFF)
 option(PS2X_SHOW_WINDOWS_CONSOLE "Show a console window for ps2EntryRunner on Windows release builds" ON)
@@ -405,6 +406,11 @@ endif()
 if(PS2X_ENABLE_AGRESSIVE_LOGS)
     target_compile_definitions(ps2_runtime PUBLIC
         AGRESSIVE_LOGS=1
+    )
+endif()
+
+if(PS2X_ENABLE_FUNCTION_LOG_TRACKER)
+    target_compile_definitions(ps2_runtime PUBLIC
         PS2_FUNCTION_LOG_TRACKER=1
     )
 endif()
@@ -425,8 +431,11 @@ if(PS2X_STRICT_RETURN_DIAGNOSTICS)
     )
 endif()
 
+# Verbose guest/runtime logging for bring-up (scePrintf echo, stub traces).
+# Set to 0 (or remove) for release builds.
 target_compile_definitions(ps2_runtime PRIVATE
     PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
+    AGRESSIVE_LOGS=1
 )
 
 file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
@@ -499,6 +508,13 @@ endif()
 
 if(MSVC)
     target_compile_options(ps2EntryRunner PRIVATE /FS)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # The generated game TUs are enormous; at -O3 single unity files can eat
+    # 10GB+ of RAM each and OOM the build. -O2 compiles them with a fraction
+    # of the memory at negligible runtime cost for this code shape.
+    target_compile_options(ps2EntryRunner PRIVATE -O2)
 endif()
 
 target_include_directories(ps2_runtime PUBLIC

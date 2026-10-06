@@ -531,6 +531,7 @@ namespace ps2_syscalls
         }
 
         scheduler.setupCurrentThread(initialStack, stackSize, getRegU32(ctx, 28));
+
         setReturnU32(ctx, sp);
     }
 

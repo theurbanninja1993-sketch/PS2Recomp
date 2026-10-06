@@ -317,11 +317,25 @@ static inline void Ps2FastWrite128(uint8_t *rdram, uint32_t addr, __m128i value)
 #define FAST_READ64(addr) Ps2FastRead64(rdram, (uint32_t)(addr))
 #define FAST_READ128(addr) Ps2FastRead128(rdram, (uint32_t)(addr))
 
-#define FAST_WRITE8(addr, val) Ps2FastWrite8(rdram, (uint32_t)(addr), (uint8_t)(val))
-#define FAST_WRITE16(addr, val) Ps2FastWrite16(rdram, (uint32_t)(addr), (uint16_t)(val))
-#define FAST_WRITE32(addr, val) Ps2FastWrite32(rdram, (uint32_t)(addr), (uint32_t)(val))
-#define FAST_WRITE64(addr, val) Ps2FastWrite64(rdram, (uint32_t)(addr), (uint64_t)(val))
-#define FAST_WRITE128(addr, val) Ps2FastWrite128(rdram, (uint32_t)(addr), (val))
+// Guest write watchpoint (debug aid). Set PS2X_WATCH_WRITE=0xADDR to log every
+// guest store that touches that byte with the guest PC/RA/SP. Disabled (0)
+// costs one predictable compare per store.
+extern uint32_t g_ps2WriteWatchAddr;
+void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op);
+
+static inline void Ps2WatchWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op)
+{
+    if (g_ps2WriteWatchAddr != 0u && (g_ps2WriteWatchAddr - (addr & PS2_RAM_MASK)) < size)
+    {
+        ps2ReportWatchedWrite(addr, size, value, ctx, op);
+    }
+}
+
+#define FAST_WRITE8(addr, val) (Ps2WatchWrite((uint32_t)(addr), 1u, (uint8_t)(val), ctx, "SB"), Ps2FastWrite8(rdram, (uint32_t)(addr), (uint8_t)(val)))
+#define FAST_WRITE16(addr, val) (Ps2WatchWrite((uint32_t)(addr), 2u, (uint16_t)(val), ctx, "SH"), Ps2FastWrite16(rdram, (uint32_t)(addr), (uint16_t)(val)))
+#define FAST_WRITE32(addr, val) (Ps2WatchWrite((uint32_t)(addr), 4u, (uint32_t)(val), ctx, "SW"), Ps2FastWrite32(rdram, (uint32_t)(addr), (uint32_t)(val)))
+#define FAST_WRITE64(addr, val) (Ps2WatchWrite((uint32_t)(addr), 8u, (uint64_t)(val), ctx, "SD"), Ps2FastWrite64(rdram, (uint32_t)(addr), (uint64_t)(val)))
+#define FAST_WRITE128(addr, val) (Ps2WatchWrite((uint32_t)(addr), 16u, (uint64_t)_mm_cvtsi128_si64(val), ctx, "SQ"), Ps2FastWrite128(rdram, (uint32_t)(addr), (val)))
 
 #define READ8(addr) ([&]() -> uint8_t {                       \
     uint32_t _addr = (uint32_t)(addr);                        \

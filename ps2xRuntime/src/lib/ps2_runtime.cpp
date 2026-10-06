@@ -91,6 +91,12 @@ namespace
     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
     constexpr uint32_t kGuestHeapHardLimit = 0x01F00000u;
+    // Interrupt/alarm/callback invocation stacks live in the BIOS kernel region, like
+    // the real EE kernel's own stacks. Games own all user RAM from 0x100000 up (their
+    // heaps and thread stacks reach the top of RAM), so carving handler stacks there
+    // lets handlers overwrite live game frames.
+    constexpr uint32_t kAsyncCallbackStackRegionFloor = 0x00010000u;
+    constexpr uint32_t kAsyncCallbackStackRegionTop = 0x00080000u;
 
     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
@@ -503,8 +509,8 @@ PS2Runtime::PS2Runtime()
     m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
     m_guestHeapConfigured = false;
-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
+    m_asyncCallbackStackFloor = kAsyncCallbackStackRegionFloor;
+    m_asyncCallbackStackTop = kAsyncCallbackStackRegionTop;
 }
 
 void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -971,9 +977,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     }
     {
         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
-        const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
+        m_asyncCallbackStackFloor = kAsyncCallbackStackRegionFloor;
+        m_asyncCallbackStackTop = kAsyncCallbackStackRegionTop;
     }
 
     LoadedModule module;
@@ -1134,6 +1139,35 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
     }
 }
 
+uint32_t g_ps2WriteWatchAddr = []() -> uint32_t
+{
+    const char *env = std::getenv("PS2X_WATCH_WRITE");
+    return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 0)) & PS2_RAM_MASK : 0u;
+}();
+
+void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op)
+{
+    static const uint32_t s_limit = []() -> uint32_t
+    {
+        const char *env = std::getenv("PS2X_WATCH_LIMIT");
+        return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 0)) : 200u;
+    }();
+    static std::atomic<uint32_t> s_reports{0};
+    if (s_reports.fetch_add(1, std::memory_order_relaxed) >= s_limit)
+    {
+        return;
+    }
+    std::cerr << "[watch-write] " << (op ? op : "?") << " addr=0x" << std::hex << addr
+              << " size=" << std::dec << size << " value=0x" << std::hex << value;
+    if (ctx)
+    {
+        std::cerr << " pc=0x" << ctx->pc
+                  << " ra=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0))
+                  << " sp=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[29], 0));
+    }
+    std::cerr << std::dec << std::endl;
+}
+
 PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 {
     pushDispatchPc(address);
@@ -1145,6 +1179,28 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
         if (fn != nullptr)
         {
             return fn;
+        }
+
+        // Fallback: resolve to the nearest lower registered function. JAL+8
+        // return sites and checkpoint-resume points inside a function do not
+        // always have their own table slot; the containing function's entry
+        // switch routes the PC to the correct internal label.
+        uint32_t scan = slot;
+        while (scan > 0u)
+        {
+            --scan;
+            fn = g_ps2RecompiledFunctionTable[scan];
+            if (fn != nullptr)
+            {
+                static std::unordered_set<uint32_t> s_fallbackLogged;
+                if (s_fallbackLogged.insert(address).second && s_fallbackLogged.size() <= 64u)
+                {
+                    std::cerr << "[dispatch:fallback] pc=0x" << std::hex << address
+                              << " -> table+0x" << (g_ps2RecompiledFunctionTableBase + (scan << 2))
+                              << " trace=" << formatDispatchHistory() << std::dec << std::endl;
+                }
+                return fn;
+            }
         }
     }
 
@@ -2417,6 +2473,23 @@ void PS2Runtime::run()
                                                << " gsw=" << curGs
                                                << " vif=" << curVif
                                                << std::endl);
+                if ((tick % 600) == 0)
+                {
+                    for (const auto &t : eeSnapshot.threads)
+                    {
+                        RUNTIME_LOG("[run:thread] id=" << t.id
+                                                       << " status=" << static_cast<int>(t.status)
+                                                       << " wait=" << static_cast<int>(t.waitReason)
+                                                       << " waitId=" << t.waitId
+                                                       << " prio=" << t.currentPriority
+                                                       << std::hex << " pc=0x" << t.pc
+                                                       << " ra=0x" << t.ra
+                                                       << " sp=0x" << t.sp
+                                                       << " entry=0x" << t.entry
+                                                       << std::dec << " inv=" << t.invocationDepth
+                                                       << std::endl);
+                    }
+                }
 
             }
         });
@@ -2445,6 +2518,27 @@ void PS2Runtime::run()
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
         EndDrawing();
+
+        // Opt-in frame capture for headless bring-up: PS2X_SCREENSHOT_EVERY=<frames>
+        // writes the presented guest frame (no debug UI) to frame_<n>.png in the cwd.
+        {
+            static const uint64_t s_shotEvery = []() -> uint64_t
+            {
+                const char *env = std::getenv("PS2X_SCREENSHOT_EVERY");
+                return env ? std::strtoull(env, nullptr, 10) : 0u;
+            }();
+            static uint64_t s_presentedFrames = 0;
+            if (s_shotEvery != 0u && (++s_presentedFrames % s_shotEvery) == 0u)
+            {
+                Image shot = LoadImageFromTexture(frameTex);
+                ImageCrop(&shot, Rectangle{0.0f, 0.0f, srcWidth, srcHeight});
+                char shotPath[64];
+                std::snprintf(shotPath, sizeof(shotPath), "frame_%06llu.png",
+                              static_cast<unsigned long long>(s_presentedFrames));
+                ExportImage(shot, shotPath);
+                UnloadImage(shot);
+            }
+        }
 
         if (WindowShouldClose())
         {

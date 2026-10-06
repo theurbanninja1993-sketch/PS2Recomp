@@ -129,6 +129,12 @@ namespace ps2_syscalls
             std::cerr << "[IOP/RPC trace:unhandled]"
                       << " sid=0x" << std::hex << event.sid
                       << " rpc=0x" << event.rpcNum
+                      << " client=0x" << event.clientPtr
+                      << " server=0x" << event.serverPtr
+                      << " endFunc=0x" << event.endFunc
+                      << " endParam=0x" << event.endParam
+                      << " sema=0x" << event.semaId
+                      << " mode=0x" << event.mode
                       << " pc=0x" << event.pc
                       << " ra=0x" << event.ra
                       << " send=0x" << event.sendBuf << "/" << std::dec << event.sendSize
@@ -146,6 +152,213 @@ namespace ps2_syscalls
                 return false;
             }
             return runtime->eeScheduler().signalSemaphore(static_cast<int>(semaId), true) >= 0;
+        }
+
+        // ----------------------------------------------------------------
+        // Well-known IOP RPC service SIDs provided by the runtime itself.
+        // - 0x80000006: 'loadfile' — sceSifLoadModule & friends bind to it; module
+        //   loading is fully HLE'd and never issues the RPC, so the bind just
+        //   needs to succeed.
+        // - 0x80000001: 'cdvdfs' (CDVD file server, rom0:CDVDFSV on hardware).
+        //   The guest fs library binds to it before issuing file RPCs, which
+        //   are serviced by handleCdvdFsRpc over the host VFS.
+        // ----------------------------------------------------------------
+        constexpr uint32_t kSifLoadFileRpcSid = 0x80000006u;
+        constexpr uint32_t kCdvdFsRpcSid = 0x80000001u;
+
+        // ----------------------------------------------------------------
+        // cdvdfs (sid 0x80000001) HLE file server.
+        //
+        // Guest fs library request packet layout (decoded from the game):
+        //   [0]  request semaphore id (signaled on completion)
+        //   [4]  guest pointer to int32 result slot
+        //   [8]  flags / command modifier
+        //   [12] operation arguments (path string, fd, ...)
+        // Completion contract: write int32 result to the result slot (and the
+        // RPC receive buffer), then signal the request semaphore.
+        // ----------------------------------------------------------------
+
+        struct FsDirSlot
+        {
+            std::filesystem::path hostPath;
+            std::filesystem::directory_iterator it;
+            bool started = false;
+        };
+
+        std::mutex g_fs_dir_mutex;
+        std::unordered_map<int32_t, FsDirSlot> g_fs_dir_slots;
+        int32_t g_fs_next_dd = 1;
+
+        // Completion protocol: the RPC receive buffer holds a *completion status*
+        // (nonzero = request completed; the guest wrappers treat 0 as "not done"),
+        // while the packet's result slot receives the operation's return value.
+        void writeFsResult(uint8_t *rdram, uint32_t resultPtr, uint32_t recvBuf, int32_t result)
+        {
+            if (resultPtr != 0u)
+            {
+                if (int32_t *slot = reinterpret_cast<int32_t *>(getMemPtr(rdram, resultPtr)))
+                {
+                    *slot = result;
+                }
+            }
+            if (recvBuf != 0u)
+            {
+                if (int32_t *slot = reinterpret_cast<int32_t *>(getMemPtr(rdram, recvBuf)))
+                {
+                    *slot = 1; // completion status
+                }
+            }
+        }
+
+        ps2x::iop::RpcResult handleCdvdFsRpc(PS2Runtime *runtime, uint8_t *rdram,
+                                             uint32_t rpcNum, uint32_t sendBuf, uint32_t sendSize,
+                                             uint32_t recvBuf, uint32_t recvSize)
+        {
+            ps2x::iop::RpcResult out{};
+            out.handled = true;
+
+            uint8_t *pkt = getMemPtr(rdram, sendBuf);
+            if (!pkt || sendSize < 12)
+            {
+                writeFsResult(rdram, 0, recvBuf, -1);
+                return out;
+            }
+
+            uint32_t reqSema = 0, resultPtr = 0;
+            std::memcpy(&reqSema, pkt + 0, 4);
+            std::memcpy(&resultPtr, pkt + 4, 4);
+
+            const auto &ioPaths = runtime->getIoPaths();
+            PS2VfsMounts mounts{ioPaths.hostRoot, ioPaths.cdRoot, ioPaths.mcRoot};
+
+            int32_t result = -1;
+
+            switch (rpcNum)
+            {
+            case 0xFF: // init
+            {
+                std::cerr << "[cdvdfs] init" << std::endl;
+                result = 0;
+                break;
+            }
+
+            case 9: // dopen: [12]=path
+            {
+                const std::string path = readGuestCStringBounded(rdram, sendBuf + 12, 1024);
+                std::filesystem::path hostPath;
+                if (runtime->vfs().resolveHostPath(path, mounts, hostPath))
+                {
+                    std::error_code ec;
+                    if (std::filesystem::is_directory(hostPath, ec))
+                    {
+                        std::lock_guard<std::mutex> lock(g_fs_dir_mutex);
+                        const int32_t dd = g_fs_next_dd++;
+                        g_fs_dir_slots[dd] = FsDirSlot{hostPath, {}, false};
+                        result = dd;
+                    }
+                    else
+                    {
+                        result = -20; // -ENOTDIR
+                    }
+                }
+                else
+                {
+                    result = -2; // -ENOENT
+                }
+                std::cerr << "[cdvdfs] dopen(\"" << path << "\") -> " << result << std::endl;
+                break;
+            }
+
+            case 10: // dclose: [12]=dd
+            {
+                uint32_t dd = 0;
+                std::memcpy(&dd, pkt + 12, 4);
+                std::lock_guard<std::mutex> lock(g_fs_dir_mutex);
+                if (g_fs_dir_slots.erase(static_cast<int32_t>(dd)) != 0u)
+                {
+                    result = 0;
+                }
+                break;
+            }
+
+            case 11: // dread: [12]=dd, [16]=dirent dest ptr
+            {
+                uint32_t dd = 0, destAddr = 0;
+                std::memcpy(&dd, pkt + 12, 4);
+                std::memcpy(&destAddr, pkt + 16, 4);
+
+                result = 0; // end of directory by default
+                std::lock_guard<std::mutex> lock(g_fs_dir_mutex);
+                auto slotIt = g_fs_dir_slots.find(static_cast<int32_t>(dd));
+                if (slotIt != g_fs_dir_slots.end() && destAddr != 0u)
+                {
+                    FsDirSlot &slot = slotIt->second;
+                    std::error_code ec;
+                    if (!slot.started)
+                    {
+                        slot.it = std::filesystem::directory_iterator(slot.hostPath, ec);
+                        slot.started = true;
+                    }
+                    if (!ec && slot.it != std::filesystem::directory_iterator{})
+                    {
+                        const auto &entry = *slot.it;
+                        uint8_t *dest = getMemPtr(rdram, destAddr);
+                        if (dest)
+                        {
+                            // iox_dirent_t: iox_stat_t (64 bytes) + char name[256].
+                            // Mode uses PS2 ioman type bits (FIO_S_IFDIR 0x1000,
+                            // FIO_S_IFREG 0x2000), not POSIX S_IFDIR/S_IFREG.
+                            constexpr uint32_t kDirentStatBytes = 0x40u;
+                            constexpr uint32_t kDirentNameBytes = 256u;
+                            constexpr uint32_t kFioSIfDir = 0x1000u;
+                            constexpr uint32_t kFioSIfReg = 0x2000u;
+                            std::memset(dest, 0, kDirentStatBytes + kDirentNameBytes);
+                            const bool isDir = entry.is_directory(ec);
+                            const uint32_t mode = isDir ? (kFioSIfDir | 0555) : (kFioSIfReg | 0444);
+                            uint32_t size = 0;
+                            if (!isDir)
+                            {
+                                size = static_cast<uint32_t>(std::min<uint64_t>(entry.file_size(ec), 0xFFFFFFFFu));
+                            }
+                            std::memcpy(dest + 0, &mode, 4); // stat.mode
+                            // attr(4) and timestamps left zeroed
+                            std::memcpy(dest + 8, &size, 4); // stat.size
+                            // CDVDFSV reports ISO9660 identifiers: files carry the ";1" version.
+                            std::string name = entry.path().filename().string();
+                            if (!isDir)
+                            {
+                                name += ";1";
+                            }
+                            std::memcpy(dest + kDirentStatBytes, name.c_str(),
+                                        std::min<size_t>(name.size() + 1, kDirentNameBytes - 1));
+                            result = 1; // one entry returned
+                        }
+                        ++slot.it;
+                    }
+                }
+                {
+                    static int s_dreadLogCount = 0;
+                    if (++s_dreadLogCount <= 40 || (s_dreadLogCount % 1000) == 0)
+                    {
+                        std::cerr << "[cdvdfs] dread(dd=" << dd << ", dest=0x" << std::hex << destAddr
+                                  << ") -> " << std::dec << result << std::endl;
+                    }
+                }
+                break;
+            }
+
+            default:
+                std::cerr << "[cdvdfs] TODO rpc=0x" << std::hex << rpcNum << std::dec
+                          << " sendSize=" << sendSize << std::endl;
+                break;
+            }
+
+            writeFsResult(rdram, resultPtr, recvBuf, result);
+            if (reqSema != 0u)
+            {
+                (void)signalRpcCompletionSema(runtime, reqSema);
+            }
+            return out;
         }
 
     } // namespace
@@ -295,7 +508,9 @@ namespace ps2_syscalls
             g_rpc_clients[clientPtr].sid = rpcId;
         }
 
-        if (!serverPtr && PS2IopTransport::canBindRpc(runtime, rpcId))
+        // Runtime-provided well-known services (see constants at file scope).
+        if (!serverPtr && (rpcId == kSifLoadFileRpcSid || rpcId == kCdvdFsRpcSid ||
+                           PS2IopTransport::canBindRpc(runtime, rpcId)))
         {
             // EE-side servers and HLE routes need a descriptor in guest RAM.
             // With an emulated IOP, only publish it after the IRX has actually
@@ -543,7 +758,15 @@ namespace ps2_syscalls
             request.endFunction = endFunction;
             request.endParameter = endParameter;
 
-            iopResult = PS2IopTransport::handleRpc(runtime, rdram, ctx, request);
+            if (sid == kCdvdFsRpcSid)
+            {
+                iopResult = handleCdvdFsRpc(runtime, rdram, rpcNum, sendBuf, sendSize,
+                                            receiveBuffer, receiveSize);
+            }
+            else
+            {
+                iopResult = PS2IopTransport::handleRpc(runtime, rdram, ctx, request);
+            }
 
             if (iopResult.signalNowaitCompletion &&
                 (mode & kSifRpcModeNowait) != 0u)

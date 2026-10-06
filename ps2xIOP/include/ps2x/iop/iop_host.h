@@ -107,6 +107,18 @@ namespace ps2x::iop
                                   size_t &bytesRead) = 0;
         virtual void closeHostFile(uint64_t handle) = 0;
 
+        // Optional: read whole 2048-byte disc sectors using the host's own LSN
+        // layout (the one EE-side sceCdSearchFile hands out), so IOP drivers and
+        // EE code agree on where files live. Return false to fall back to the
+        // configured disc image / virtual ISO.
+        virtual bool readCdSectors(uint32_t lsn, uint32_t sectors, void *destination)
+        {
+            (void)lsn;
+            (void)sectors;
+            (void)destination;
+            return false;
+        }
+
         virtual int32_t memoryCard(const MemoryCardRequest &request) = 0;
 
         virtual bool hasGuestFunction(uint32_t address) const = 0;

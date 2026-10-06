@@ -373,6 +373,15 @@ namespace ps2_stubs
         setReturnS32(ctx, 2);
     }
 
+    bool readRegisteredCdSectors(uint32_t lbn, uint32_t sectors, uint8_t *dst)
+    {
+        if (!dst || sectors == 0u)
+        {
+            return false;
+        }
+        return readCdSectors(lbn, sectors, dst, static_cast<size_t>(sectors) * kCdSectorSize);
+    }
+
     void sceCdGetDiskType(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         // SCECdPS2DVD
@@ -825,7 +834,8 @@ namespace ps2_stubs
                 const bool hitStreamEnd = g_cdStreamingEndLbn != 0xFFFFFFFFu && g_cdStreamingLbn >= g_cdStreamingEndLbn;
                 notifyMpegCdStreamDataProduced(static_cast<uint32_t>(readBytes), hitStreamEnd);
 
-                if (g_cdStReadTraceCount < 32u)
+                if (g_cdStReadTraceCount < 32u ||
+                    (g_cdStreamingEndLbn != 0xFFFFFFFFu && g_cdStreamingLbn + 96u >= g_cdStreamingEndLbn))
                 {
                     std::cerr << "[sceCdStRead] requested=" << state.requestedSectors
                               << " accumulated=" << state.sectorsRead
