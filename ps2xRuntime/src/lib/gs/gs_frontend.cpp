@@ -1,11 +1,13 @@
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/gs_threaded_backend.h"
 #include "ps2_log.h"
 #include "runtime/ps2_memory.h"
 #include <atomic>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -105,8 +107,19 @@ namespace
 }
 
 
+namespace
+{
+    // The CPU rasterizer runs on its own thread unless PS2X_GS_SYNC is set.
+    std::unique_ptr<GSRasterBackend> makeDefaultRasterBackend()
+    {
+        if (std::getenv("PS2X_GS_SYNC"))
+            return std::make_unique<GSCpuBackend>();
+        return std::make_unique<GSThreadedBackend>(std::make_unique<GSCpuBackend>());
+    }
+}
+
 GS::GS()
-    : m_backend(std::make_unique<GSCpuBackend>())
+    : m_backend(makeDefaultRasterBackend())
 {
     reset();
 }
@@ -117,7 +130,7 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
     m_localMemorySize = vramSize;
     m_privRegs = privRegs;
     if (!m_backend)
-        m_backend = std::make_unique<GSCpuBackend>();
+        m_backend = makeDefaultRasterBackend();
     m_backend->Initialize(vram, vramSize);
     reset();
 }
@@ -1644,7 +1657,7 @@ uint32_t GS::consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
 {
     if (!backend)
-        backend = std::make_unique<GSCpuBackend>();
+        backend = makeDefaultRasterBackend();
 
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
