@@ -30,6 +30,13 @@ namespace ps2x::iop::detail
             const uint32_t address = a0 == 2u
                                          ? m_memory.allocate(a1, 16u, a2)
                                          : m_memory.allocate(a1, 16u);
+            if (address == 0u)
+            {
+                m_host.log(LogLevel::Warning,
+                           "[IOP] AllocSysMemory failed: mode=" + std::to_string(a0) +
+                               " size=" + std::to_string(a1) +
+                               " maxFree=" + std::to_string(m_memory.maxFreeMemory()));
+            }
             setV0(address);
             return true;
         }

@@ -1,5 +1,11 @@
+#include <cstdlib>
+#include <vector>
+#include <atomic>
+#include <sstream>
 #include "Common.h"
 #include "Pad.h"
+
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 
 namespace ps2_stubs
 {
@@ -266,6 +272,59 @@ namespace ps2_stubs
             data[19] = pressureValue(state, portState, kPadBtnR2);
         }
 
+        // PS2X_PAD_SCRIPT="<frame>:<button>[+<button>...]:<frames>;..." presses buttons on
+        // port 0 for <frames> presented frames starting at <frame> (headless testing).
+        // Buttons: up down left right start select l1 l2 l3 r1 r2 r3 cross circle square triangle.
+        uint16_t scriptedPadButtonsDown()
+        {
+            struct Step
+            {
+                uint64_t start = 0;
+                uint64_t frames = 0;
+                uint16_t mask = 0;
+            };
+            static const std::vector<Step> s_steps = []()
+            {
+                std::vector<Step> steps;
+                const char *env = std::getenv("PS2X_PAD_SCRIPT");
+                if (!env)
+                    return steps;
+                static const std::pair<const char *, uint16_t> kNames[] = {
+                    {"select", 0x0001}, {"l3", 0x0002}, {"r3", 0x0004}, {"start", 0x0008},
+                    {"up", 0x0010}, {"right", 0x0020}, {"down", 0x0040}, {"left", 0x0080},
+                    {"l2", 0x0100}, {"r2", 0x0200}, {"l1", 0x0400}, {"r1", 0x0800},
+                    {"triangle", 0x1000}, {"circle", 0x2000}, {"cross", 0x4000}, {"square", 0x8000}};
+                std::stringstream all(env);
+                std::string item;
+                while (std::getline(all, item, ';'))
+                {
+                    const size_t c1 = item.find(':');
+                    const size_t c2 = item.find(':', c1 == std::string::npos ? c1 : c1 + 1);
+                    if (c1 == std::string::npos || c2 == std::string::npos)
+                        continue;
+                    Step step;
+                    step.start = std::strtoull(item.substr(0, c1).c_str(), nullptr, 10);
+                    step.frames = std::strtoull(item.substr(c2 + 1).c_str(), nullptr, 10);
+                    std::stringstream names(item.substr(c1 + 1, c2 - c1 - 1));
+                    std::string name;
+                    while (std::getline(names, name, '+'))
+                        for (const auto &[n, bit] : kNames)
+                            if (name == n)
+                                step.mask |= bit;
+                    steps.push_back(step);
+                }
+                return steps;
+            }();
+            if (s_steps.empty())
+                return 0u;
+            const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+            uint16_t mask = 0u;
+            for (const Step &step : s_steps)
+                if (frame >= step.start && frame < step.start + step.frames)
+                    mask |= step.mask;
+            return mask;
+        }
+
         bool readPadPortData(int port, int slot, PS2Runtime *runtime, uint8_t *outData, uint32_t dataAddr)
         {
             if (!outData)
@@ -315,7 +374,24 @@ namespace ps2_stubs
                 }
             }
 
+            if (port == 0)
+            {
+                const uint16_t scripted = scriptedPadButtonsDown();
+                state.buttons = static_cast<uint16_t>(state.buttons & ~scripted);
+            }
+
             fillPadStatus(outData, state, portState);
+            {
+                static uint64_t s_padReads = 0;
+                if ((++s_padReads % 3000u) == 1u)
+                {
+                    std::cerr << "[pad] reads=" << s_padReads << " port=" << port << " slot=" << slot
+                              << " buttons=0x" << std::hex << state.buttons << " data0-3="
+                              << static_cast<uint32_t>(outData[0]) << "," << static_cast<uint32_t>(outData[1]) << ","
+                              << static_cast<uint32_t>(outData[2]) << "," << static_cast<uint32_t>(outData[3])
+                              << std::dec << " frame=" << g_ps2PresentedFrameCounter.load() << std::endl;
+                }
+            }
 
             {
                 std::lock_guard<std::mutex> lock(g_padStateMutex);
