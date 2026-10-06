@@ -293,11 +293,27 @@ namespace
         return psm == GS_PSM_T8 || psm == GS_PSM_T8H;
     }
 
-    uint8_t lerpChannel(uint8_t c00, uint8_t c10, uint8_t c01, uint8_t c11, float fx, float fy)
+    // Bilinear blend of four RGBA8 texels with 8-bit fractional weights, two
+    // channels at a time (each 16-bit lane holds channel * weight).
+    uint32_t bilinearRgba(uint32_t c00, uint32_t c10, uint32_t c01, uint32_t c11, float fx, float fy)
     {
-        const float top = static_cast<float>(c00) + (static_cast<float>(c10) - static_cast<float>(c00)) * fx;
-        const float bottom = static_cast<float>(c01) + (static_cast<float>(c11) - static_cast<float>(c01)) * fx;
-        return clampU8(static_cast<int>(std::lround(top + (bottom - top) * fy)));
+        const uint32_t wx = static_cast<uint32_t>(fx * 256.0f + 0.5f);
+        const uint32_t wy = static_cast<uint32_t>(fy * 256.0f + 0.5f);
+        auto lerp2 = [](uint32_t a, uint32_t b, uint32_t w) -> uint32_t
+        {
+            // a, b: two 8-bit channels in bits 0-7 and 16-23. Result keeps the
+            // same layout, rounded.
+            const uint32_t lo = ((a & 0xFFu) * (256u - w) + (b & 0xFFu) * w + 128u) >> 8;
+            const uint32_t hi = (((a >> 16) & 0xFFu) * (256u - w) + ((b >> 16) & 0xFFu) * w + 128u) >> 8;
+            return lo | (hi << 16);
+        };
+        const uint32_t evenTop = lerp2(c00 & 0x00FF00FFu, c10 & 0x00FF00FFu, wx);
+        const uint32_t evenBottom = lerp2(c01 & 0x00FF00FFu, c11 & 0x00FF00FFu, wx);
+        const uint32_t oddTop = lerp2((c00 >> 8) & 0x00FF00FFu, (c10 >> 8) & 0x00FF00FFu, wx);
+        const uint32_t oddBottom = lerp2((c01 >> 8) & 0x00FF00FFu, (c11 >> 8) & 0x00FF00FFu, wx);
+        const uint32_t even = lerp2(evenTop, evenBottom, wy);
+        const uint32_t odd = lerp2(oddTop, oddBottom, wy);
+        return even | (odd << 8);
     }
 }
 
@@ -1173,31 +1189,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
     const uint32_t c01 = samplePoint(u0, v1);
     const uint32_t c11 = samplePoint(u1, v1);
 
-    const uint8_t r = lerpChannel(static_cast<uint8_t>(c00 & 0xFFu),
-                                  static_cast<uint8_t>(c10 & 0xFFu),
-                                  static_cast<uint8_t>(c01 & 0xFFu),
-                                  static_cast<uint8_t>(c11 & 0xFFu),
-                                  fx, fy);
-    const uint8_t g = lerpChannel(static_cast<uint8_t>((c00 >> 8) & 0xFFu),
-                                  static_cast<uint8_t>((c10 >> 8) & 0xFFu),
-                                  static_cast<uint8_t>((c01 >> 8) & 0xFFu),
-                                  static_cast<uint8_t>((c11 >> 8) & 0xFFu),
-                                  fx, fy);
-    const uint8_t b = lerpChannel(static_cast<uint8_t>((c00 >> 16) & 0xFFu),
-                                  static_cast<uint8_t>((c10 >> 16) & 0xFFu),
-                                  static_cast<uint8_t>((c01 >> 16) & 0xFFu),
-                                  static_cast<uint8_t>((c11 >> 16) & 0xFFu),
-                                  fx, fy);
-    const uint8_t a = lerpChannel(static_cast<uint8_t>((c00 >> 24) & 0xFFu),
-                                  static_cast<uint8_t>((c10 >> 24) & 0xFFu),
-                                  static_cast<uint8_t>((c01 >> 24) & 0xFFu),
-                                  static_cast<uint8_t>((c11 >> 24) & 0xFFu),
-                                  fx, fy);
-
-    return static_cast<uint32_t>(r) |
-           (static_cast<uint32_t>(g) << 8) |
-           (static_cast<uint32_t>(b) << 16) |
-           (static_cast<uint32_t>(a) << 24);
+    return bilinearRgba(c00, c10, c01, c11, fx, fy);
 }
 
 void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
@@ -1352,6 +1344,15 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
     const float invAbsDenom = 1.0f / std::fabs(denom);
     constexpr float kEdgeEpsilon = 1.0e-4f;
 
+    // Early depth test (same comparison as WritePixel) so occluded pixels skip
+    // texture sampling, by far the most expensive part of a pixel.
+    const uint32_t ztestMethod = static_cast<uint32_t>((ctx.test >> 17) & 3u);
+    if (ztestMethod == 0u)
+        return;
+    const u32 earlyZbp = GSInternal::framePageBaseToBlock(ctx.zbuf.zbp);
+    const u32 earlyZpsm = ctx.zbuf.psm;
+    const u32 earlyFbw = std::max<u32>(ctx.frame.fbw, 1u);
+
     for (int y = minY; y <= maxY; ++y)
     {
         float py = static_cast<float>(y) + 0.5f;
@@ -1367,6 +1368,13 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                 continue;
 
             double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
+            if (ztestMethod >= 2u)
+            {
+                const uint32_t pixelZ = static_cast<u32>(z + 0.5);
+                const uint32_t storedZ = ReadVramUnlocked(earlyZpsm, earlyZbp, earlyFbw, x, y);
+                if (ztestMethod == 2u ? pixelZ < storedZ : pixelZ <= storedZ)
+                    continue;
+            }
 
             uint8_t r, g, b, a;
             if (state.prim.iip)
