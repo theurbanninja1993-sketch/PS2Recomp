@@ -71,7 +71,9 @@ private:
     mutable std::mutex m_queueMutex;
     mutable std::condition_variable m_workAvailable;
     mutable std::condition_variable m_idle;
+    std::condition_variable m_batchTaken;
     std::vector<Command> m_queue;
+    size_t m_queuedBytes = 0;
     bool m_busy = false;
     std::mutex m_presentMutex;
     PresentationFrame m_lastPresented{};

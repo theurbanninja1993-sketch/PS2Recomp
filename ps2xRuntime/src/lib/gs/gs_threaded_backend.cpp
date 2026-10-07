@@ -2,6 +2,13 @@
 
 #include <utility>
 
+namespace
+{
+    // Bound on queued-but-unrendered work. Without it a producer that outruns
+    // the rasterizer (e.g. movie frame uploads) grows the queue without limit.
+    constexpr size_t kMaxQueuedBytes = 64u * 1024u * 1024u;
+}
+
 GSThreadedBackend::GSThreadedBackend(std::unique_ptr<GSRasterBackend> inner)
     : m_inner(std::move(inner))
 {
@@ -24,8 +31,15 @@ void GSThreadedBackend::enqueue(Command &&command)
 {
     bool wake = false;
     {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
+        std::unique_lock<std::mutex> lock(m_queueMutex);
+        if (m_queuedBytes >= kMaxQueuedBytes)
+        {
+            m_workAvailable.notify_one();
+            m_batchTaken.wait(lock, [this]()
+                              { return m_queuedBytes < kMaxQueuedBytes; });
+        }
         wake = m_queue.empty() && !m_busy;
+        m_queuedBytes += sizeof(Command) + command.data.size();
         m_queue.push_back(std::move(command));
     }
     if (wake)
@@ -54,8 +68,10 @@ void GSThreadedBackend::workerLoop()
             if (m_stop && m_queue.empty())
                 return;
             batch.swap(m_queue);
+            m_queuedBytes = 0;
             m_busy = true;
         }
+        m_batchTaken.notify_all();
         for (Command &command : batch)
             execute(command);
         batch.clear();
