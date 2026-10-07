@@ -87,7 +87,10 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         data[4] = static_cast<uint8_t>(128 + rx * 127);
         data[5] = static_cast<uint8_t>(128 + ry * 127);
     }
-    else
+
+    // The keyboard is always read and merged with the gamepad: raylib reports
+    // any joystick device as "gamepad available" (e.g. gaming-mouse dongles
+    // that expose /dev/input/js*), which used to silence the keyboard.
     {
         if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
             clearBit(PAD_UP);
