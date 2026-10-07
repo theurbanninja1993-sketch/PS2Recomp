@@ -99,6 +99,60 @@ extern "C" void __gcov_dump(void) __attribute__((weak));
 
 namespace
 {
+    // PS2X_VU_STATS: per-unit microprogram call counts and host time, printed
+    // every 1200 presented frames.
+    struct VuStats
+    {
+        bool enabled = std::getenv("PS2X_VU_STATS") != nullptr;
+        uint64_t calls[2]{};
+        uint64_t cycles[2]{};
+        double seconds[2]{};
+        uint64_t lastReportFrame = 0;
+    };
+    VuStats &vuStats()
+    {
+        static VuStats stats;
+        return stats;
+    }
+    struct VuStatsScope
+    {
+        int unit;
+        const uint64_t &cycleCounter;
+        uint64_t startCycles;
+        std::chrono::steady_clock::time_point start;
+        bool enabled;
+        VuStatsScope(int u, const uint64_t &counter)
+            : unit(u), cycleCounter(counter), startCycles(counter), enabled(vuStats().enabled)
+        {
+            if (enabled)
+                start = std::chrono::steady_clock::now();
+        }
+        ~VuStatsScope()
+        {
+            if (!enabled)
+                return;
+            VuStats &stats = vuStats();
+            ++stats.calls[unit];
+            stats.cycles[unit] += cycleCounter - startCycles;
+            stats.seconds[unit] += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+            if (frame >= stats.lastReportFrame + 1200u)
+            {
+                stats.lastReportFrame = frame;
+                std::fprintf(stderr, "[vu:stats] frame=%llu vu0 calls=%llu cycles=%llu time=%.2fs | vu1 calls=%llu cycles=%llu time=%.2fs\n",
+                             static_cast<unsigned long long>(frame),
+                             static_cast<unsigned long long>(stats.calls[0]), static_cast<unsigned long long>(stats.cycles[0]), stats.seconds[0],
+                             static_cast<unsigned long long>(stats.calls[1]), static_cast<unsigned long long>(stats.cycles[1]), stats.seconds[1]);
+                stats = VuStats{};
+                stats.lastReportFrame = frame;
+            }
+        }
+    };
+}
+
+
+namespace
+{
     constexpr uint32_t kGuestHeapDefaultBase = 0x00100000u;
     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
@@ -746,9 +800,12 @@ bool PS2Runtime::syncCoreSubsystems()
                                          std::fwrite(m_memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, s_capture);
                                          std::fwrite(m_memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, s_capture);
                                      }
-                                     m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
-                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                   m_gs, &m_memory, startPC, top, itop, 65536);
+                                     {
+                                         VuStatsScope statsScope(1, m_vu1.state().cycles);
+                                         m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
+                                                       m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
+                                                       m_gs, &m_memory, startPC, top, itop, 65536);
+                                     }
                                      if (capture)
                                      {
                                          std::fwrite(&m_vu1.state(), sizeof(VU1State), 1, s_capture);
@@ -1743,6 +1800,7 @@ void PS2Runtime::SignalException(R5900Context *ctx, PS2Exception exception)
                        exception == EXCEPTION_TLB_REFILL);
 }
 
+
 void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint32_t address)
 {
     (void)rdram;
@@ -1757,7 +1815,8 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
         return;
     }
 
-    m_vu0.reset();
+    m_vu0.reset(); // zeroes the cycle counter, so measure from here
+    VuStatsScope statsScope(0, m_vu0.state().cycles);
     copyVu0ContextToState(ctx, m_vu0.state());
     m_vu0.execute(vu0Code, PS2_VU0_CODE_SIZE,
                   vu0Data, PS2_VU0_DATA_SIZE,
