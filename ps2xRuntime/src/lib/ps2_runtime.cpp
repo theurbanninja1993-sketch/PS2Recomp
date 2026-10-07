@@ -94,6 +94,8 @@ struct ProgramHeader
 };
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+// Present only in -fprofile-generate builds.
+extern "C" void __gcov_dump(void) __attribute__((weak));
 
 namespace
 {
@@ -1219,6 +1221,9 @@ namespace
 {
     constexpr size_t kPcSampleCapacity = 1u << 22;
     uint32_t g_pcSamples[kPcSampleCapacity]; // host RIP - &pcSampleHandler (wraps mod 2^32)
+    // [rsp] at the sample (the caller when RIP is in a frameless leaf such as
+    // libc memcpy), same encoding; written to <file>.callers.
+    uint32_t g_pcSampleCallers[kPcSampleCapacity];
     std::atomic<uint32_t> g_pcSampleCount{0};
     uint64_t g_pcSampleStartFrame = 0;
     PS2Runtime *g_pcSampleRuntime = nullptr;
@@ -1235,6 +1240,9 @@ namespace
         if (index < kPcSampleCapacity)
         {
             g_pcSamples[index] = static_cast<uint32_t>(rip - reinterpret_cast<uint64_t>(&pcSampleHandler));
+            const uint64_t rsp = static_cast<uint64_t>(context->uc_mcontext.gregs[REG_RSP]);
+            g_pcSampleCallers[index] = static_cast<uint32_t>(*reinterpret_cast<const uint64_t *>(rsp) -
+                                                             reinterpret_cast<uint64_t>(&pcSampleHandler));
             g_pcSampleCount.store(index + 1u, std::memory_order_relaxed);
         }
     }
@@ -1274,6 +1282,26 @@ namespace
         if (FILE *f = std::fopen(path.c_str(), "wb"))
         {
             std::fwrite(g_pcSamples, sizeof(uint32_t), g_pcSampleCount.load(), f);
+            std::fclose(f);
+        }
+        if (FILE *f = std::fopen((path + ".callers").c_str(), "wb"))
+        {
+            std::fwrite(g_pcSampleCallers, sizeof(uint32_t), g_pcSampleCount.load(), f);
+            std::fclose(f);
+        }
+        // <file>.maps: the handler's absolute address followed by
+        // /proc/self/maps, so samples outside the executable (libc, libm, ...)
+        // can be attributed.
+        if (FILE *f = std::fopen((path + ".maps").c_str(), "w"))
+        {
+            std::fprintf(f, "handler %llx\n", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&pcSampleHandler)));
+            if (FILE *maps = std::fopen("/proc/self/maps", "r"))
+            {
+                char line[512];
+                while (std::fgets(line, sizeof(line), maps))
+                    std::fputs(line, f);
+                std::fclose(maps);
+            }
             std::fclose(f);
         }
     }
@@ -2818,6 +2846,22 @@ void PS2Runtime::run()
             });
             if ((s_presentedFrames % 1200u) == 0u)
                 writePcSamples();
+            // PS2X_EXIT_AFTER_FRAME=<n>: exit cleanly at frame n (PGO training
+            // runs need the profile written, which a signal would skip).
+            {
+                static const uint64_t s_exitFrame = []() -> uint64_t
+                {
+                    const char *env = std::getenv("PS2X_EXIT_AFTER_FRAME");
+                    return env ? std::strtoull(env, nullptr, 10) : 0u;
+                }();
+                if (s_exitFrame != 0u && s_presentedFrames >= s_exitFrame)
+                {
+                    std::cerr << "[run] PS2X_EXIT_AFTER_FRAME reached at frame " << s_presentedFrames << std::endl;
+                    if (__gcov_dump)
+                        __gcov_dump();
+                    std::_Exit(0);
+                }
+            }
             // PS2X_HASH_CHECK=<addr>: validate an STL hashtable (buckets vector at +4/+8,
             // nodes [next, value]) each frame and report the first bad link.
             {

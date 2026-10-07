@@ -398,6 +398,38 @@ add_library(ps2_runtime STATIC
     src/lib/games_database.cpp
 )
 
+# Host-CPU code generation for the runtime/IOP libraries (VU1 interpreter, GS
+# rasterizer, SPU2). FP contraction stays off so FMA can't change emulated
+# float results (verified with tools/vu1_replay).
+option(PS2X_NATIVE_ARCH "Compile the runtime libraries for the build machine's CPU" OFF)
+if(PS2X_NATIVE_ARCH AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(ps2_runtime PRIVATE -march=native -ffp-contract=off)
+    if(TARGET ps2_iop)
+        target_compile_options(ps2_iop PRIVATE -march=native -ffp-contract=off)
+    endif()
+endif()
+
+# Profile-guided optimisation for the runtime/IOP libraries only (the
+# generated game TUs are too large to instrument usefully).
+#   PS2X_PGO=generate -> run tools/vu1_replay + a gameplay session, then
+#   PS2X_PGO=use      -> rebuild with the collected profile in PS2X_PGO_DIR.
+set(PS2X_PGO "off" CACHE STRING "Runtime PGO mode: off, generate or use")
+set(PS2X_PGO_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH "Runtime PGO profile directory")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT PS2X_PGO STREQUAL "off")
+    foreach(PS2X_PGO_TARGET ps2_runtime ps2_iop)
+        if(TARGET ${PS2X_PGO_TARGET})
+            # Compiler caches don't hash profile data; always compile these.
+            set_target_properties(${PS2X_PGO_TARGET} PROPERTIES CXX_COMPILER_LAUNCHER "" C_COMPILER_LAUNCHER "")
+            if(PS2X_PGO STREQUAL "generate")
+                target_compile_options(${PS2X_PGO_TARGET} PRIVATE -fprofile-generate=${PS2X_PGO_DIR} -fprofile-update=single)
+                target_link_options(${PS2X_PGO_TARGET} INTERFACE -fprofile-generate=${PS2X_PGO_DIR})
+            elseif(PS2X_PGO STREQUAL "use")
+                target_compile_options(${PS2X_PGO_TARGET} PRIVATE -fprofile-use=${PS2X_PGO_DIR} -fprofile-correction -fprofile-partial-training -Wno-missing-profile)
+            endif()
+        endif()
+    endforeach()
+endif()
+
 if(PS2X_ENABLE_RUNTIME_LOGS)
     target_compile_definitions(ps2_runtime PUBLIC
         PS2_RUNTIME_LOGS=1

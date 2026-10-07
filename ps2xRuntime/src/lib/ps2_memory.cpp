@@ -3,12 +3,55 @@
 #include "runtime/gs/gs_frontend.h"
 #include "ps2_log.h"
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <algorithm>
 #include <string>
 #include <vector>
+
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
+namespace
+{
+    // PS2X_DMA_SEQ=<startFrame>,<frames>: timeline of DMA processing and EE
+    // polls of the DMA control registers (async VIF1 feasibility study).
+    struct DmaSeqTrace
+    {
+        uint64_t start = 0, end = 0;
+        bool enabled = false;
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        DmaSeqTrace()
+        {
+            if (const char *env = std::getenv("PS2X_DMA_SEQ"))
+            {
+                enabled = true;
+                start = std::strtoull(env, nullptr, 10);
+                const char *comma = std::strchr(env, ',');
+                end = start + (comma ? std::strtoull(comma + 1, nullptr, 10) : 3u);
+            }
+        }
+        bool active() const
+        {
+            if (!enabled)
+                return false;
+            const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+            return frame >= start && frame < end;
+        }
+        double now() const
+        {
+            return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+        }
+    };
+    DmaSeqTrace &dmaSeq()
+    {
+        static DmaSeqTrace trace;
+        return trace;
+    }
+}
 
 std::vector<uint8_t> &vif1StreamCarry(const PS2Memory *memory);
 
@@ -1710,6 +1753,21 @@ void PS2Memory::completeDmacChannel(uint32_t channelBase, uint32_t cause)
 
 void PS2Memory::processPendingTransfers()
 {
+    struct SeqScope
+    {
+        bool active;
+        double begin;
+        uint32_t channels;
+        ~SeqScope()
+        {
+            if (active && channels != 0u)
+                std::fprintf(stderr, "[dmaseq] f=%llu t=%.1f kick=%x dur=%.1f\n",
+                             static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), begin, channels,
+                             dmaSeq().now() - begin);
+        }
+    } seqScope{dmaSeq().active(), dmaSeq().now(),
+               (m_pendingGifTransfers.empty() ? 0u : 4u) | (m_pendingVif1Transfers.empty() ? 0u : 2u) |
+                   (m_pendingVif0Transfers.empty() ? 0u : 1u)};
     const bool hadGif = !m_pendingGifTransfers.empty();
     uint32_t observedGifQwc = 0u;
     for (const auto &transfer : m_pendingGifTransfers)
@@ -2328,6 +2386,10 @@ int PS2Memory::pollDmaRegisters()
 
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
+    if ((address == 0x10009000u || address == 0x1000A000u || address == 0x1000E010u || address == 0x10003C00u) &&
+        dmaSeq().active())
+        std::fprintf(stderr, "[dmaseq] f=%llu t=%.1f read=%x\n",
+                     static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), dmaSeq().now(), address);
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
