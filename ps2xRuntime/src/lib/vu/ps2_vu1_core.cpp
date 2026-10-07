@@ -770,6 +770,19 @@ void VU1Interpreter::queueAccWrite(uint8_t laneMask, const float value[4], uint3
     reportReservedInstruction(true, 0xFFFFFFF5u);
 }
 
+namespace
+{
+    // PS2X_VU1_EXACT_PIPELINE restores queued (latency-delayed) VF/ACC
+    // writes. The default is verified bit-exact with tools/vu1_replay: a read
+    // of an in-flight VF/ACC register stalls until the write lands, so it
+    // always observes the new value and the write can land immediately.
+    bool fastCommitEnabled()
+    {
+        static const bool s_exact = std::getenv("PS2X_VU1_EXACT_PIPELINE") != nullptr;
+        return !s_exact;
+    }
+}
+
 void VU1Interpreter::commitReadyPipelines()
 {
     if (m_cycle < m_nextCommitCycle)
@@ -1824,35 +1837,69 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
 
         m_viBranchBackupValid = false;
 
-        if (hasUpperWrite)
+        if (fastCommitEnabled())
         {
-            std::memcpy(newUpperVf, m_state.vf[upperWrite.reg], sizeof(newUpperVf));
-            std::memcpy(m_state.vf[upperWrite.reg], oldUpperVf, sizeof(oldUpperVf));
-            const uint32_t latency =
-                decoded.upperUsage.vfLatency != 0u
-                    ? decoded.upperUsage.vfLatency
-                    : decoded.upperUsage.latency;
-            queueVfWrite(upperWrite.reg, upperWrite.lanes, newUpperVf, latency);
+            // Readers stall on m_vfReady/m_accReady until a write lands, so they
+            // always observe the new value: keep it in place and retire older
+            // in-flight writes to the same lanes.
+            auto retireVf = [&](const VfAccess &write)
+            {
+                const uint64_t sequence = ++m_nextWriteSequence;
+                for (uint32_t component = 0; component < 4u; ++component)
+                    if ((write.lanes & laneForComponent(component)) != 0u)
+                        m_vfLatestWrite[write.reg][component] = sequence;
+            };
+            if (hasUpperWrite)
+                retireVf(upperWrite);
+            if (hasDistinctLowerWrite)
+                retireVf(lowerWrite);
+            if (decoded.upperUsage.accWrite != 0u)
+            {
+                const uint64_t sequence = ++m_nextWriteSequence;
+                for (uint32_t component = 0; component < 4u; ++component)
+                    if ((decoded.upperUsage.accWrite & laneForComponent(component)) != 0u)
+                        m_accLatestWrite[component] = sequence;
+            }
         }
-        if (hasDistinctLowerWrite)
+        else
         {
-            std::memcpy(newLowerVf, m_state.vf[lowerWrite.reg], sizeof(newLowerVf));
-            std::memcpy(m_state.vf[lowerWrite.reg], oldLowerVf, sizeof(oldLowerVf));
-            const uint32_t latency = decoded.lowerUsage.vfLatency != 0u
-                                         ? decoded.lowerUsage.vfLatency
-                                         : decoded.lowerUsage.latency;
-            queueVfWrite(lowerWrite.reg, lowerWrite.lanes, newLowerVf, latency);
+            if (hasUpperWrite)
+            {
+                std::memcpy(newUpperVf, m_state.vf[upperWrite.reg], sizeof(newUpperVf));
+                std::memcpy(m_state.vf[upperWrite.reg], oldUpperVf, sizeof(oldUpperVf));
+                const uint32_t latency =
+                    decoded.upperUsage.vfLatency != 0u
+                        ? decoded.upperUsage.vfLatency
+                        : decoded.upperUsage.latency;
+                queueVfWrite(upperWrite.reg, upperWrite.lanes, newUpperVf, latency);
+            }
+            if (hasDistinctLowerWrite)
+            {
+                std::memcpy(newLowerVf, m_state.vf[lowerWrite.reg], sizeof(newLowerVf));
+                std::memcpy(m_state.vf[lowerWrite.reg], oldLowerVf, sizeof(oldLowerVf));
+                const uint32_t latency = decoded.lowerUsage.vfLatency != 0u
+                                             ? decoded.lowerUsage.vfLatency
+                                             : decoded.lowerUsage.latency;
+                queueVfWrite(lowerWrite.reg, lowerWrite.lanes, newLowerVf, latency);
+            }
+            if (decoded.upperUsage.accWrite != 0u)
+            {
+                std::memcpy(newAcc, m_state.acc, sizeof(newAcc));
+                std::memcpy(m_state.acc, oldAcc, sizeof(oldAcc));
+                // ACC is forwarded to the next upper instruction. Its arithmetic
+                // flags still use the normal four-cycle FMAC timeline.
+                queueAccWrite(decoded.upperUsage.accWrite, newAcc,
+                              kAccForwardLatency);
+            }
         }
-        if (decoded.upperUsage.accWrite != 0u)
+        if (writtenVi != 0u && fastCommitEnabled())
         {
-            std::memcpy(newAcc, m_state.acc, sizeof(newAcc));
-            std::memcpy(m_state.acc, oldAcc, sizeof(oldAcc));
-            // ACC is forwarded to the next upper instruction. Its arithmetic
-            // flags still use the normal four-cycle FMAC timeline.
-            queueAccWrite(decoded.upperUsage.accWrite, newAcc,
-                          kAccForwardLatency);
+            // Same reasoning as VF/ACC: integer readers stall until the write
+            // lands. Branch reads of the previous value keep their own backup.
+            m_state.vi[writtenVi] = static_cast<int16_t>(m_state.vi[writtenVi]);
+            m_viLatestWrite[writtenVi] = ++m_nextWriteSequence;
         }
-        if (writtenVi != 0u)
+        else if (writtenVi != 0u)
         {
             const int32_t newVi = m_state.vi[writtenVi];
             m_state.vi[writtenVi] = oldVi;
