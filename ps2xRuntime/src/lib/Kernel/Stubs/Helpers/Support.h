@@ -433,7 +433,9 @@ namespace
         return true;
     }
 
-    bool readCdSectors(uint32_t lbn, uint32_t sectors, uint8_t *dst, size_t byteCount)
+    // logMiss=false for the IOP path: an EE-registry miss there is normal, the
+    // IOP then serves the sector from its own virtual ISO layout.
+    bool readCdSectors(uint32_t lbn, uint32_t sectors, uint8_t *dst, size_t byteCount, bool logMiss = true)
     {
         for (const auto &[key, entry] : g_cdFilesByKey)
         {
@@ -467,9 +469,10 @@ namespace
             return readHostRange(cdImage, offset, dst, byteCount);
         }
 
-        std::cerr << "sceCdRead unresolved LBN 0x" << std::hex << lbn
-                  << " sectors=" << std::dec << sectors
-                  << " (no mapped file and no configured CD image)" << std::endl;
+        if (logMiss)
+            std::cerr << "sceCdRead unresolved LBN 0x" << std::hex << lbn
+                      << " sectors=" << std::dec << sectors
+                      << " (no mapped file and no configured CD image)" << std::endl;
         g_lastCdError = -1;
         return false;
     }

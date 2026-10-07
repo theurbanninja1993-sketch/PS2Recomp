@@ -379,7 +379,7 @@ namespace ps2_stubs
         {
             return false;
         }
-        const bool ok = readCdSectors(lbn, sectors, dst, static_cast<size_t>(sectors) * kCdSectorSize);
+        const bool ok = readCdSectors(lbn, sectors, dst, static_cast<size_t>(sectors) * kCdSectorSize, false);
         // PS2X_CD_TRACE=1 logs every IOP-side sector read with its backing file.
         static const bool s_trace = std::getenv("PS2X_CD_TRACE") != nullptr;
         if (s_trace)
