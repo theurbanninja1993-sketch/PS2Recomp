@@ -87,6 +87,10 @@ namespace ps2x::iop::detail
                 }
                 pending[pendingCount++] = {source, destination, size};
                 largestTransfer = std::max(largestTransfer, size);
+                static const bool s_sifTrace = std::getenv("PS2X_SIF_TRACE") != nullptr;
+                if (s_sifTrace)
+                    std::cerr << "[iop:sifdma] src=0x" << std::hex << source << " dst=0x" << destination << " size=0x" << size
+                              << " ra=0x" << cpu.gpr[31] << std::dec << std::endl;
             }
 
             // IOP-side sceSifSetDma sends IOP RAM to the EE. Validate all EE

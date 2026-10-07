@@ -17,6 +17,7 @@
 #endif
 #include <atomic>
 #include <array>
+#include <map>
 #include <mutex>
 #include <filesystem>
 #include <memory>
@@ -383,6 +384,10 @@ public:
     uint32_t guestCalloc(uint32_t count, uint32_t size, uint32_t alignment = 16u);
     uint32_t guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t alignment = 16u);
     void guestFree(uint32_t guestAddr);
+    // Runtime-internal guest buffers (HLE packets, callback data). These come
+    // from a reserved arena below the ELF so they never overlap the game's own
+    // heap, which starts right after .bss; guestFree() releases either kind.
+    uint32_t hleMalloc(uint32_t size, uint32_t alignment = 16u);
     uint32_t guestHeapBase() const;
     uint32_t guestHeapEnd() const;
     uint32_t guestHeapLimit() const;
@@ -516,6 +521,7 @@ private:
     uint32_t m_guestHeapLimit = PS2_RAM_SIZE;
     uint32_t m_guestHeapSuggestedBase = 0x00100000u;
     bool m_guestHeapConfigured = false;
+    std::map<uint32_t, uint32_t> m_hleArenaBlocks; // addr -> size, guarded by m_guestHeapMutex
     uint32_t m_asyncCallbackStackFloor = 0x01F00000u;
     uint32_t m_asyncCallbackStackTop = PS2_RAM_SIZE;
 

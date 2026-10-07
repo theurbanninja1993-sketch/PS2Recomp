@@ -105,6 +105,8 @@ namespace
     // lets handlers overwrite live game frames.
     constexpr uint32_t kAsyncCallbackStackRegionFloor = 0x00010000u;
     constexpr uint32_t kAsyncCallbackStackRegionTop = 0x00080000u;
+    constexpr uint32_t kHleArenaBase = 0x00080000u;
+    constexpr uint32_t kHleArenaEnd = 0x00100000u;
 
     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
@@ -1319,12 +1321,42 @@ void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R
         std::cerr << " pc=0x" << ctx->pc
                   << " ra=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0))
                   << " sp=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[29], 0));
+        static const bool s_regs = std::getenv("PS2X_WATCH_REGS") != nullptr;
+        if (s_regs)
+        {
+            for (int r = 1; r < 32; ++r)
+                std::cerr << " r" << std::dec << r << "=0x" << std::hex << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[r], 0));
+            std::cerr << "\n  dispatch: " << formatDispatchHistory();
+        }
     }
     std::cerr << std::dec << std::endl;
 }
 
 PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 {
+    // PS2X_SHADOW_WATCH=<addr>: report word changes (from any source, including
+    // host-side writes that bypass the store watchpoint) at dispatch granularity.
+    {
+        static const uint32_t s_shadowAddr = []() -> uint32_t
+        {
+            const char *env = std::getenv("PS2X_SHADOW_WATCH");
+            return env ? (static_cast<uint32_t>(std::strtoul(env, nullptr, 0)) & PS2_RAM_MASK & ~3u) : 0u;
+        }();
+        if (s_shadowAddr != 0u)
+        {
+            static uint32_t s_last = 0u;
+            static uint32_t s_reports = 0u;
+            uint32_t now = 0u;
+            std::memcpy(&now, m_memory.getRDRAM() + s_shadowAddr, 4u);
+            if (now != s_last && s_reports < 64u)
+            {
+                ++s_reports;
+                std::cerr << std::hex << "[shadow-watch] addr=0x" << s_shadowAddr << " 0x" << s_last << " -> 0x" << now
+                          << " entering=0x" << address << "\n  dispatch: " << formatDispatchHistory() << std::dec << std::endl;
+            }
+            s_last = now;
+        }
+    }
     pushDispatchPc(address);
 
     uint32_t slot = 0u;
@@ -2163,6 +2195,42 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
     return newAddr;
 }
 
+uint32_t PS2Runtime::hleMalloc(uint32_t size, uint32_t alignment)
+{
+    if (size == 0u)
+    {
+        return 0u;
+    }
+    const uint32_t align = std::max<uint32_t>(16u, normalizeGuestHeapAlignment(alignment));
+    const uint32_t allocSize = alignGuestHeapValue(size, kGuestHeapDefaultAlignment);
+    {
+        std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+        uint32_t cursor = kHleArenaBase;
+        for (auto it = m_hleArenaBlocks.begin();; ++it)
+        {
+            const uint32_t candidate = (cursor + align - 1u) & ~(align - 1u);
+            const uint32_t gapEnd = (it == m_hleArenaBlocks.end()) ? kHleArenaEnd : it->first;
+            if (candidate <= gapEnd && gapEnd - candidate >= allocSize)
+            {
+                m_hleArenaBlocks.emplace(candidate, allocSize);
+                return candidate;
+            }
+            if (it == m_hleArenaBlocks.end())
+            {
+                break;
+            }
+            cursor = it->first + it->second;
+        }
+    }
+    static bool s_warned = false;
+    if (!s_warned)
+    {
+        s_warned = true;
+        std::cerr << "[hle-arena] exhausted; falling back to the guest heap (size=0x" << std::hex << size << std::dec << ")" << std::endl;
+    }
+    return guestMalloc(size, alignment);
+}
+
 void PS2Runtime::guestFree(uint32_t guestAddr)
 {
     if (guestAddr == 0u)
@@ -2171,6 +2239,12 @@ void PS2Runtime::guestFree(uint32_t guestAddr)
     }
 
     std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+    const uint32_t phys = guestAddr & PS2_RAM_MASK;
+    if (phys >= kHleArenaBase && phys < kHleArenaEnd)
+    {
+        m_hleArenaBlocks.erase(phys);
+        return;
+    }
     ensureGuestHeapInitializedLocked();
     freeGuestBlockLocked(guestAddr);
 }
@@ -2702,6 +2776,50 @@ void PS2Runtime::run()
             });
             if ((s_presentedFrames % 1200u) == 0u)
                 writePcSamples();
+            // PS2X_HASH_CHECK=<addr>: validate an STL hashtable (buckets vector at +4/+8,
+            // nodes [next, value]) each frame and report the first bad link.
+            {
+                static const uint32_t s_hashAddr = []() -> uint32_t
+                {
+                    const char *env = std::getenv("PS2X_HASH_CHECK");
+                    return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 0)) : 0u;
+                }();
+                static bool s_hashReported = false;
+                if (s_hashAddr != 0u && !s_hashReported)
+                {
+                    const uint8_t *ram = m_memory.getRDRAM();
+                    auto rd = [&](uint32_t a) -> uint32_t
+                    {
+                        uint32_t v = 0;
+                        std::memcpy(&v, ram + (a & PS2_RAM_MASK & ~3u), 4u);
+                        return v;
+                    };
+                    auto bad = [](uint32_t v)
+                    { return v != 0u && ((v & 3u) != 0u || v < 0x100000u || v >= PS2_RAM_SIZE); };
+                    const uint32_t begin = rd(s_hashAddr + 4u), end = rd(s_hashAddr + 8u);
+                    if (begin != 0u && end > begin && (end - begin) < 0x100000u)
+                    {
+                        for (uint32_t b = begin; b < end && !s_hashReported; b += 4u)
+                        {
+                            uint32_t holder = b, node = rd(b);
+                            for (uint32_t steps = 0; node != 0u && steps < 4096u; ++steps)
+                            {
+                                if (bad(node) || steps == 4095u)
+                                {
+                                    std::cerr << std::hex << "[hash-check] frame=" << std::dec << s_presentedFrames
+                                              << std::hex << " bucket=" << ((b - begin) / 4u) << " holder=0x" << holder
+                                              << " value=0x" << node << " begin=0x" << begin << " end=0x" << end
+                                              << std::dec << std::endl;
+                                    s_hashReported = true;
+                                    break;
+                                }
+                                holder = node;
+                                node = rd(node);
+                            }
+                        }
+                    }
+                }
+            }
             // PS2X_DUMP_RAM_FRAME=<frame>: write EE RAM + scratchpad to ram_<frame>.bin / spr_<frame>.bin.
             {
                 static const uint64_t s_dumpFrame = []() -> uint64_t

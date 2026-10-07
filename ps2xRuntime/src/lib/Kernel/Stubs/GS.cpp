@@ -615,7 +615,7 @@ namespace ps2_stubs
         const uint32_t imageQwc = (totalImageBytes + 15u) / 16u;
         const uint32_t totalQwc = headerQwc + imageQwc;
 
-        uint32_t pktAddr = runtime->guestMalloc(totalQwc * 16u, 16u);
+        uint32_t pktAddr = runtime->hleMalloc(totalQwc * 16u, 16u);
         if (pktAddr == 0)
         {
             setReturnS32(ctx, -1);
@@ -709,7 +709,7 @@ namespace ps2_stubs
                           (static_cast<uint64_t>(0u) << 48);
         uint64_t trxreg = static_cast<uint64_t>(img.height) << 32 | static_cast<uint64_t>(img.width);
 
-        uint32_t pktAddr = runtime->guestMalloc(80u, 16u);
+        uint32_t pktAddr = runtime->hleMalloc(80u, 16u);
         if (pktAddr == 0)
         {
             setReturnS32(ctx, -1);
@@ -810,7 +810,7 @@ namespace ps2_stubs
 
             if (runtime)
             {
-                uint32_t pktAddr = runtime->guestMalloc(128u, 16u);
+                uint32_t pktAddr = runtime->hleMalloc(128u, 16u);
                 if (pktAddr != 0u)
                 {
                     uint8_t *pkt = getMemPtr(rdram, pktAddr);

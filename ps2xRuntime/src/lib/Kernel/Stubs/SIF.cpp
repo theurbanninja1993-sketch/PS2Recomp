@@ -247,7 +247,7 @@ namespace ps2_stubs
         if (!runtime->hasFunction(registered.function))
             return false;
 
-        const uint32_t packetAddress = runtime->guestMalloc(static_cast<uint32_t>(packetSize), 16u);
+        const uint32_t packetAddress = runtime->hleMalloc(static_cast<uint32_t>(packetSize), 16u);
         if (packetAddress == 0u)
             return false;
 

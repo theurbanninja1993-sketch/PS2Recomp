@@ -1611,7 +1611,7 @@ namespace ps2_stubs
                 return;
             }
 
-            const uint32_t cbDataAddr = runtime->guestMalloc(kMpegCallbackDataSize, 16u);
+            const uint32_t cbDataAddr = runtime->hleMalloc(kMpegCallbackDataSize, 16u);
             if (cbDataAddr == 0u)
             {
                 return;
@@ -2062,7 +2062,7 @@ namespace ps2_stubs
         mpegGuestWrite32(rdram, puVar4 + 0x8, a1_init);
         mpegGuestWrite32(rdram, puVar4 + 0xC, a1_init);
 
-        const uint32_t allocResult = runtime ? runtime->guestMalloc(0x600, 8u) : (uVar3 + 0x200u);
+        const uint32_t allocResult = runtime ? runtime->hleMalloc(0x600, 8u) : (uVar3 + 0x200u);
         mpegGuestWrite32(rdram, uVar3 + 0x44, allocResult);
 
         // param_1[0..2] = 0; param_1[4..0xe] = 0xffffffff/0 as per decompilation

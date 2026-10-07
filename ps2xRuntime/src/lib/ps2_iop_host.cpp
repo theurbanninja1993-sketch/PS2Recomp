@@ -237,7 +237,7 @@ uint32_t PS2IopHostAdapter::allocateIopHandle(ps2x::iop::IopHandleKind kind)
 
 uint32_t PS2IopHostAdapter::allocateGuest(uint32_t size, uint32_t alignment)
 {
-    return m_runtime.guestMalloc(size, alignment);
+    return m_runtime.hleMalloc(size, alignment);
 }
 
 void PS2IopHostAdapter::freeGuest(uint32_t address)
