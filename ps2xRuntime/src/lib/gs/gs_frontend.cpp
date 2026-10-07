@@ -116,7 +116,10 @@ namespace
         if (std::getenv("PS2X_GS_SYNC"))
             return std::make_unique<GSCpuBackend>();
         // PS2X_GS_THREADS picks the number of banded rasterizer workers.
-        uint32_t workers = std::clamp<uint32_t>(std::thread::hardware_concurrency() / 2u, 1u, 8u);
+        // ~60% of hardware threads leaves room for the EE and VIF1/VU1 threads;
+        // more workers oversubscribe and starve VU1 (20-thread i7: 12 best,
+        // 16 much slower).
+        uint32_t workers = std::clamp<uint32_t>(std::thread::hardware_concurrency() * 3u / 5u, 1u, 12u);
         if (const char *env = std::getenv("PS2X_GS_THREADS"))
             workers = std::clamp<uint32_t>(static_cast<uint32_t>(std::strtoul(env, nullptr, 10)), 1u, 32u);
         return std::make_unique<GSThreadedBackend>([]()
