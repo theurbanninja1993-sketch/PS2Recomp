@@ -755,11 +755,21 @@ void VU1Interpreter::commitReadyPipelines()
     if (m_cycle < m_nextCommitCycle)
         return;
 
+    // Single pass per pipeline: commit what is ready and track the earliest
+    // pending readyCycle. Entries are retired by clearing `valid`; every queue
+    // site fully re-initialises a slot before reuse.
+    uint64_t next = UINT64_MAX;
+    const uint64_t cycle = m_cycle;
+
     for (FlagPipelineEntry &entry : m_flagPipeline)
     {
-        if (!entry.valid || entry.readyCycle > m_cycle)
+        if (!entry.valid)
             continue;
-
+        if (entry.readyCycle > cycle)
+        {
+            next = std::min(next, entry.readyCycle);
+            continue;
+        }
         if (entry.writesMac)
             m_state.mac = entry.mac;
         if (entry.writesStatus)
@@ -776,27 +786,45 @@ void VU1Interpreter::commitReadyPipelines()
         entry = {};
     }
 
-    if (m_fdiv.valid && m_fdiv.readyCycle <= m_cycle)
+    if (m_fdiv.valid)
     {
-        m_state.q = m_fdiv.value;
-        const uint32_t currentDi = m_fdiv.statusDi & 0x30u;
-        m_state.status = (m_state.status & 0xFCFu) | currentDi | (currentDi << 6);
-        m_fdiv = {};
+        if (m_fdiv.readyCycle <= cycle)
+        {
+            m_state.q = m_fdiv.value;
+            const uint32_t currentDi = m_fdiv.statusDi & 0x30u;
+            m_state.status = (m_state.status & 0xFCFu) | currentDi | (currentDi << 6);
+            m_fdiv = {};
+        }
+        else
+        {
+            next = std::min(next, m_fdiv.readyCycle);
+        }
     }
 
     for (ScalarPipelineEntry &entry : m_efu)
     {
-        if (entry.valid && entry.readyCycle <= m_cycle)
+        if (!entry.valid)
+            continue;
+        if (entry.readyCycle <= cycle)
         {
             m_state.p = entry.value;
-            entry = {};
+            entry.valid = false;
+        }
+        else
+        {
+            next = std::min(next, entry.readyCycle);
         }
     }
 
     for (PendingStore &store : m_storePipeline)
     {
-        if (!store.valid || store.readyCycle > m_cycle)
+        if (!store.valid)
             continue;
+        if (store.readyCycle > cycle)
+        {
+            next = std::min(next, store.readyCycle);
+            continue;
+        }
         if (m_activeVuData && store.address + 16u <= m_activeVuDataSize)
         {
             uint32_t oldWords[4]{};
@@ -808,13 +836,18 @@ void VU1Interpreter::commitReadyPipelines()
             }
             std::memcpy(m_activeVuData + store.address, oldWords, sizeof(oldWords));
         }
-        store = {};
+        store.valid = false;
     }
 
     for (PendingVfWrite &write : m_vfWritePipeline)
     {
-        if (!write.valid || write.readyCycle > m_cycle)
+        if (!write.valid)
             continue;
+        if (write.readyCycle > cycle)
+        {
+            next = std::min(next, write.readyCycle);
+            continue;
+        }
         for (uint32_t component = 0; component < 4u; ++component)
         {
             if ((write.laneMask & laneForComponent(component)) != 0u &&
@@ -823,22 +856,32 @@ void VU1Interpreter::commitReadyPipelines()
                 m_state.vf[write.reg][component] = write.value[component];
             }
         }
-        write = {};
+        write.valid = false;
     }
 
     for (PendingViWrite &write : m_viWritePipeline)
     {
-        if (!write.valid || write.readyCycle > m_cycle)
+        if (!write.valid)
             continue;
+        if (write.readyCycle > cycle)
+        {
+            next = std::min(next, write.readyCycle);
+            continue;
+        }
         if (m_viLatestWrite[write.reg] == write.sequence)
             m_state.vi[write.reg] = static_cast<int16_t>(write.value);
-        write = {};
+        write.valid = false;
     }
 
     for (PendingAccWrite &write : m_accWritePipeline)
     {
-        if (!write.valid || write.readyCycle > m_cycle)
+        if (!write.valid)
             continue;
+        if (write.readyCycle > cycle)
+        {
+            next = std::min(next, write.readyCycle);
+            continue;
+        }
         for (uint32_t component = 0; component < 4u; ++component)
         {
             if ((write.laneMask & laneForComponent(component)) != 0u &&
@@ -847,28 +890,9 @@ void VU1Interpreter::commitReadyPipelines()
                 m_state.acc[component] = write.value[component];
             }
         }
-        write = {};
+        write.valid = false;
     }
 
-    uint64_t next = UINT64_MAX;
-    auto consider = [&](bool valid, uint64_t readyCycle)
-    {
-        if (valid && readyCycle < next)
-            next = readyCycle;
-    };
-    for (const FlagPipelineEntry &entry : m_flagPipeline)
-        consider(entry.valid, entry.readyCycle);
-    consider(m_fdiv.valid, m_fdiv.readyCycle);
-    for (const ScalarPipelineEntry &entry : m_efu)
-        consider(entry.valid, entry.readyCycle);
-    for (const PendingStore &store : m_storePipeline)
-        consider(store.valid, store.readyCycle);
-    for (const PendingVfWrite &write : m_vfWritePipeline)
-        consider(write.valid, write.readyCycle);
-    for (const PendingViWrite &write : m_viWritePipeline)
-        consider(write.valid, write.readyCycle);
-    for (const PendingAccWrite &write : m_accWritePipeline)
-        consider(write.valid, write.readyCycle);
     m_nextCommitCycle = next;
 }
 
