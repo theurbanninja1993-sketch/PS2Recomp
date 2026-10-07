@@ -46,7 +46,10 @@ private:
     void DrawSprite(const GSPrimitiveBatch &batch);
     void DrawTriangle(const GSPrimitiveBatch &batch);
     void DrawLine(const GSPrimitiveBatch &batch);
-    void WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog);
+    // depthPassed: the caller already ran this pixel's Z test against the
+    // current Z buffer (DrawTriangle's early test), so it is not re-read.
+    void WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog,
+                    bool depthPassed = false);
     uint32_t SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v);
     uint32_t LookupCLUT(const GSDrawState &state, uint8_t index, uint8_t cpsm, uint8_t csm, uint8_t csa, uint8_t sourcePsm);
 

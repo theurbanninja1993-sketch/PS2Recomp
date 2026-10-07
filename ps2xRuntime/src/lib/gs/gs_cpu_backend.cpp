@@ -918,7 +918,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
     }
 }
 
-void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
+void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog,
+                              bool depthPassed)
 {
     const auto &ctx = state.context;
     if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
@@ -985,7 +986,7 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
 
     bool zpass = false;
     uint32_t storedZ = 0u;
-    switch (ztestMethod)
+    switch (depthPassed ? 1u : ztestMethod)
     {
     case 0:
         zpass = false;
@@ -1510,7 +1511,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
             }
 
             const uint8_t fog = clampU8(static_cast<int>(v0.fog * w0 + v1.fog * w1 + v2.fog * w2));
-            WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
+            WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog, ztestMethod >= 2u);
         }
     }
 }
