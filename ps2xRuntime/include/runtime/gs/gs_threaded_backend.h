@@ -120,8 +120,10 @@ private:
     // Exclusive-command barrier (generation counting).
     std::mutex m_barrierMutex;
     std::condition_variable m_barrierCv;
-    uint32_t m_barrierArrived = 0;
-    uint64_t m_barrierGeneration = 0;
+    // Spin-then-block: arrivals/generation are atomics so short waits never
+    // touch the futex; the mutex/condvar only back long waits.
+    std::atomic<uint32_t> m_barrierArrived{0};
+    std::atomic<uint64_t> m_barrierGeneration{0};
 
     // Producer-side records since the last barrier: frame/Z memory drawn, and
     // texture/CLUT memory read.

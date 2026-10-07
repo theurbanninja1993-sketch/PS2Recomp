@@ -243,6 +243,19 @@ void GSThreadedBackend::runExclusive(Command &command)
     }
 }
 
+
+namespace
+{
+    inline void cpuRelax()
+    {
+#if defined(__x86_64__) || defined(__i386__)
+        __builtin_ia32_pause();
+#elif defined(__aarch64__)
+        asm volatile("yield");
+#endif
+    }
+}
+
 // Thread id of rasterizer worker 0, for PS2X_PC_SAMPLE_GS profiling.
 std::atomic<int> g_ps2GsWorkerTid{0};
 
@@ -311,25 +324,42 @@ void GSThreadedBackend::workerLoop(uint32_t index)
             case CommandType::Present:
             case CommandType::Barrier:
             {
-                std::unique_lock<std::mutex> lock(m_barrierMutex);
-                const uint64_t generation = m_barrierGeneration;
-                ++m_barrierArrived;
+                auto waitUntil = [this](auto &&ready)
+                {
+                    // ~0.1-0.3 ms of spinning covers the common short wait.
+                    for (uint32_t spin = 0; spin < 4096u; ++spin)
+                    {
+                        if (ready())
+                            return;
+                        cpuRelax();
+                    }
+                    std::unique_lock<std::mutex> lock(m_barrierMutex);
+                    m_barrierCv.wait(lock, ready);
+                };
+                auto wakeAll = [this]()
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(m_barrierMutex);
+                    }
+                    m_barrierCv.notify_all();
+                };
+                const uint64_t generation = m_barrierGeneration.load(std::memory_order_acquire);
+                const uint32_t arrived = m_barrierArrived.fetch_add(1u, std::memory_order_acq_rel) + 1u;
                 if (index == 0u)
                 {
-                    m_barrierCv.wait(lock, [&]()
-                                     { return m_barrierArrived == workerCount; });
+                    waitUntil([&]()
+                              { return m_barrierArrived.load(std::memory_order_acquire) == workerCount; });
                     runExclusive(command);
-                    m_barrierArrived = 0;
-                    ++m_barrierGeneration;
-                    lock.unlock();
-                    m_barrierCv.notify_all();
+                    m_barrierArrived.store(0u, std::memory_order_relaxed);
+                    m_barrierGeneration.fetch_add(1u, std::memory_order_acq_rel);
+                    wakeAll();
                 }
                 else
                 {
-                    if (m_barrierArrived == workerCount)
-                        m_barrierCv.notify_all();
-                    m_barrierCv.wait(lock, [&]()
-                                     { return m_barrierGeneration != generation; });
+                    if (arrived == workerCount)
+                        wakeAll();
+                    waitUntil([&]()
+                              { return m_barrierGeneration.load(std::memory_order_acquire) != generation; });
                 }
                 // Local memory may have changed under every worker's texture cache.
                 if (command.type == CommandType::BeginTransfer)
