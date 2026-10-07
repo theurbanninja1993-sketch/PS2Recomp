@@ -73,12 +73,17 @@ private:
         GSTransferCommand transfer{};
         GSPresentationRequest presentRequest{};
         std::vector<uint8_t> data;
+        // Point-to-point hazard fence: before this command runs (for an upload:
+        // before its data is written), every worker must have processed this
+        // many commands. 0 = none.
+        uint64_t fence = 0;
     };
 
     struct Range
     {
         uint32_t begin = 0;
         uint32_t end = 0;
+        uint64_t seq = 0; // last command (sequence number) touching the range
     };
 
     static constexpr uint32_t kChunkSize = 1024u;
@@ -97,9 +102,15 @@ private:
     };
 
     void enqueue(Command &&command);
-    void noteDrawTargets(const GSDrawState &state);
+    void noteDrawTargets(const GSDrawState &state, uint64_t seq);
     static bool overlaps(const std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte);
-    void addRange(std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte);
+    void addRange(std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte, uint64_t seq);
+    // Fence (position) covering the latest overlapping range access, or 0.
+    static uint64_t overlapFence(const std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte);
+    // knownSlowest caches the last observed slowestPosition() per worker, so
+    // fences that are already satisfied (the common case) cost no shared reads.
+    void waitForFence(uint64_t fence, uint64_t &knownSlowest) const;
+    uint64_t m_uploadFence = 0;
     void logHazard(const char *cause, uint32_t beginByte, uint32_t endByte);
     void drain() const;
     void workerLoop(uint32_t index);

@@ -275,6 +275,7 @@ void GSThreadedBackend::workerLoop(uint32_t index)
         g_ps2GsWorkerTid.store(static_cast<int>(syscall(SYS_gettid)));
     Worker &self = *m_workers[index];
     GSRasterBackend &backend = *self.backend;
+    uint64_t knownSlowest = 0; // see waitForFence
     const uint32_t workerCount = static_cast<uint32_t>(m_workers.size());
     uint64_t position = 0;
     for (;;)
@@ -310,9 +311,13 @@ void GSThreadedBackend::workerLoop(uint32_t index)
             switch (command.type)
             {
             case CommandType::Submit:
+                if (command.fence != 0u)
+                    waitForFence(command.fence, knownSlowest);
                 backend.Submit(command.batch);
                 break;
             case CommandType::LoadClut:
+                if (command.fence != 0u)
+                    waitForFence(command.fence, knownSlowest);
                 backend.LoadClut(command.tex0, command.texclut);
                 break;
             case CommandType::TextureFlush:
@@ -328,6 +333,8 @@ void GSThreadedBackend::workerLoop(uint32_t index)
                 uint8_t expected = 0u;
                 if (state.compare_exchange_strong(expected, 1u, std::memory_order_acq_rel))
                 {
+                    if (command.fence != 0u)
+                        waitForFence(command.fence, knownSlowest);
                     backend.UploadImage(command.data.data(), static_cast<uint32_t>(command.data.size()));
                     state.store(2u, std::memory_order_release);
                 }
@@ -427,27 +434,66 @@ bool GSThreadedBackend::overlaps(const std::vector<Range> &ranges, uint32_t begi
     return false;
 }
 
-void GSThreadedBackend::addRange(std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte)
+uint64_t GSThreadedBackend::overlapFence(const std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte)
 {
+    uint64_t fence = 0;
     for (const Range &range : ranges)
     {
-        if (range.begin <= beginByte && endByte <= range.end)
+        if (beginByte < range.end && range.begin < endByte)
+            fence = std::max(fence, range.seq + 1u);
+    }
+    return fence;
+}
+
+void GSThreadedBackend::waitForFence(uint64_t fence, uint64_t &knownSlowest) const
+{
+    if (fence <= knownSlowest)
+        return;
+    for (uint32_t spin = 0;; ++spin)
+    {
+        knownSlowest = slowestPosition();
+        if (knownSlowest >= fence)
             return;
+        if (spin < 4096u)
+            cpuRelax();
+        else
+            std::this_thread::yield();
+    }
+}
+
+void GSThreadedBackend::addRange(std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte, uint64_t seq)
+{
+    for (Range &range : ranges)
+    {
+        if (range.begin <= beginByte && endByte <= range.end)
+        {
+            range.seq = std::max(range.seq, seq);
+            return;
+        }
+    }
+    if (ranges.size() >= 16u)
+    {
+        // Ranges every worker has moved past can no longer conflict.
+        const uint64_t slowest = slowestPosition();
+        ranges.erase(std::remove_if(ranges.begin(), ranges.end(), [slowest](const Range &range)
+                                    { return range.seq + 1u <= slowest; }),
+                     ranges.end());
     }
     if (ranges.size() >= 16u)
     {
         ++m_statRangeMerges;
         // Too many distinct ranges: keep one conservative span.
-        Range merged{beginByte, endByte};
+        Range merged{beginByte, endByte, seq};
         for (const Range &range : ranges)
         {
             merged.begin = std::min(merged.begin, range.begin);
             merged.end = std::max(merged.end, range.end);
+            merged.seq = std::max(merged.seq, range.seq);
         }
         ranges.assign(1u, merged);
         return;
     }
-    ranges.push_back(Range{beginByte, endByte});
+    ranges.push_back(Range{beginByte, endByte, seq});
 }
 
 void GSThreadedBackend::logHazard(const char *cause, uint32_t beginByte, uint32_t endByte)
@@ -472,19 +518,19 @@ void GSThreadedBackend::enqueueBarrier()
     m_readSources.clear();
 }
 
-void GSThreadedBackend::noteDrawTargets(const GSDrawState &state)
+void GSThreadedBackend::noteDrawTargets(const GSDrawState &state, uint64_t seq)
 {
     const auto &ctx = state.context;
     const uint32_t height = static_cast<uint32_t>(ctx.scissor.y1) + 1u;
     uint32_t begin = 0;
     uint32_t end = 0;
     bufferRange(ctx.frame.fbp * kPageBytes, ctx.frame.fbw, height, ctx.frame.psm, begin, end);
-    addRange(m_dirtyTargets, begin, end);
+    addRange(m_dirtyTargets, begin, end, seq);
     const bool zWrites = !ctx.zbuf.zmask && ((ctx.test >> 16) & 1u) != 0u;
     if (zWrites)
     {
         bufferRange(ctx.zbuf.zbp * kPageBytes, ctx.frame.fbw, height, ctx.zbuf.psm, begin, end);
-        addRange(m_dirtyTargets, begin, end);
+        addRange(m_dirtyTargets, begin, end, seq);
     }
 }
 
@@ -507,41 +553,46 @@ void GSThreadedBackend::Reset()
 void GSThreadedBackend::Submit(const GSPrimitiveBatch &batch)
 {
     const GSDrawState &state = batch.state;
+    const uint64_t seq = m_published; // this draw's sequence number (single producer)
+    uint64_t fence = 0;
     if (state.prim.tme)
     {
         uint32_t begin = 0;
         uint32_t end = 0;
         textureReadRange(batch, begin, end);
-        if (overlaps(m_dirtyTargets, begin, end))
+        fence = overlapFence(m_dirtyTargets, begin, end);
+        if (fence != 0u)
         {
             ++m_statHazardCause[0];
             logHazard("texture", begin, end);
-            enqueueBarrier();
         }
-        addRange(m_readSources, begin, end);
+        addRange(m_readSources, begin, end, seq);
     }
 
     Command command;
     command.type = CommandType::Submit;
     command.batch = batch;
+    command.fence = fence;
     enqueue(std::move(command));
-    noteDrawTargets(state);
+    noteDrawTargets(state, seq);
 }
 
 void GSThreadedBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
     const uint32_t begin = tex0.cbp * 256u;
-    if (overlaps(m_dirtyTargets, begin, begin + 1024u))
+    const uint64_t seq = m_published;
+    const uint64_t fence = overlapFence(m_dirtyTargets, begin, begin + 1024u);
+    if (fence != 0u)
     {
         ++m_statHazardCause[1];
         logHazard("clut", begin, begin + 1024u);
-        enqueueBarrier();
     }
-    addRange(m_readSources, begin, begin + 1024u);
+    addRange(m_readSources, begin, begin + 1024u, seq);
     Command command;
     command.type = CommandType::LoadClut;
     command.tex0 = tex0;
     command.texclut = texclut;
+    command.fence = fence;
     enqueue(std::move(command));
 }
 
@@ -557,11 +608,13 @@ void GSThreadedBackend::BeginTransfer(const GSTransferCommand &command)
         uint32_t end = 0;
         bufferRange(buf.dbp * 256u, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh,
                     buf.dpsm, begin, end);
-        if (overlaps(m_dirtyTargets, begin, end) || overlaps(m_readSources, begin, end))
+        // The claiming worker writes the upload early; it must wait until no
+        // worker can still draw to or read this memory for earlier commands.
+        m_uploadFence = std::max(overlapFence(m_dirtyTargets, begin, end), overlapFence(m_readSources, begin, end));
+        if (m_uploadFence != 0u)
         {
             ++m_statHazardCause[2];
             logHazard("upload", begin, end);
-            enqueueBarrier();
         }
     }
     Command queued;
@@ -570,6 +623,7 @@ void GSThreadedBackend::BeginTransfer(const GSTransferCommand &command)
     enqueue(std::move(queued));
     if (command.direction != 0u)
     {
+        m_uploadFence = 0;
         m_dirtyTargets.clear();
         m_readSources.clear();
     }
@@ -579,6 +633,7 @@ void GSThreadedBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
 {
     Command command;
     command.type = CommandType::UploadImage;
+    command.fence = m_uploadFence;
     command.data.assign(data, data + sizeBytes);
     enqueue(std::move(command));
 }
