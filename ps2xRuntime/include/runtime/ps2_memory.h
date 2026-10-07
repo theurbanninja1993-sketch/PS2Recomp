@@ -10,6 +10,9 @@
 #include <atomic>
 #include <iostream>
 #include <mutex>
+#include <deque>
+#include <condition_variable>
+#include <thread>
 
 #include "gs/ps2_gif_arbiter.h"
 #if defined(_MSC_VER)
@@ -344,6 +347,20 @@ public:
     void processVIF1Data(uint32_t srcPhysAddr, uint32_t sizeBytes);
     void processVIF1Data(const uint8_t *data, uint32_t sizeBytes);
     void processPendingTransfers();
+
+    // Async VIF1 (default; PS2X_SYNC_VIF1=1 disables): a VIF1 DMA kick hands its data to a
+    // worker thread that runs the VIF1 stream (VU1 microprograms, PATH1/PATH2
+    // GIF output) while the EE continues, as on real hardware. The channel
+    // stays busy (CHCR.STR) until the EE applies the completion.
+    // EE side: blocks until the worker is idle, then applies completions.
+    void waitForAsyncVif1();
+    // EE side: applies finished batches (CHCR/D_STAT/DMAC cause); returns true
+    // if any completed (the caller should dispatch DMAC handlers).
+    bool pollAsyncVif1();
+    [[nodiscard]] bool asyncVif1Enabled() const { return m_asyncVif1; }
+    [[nodiscard]] static bool onAsyncVif1Worker();
+    // Runs on the EE thread whenever completions are applied.
+    void setAsyncVif1CompletionHook(std::function<void()> hook) { m_vif1CompletionHook = std::move(hook); }
     std::vector<uint32_t> consumeCompletedDmacCauses();
 
     int pollDmaRegisters();
@@ -421,6 +438,24 @@ public:
     std::vector<PendingTransfer> m_pendingGifTransfers;
     std::vector<PendingTransfer> m_pendingVif0Transfers;
     std::vector<PendingTransfer> m_pendingVif1Transfers;
+
+    void asyncVif1WorkerLoop();
+    void completeVif1Dma();
+    void raiseDStatChannelBit(uint32_t channelBit);
+    bool m_asyncVif1 = false;
+    std::thread m_vif1Worker;
+    std::mutex m_vif1QueueMutex;
+    std::condition_variable m_vif1QueueCv;
+    std::condition_variable m_vif1IdleCv;
+    std::deque<std::vector<PendingTransfer>> m_vif1Batches;
+    bool m_vif1WorkerActive = false; // guarded by m_vif1QueueMutex
+    bool m_vif1Stop = false;          // guarded by m_vif1QueueMutex
+    std::atomic<uint32_t> m_vif1Finished{0};
+    uint32_t m_vif1Applied = 0; // EE thread only
+    std::function<void()> m_vif1CompletionHook;
+    // The GIF arbiter (and masked-PATH3 FIFO) is fed by both the EE and the
+    // VIF1 worker.
+    std::recursive_mutex m_gifArbiterMutex;
     std::mutex m_completedDmacMutex;
     std::vector<uint32_t> m_completedDmacCauses;
 

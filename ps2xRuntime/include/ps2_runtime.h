@@ -394,6 +394,9 @@ public:
     uint32_t reserveAsyncCallbackStack(uint32_t size, uint32_t alignment = 16u);
 
     void drainCompletedDmacHandlers(uint8_t *rdram);
+    // Applies finished async VIF1 batches and dispatches their DMAC handlers
+    // (EE thread; called from scheduler checkpoints).
+    void pollAsyncDma();
 
     void requestStop();
     bool isStopRequested() const;

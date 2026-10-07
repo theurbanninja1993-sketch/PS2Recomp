@@ -97,6 +97,10 @@ extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 // Present only in -fprofile-generate builds.
 extern "C" void __gcov_dump(void) __attribute__((weak));
 extern std::atomic<int> g_ps2GsWorkerTid; // gs_threaded_backend.cpp
+// Async VIF1: FBRST snapshot taken on the EE thread, and VU1 stop bits the
+// worker defers to the EE thread (bit 31 = pending).
+std::atomic<uint32_t> g_asyncVif1Fbrst{0};
+std::atomic<uint32_t> g_asyncVif1StopBits{0};
 
 namespace
 {
@@ -746,7 +750,32 @@ bool PS2Runtime::syncCoreSubsystems()
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     { m_gs.processGIFPacket(data, size); });
     m_memory.setGifArbiter(&m_gifArbiter);
-    m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
+    auto asyncVif1EeContext = [this]() -> R5900Context *
+    {
+        if (PS2Memory::onAsyncVif1Worker())
+            return nullptr;
+        R5900Context *context = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+        return context ? context : &m_cpuContext;
+    };
+    auto setVu1StopBits = [this](uint32_t bits, R5900Context *context)
+    {
+        if (context)
+            context->vu0_vpu_stat = (context->vu0_vpu_stat & ~0x0600u) | bits;
+        else
+            g_asyncVif1StopBits.store(bits | 0x80000000u, std::memory_order_release);
+    };
+    // Async VIF1 completions are applied on the EE thread: publish the VU1
+    // D/T stop bits recorded by the worker.
+    m_memory.setAsyncVif1CompletionHook([this]()
+                                        {
+                                            const uint32_t bits = g_asyncVif1StopBits.exchange(0u, std::memory_order_acq_rel);
+                                            if ((bits & 0x80000000u) == 0u)
+                                                return;
+                                            R5900Context *context = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+                                            if (!context)
+                                                context = &m_cpuContext;
+                                            context->vu0_vpu_stat = (context->vu0_vpu_stat & ~0x0600u) | (bits & 0x0600u); });
+    m_memory.setVu1MscalCallback([this, asyncVif1EeContext, setVu1StopBits](uint32_t startPC, uint32_t top, uint32_t itop)
                                  {
                                      ps2Vu1TraceMscal(m_memory.getVU1Data(), startPC, top, itop);
                                      if (const char *dumpDir = std::getenv("PS2X_VU1_DUMP_DIR"))
@@ -762,15 +791,12 @@ bool PS2Runtime::syncCoreSubsystems()
                                              }
                                          }
                                      }
-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-                                     if (!cpuContext)
-                                     {
-                                         cpuContext = &m_cpuContext;
-                                     }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     // On the async VIF1 worker the EE context belongs to the
+                                     // EE thread: use the FBRST snapshot and defer VPU_STAT.
+                                     R5900Context *cpuContext = asyncVif1EeContext();
+                                     const uint32_t fbrst = cpuContext ? cpuContext->vu0_fbrst : g_asyncVif1Fbrst.load(std::memory_order_relaxed);
+                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
+                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                      // PS2X_VU1_CAPTURE=<file>,<startFrame>,<count>: record MSCALs
                                      // (state + code + data before, state + data after) for the
                                      // offline VU1 replay benchmark (tools/vu1_replay).
@@ -818,28 +844,21 @@ bool PS2Runtime::syncCoreSubsystems()
                                              std::cerr << "[vu1:capture] done" << std::endl;
                                          }
                                      }
-                                     cpuContext->vu0_vpu_stat =
-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
-    m_memory.setVu1MscntCallback([this](uint32_t top, uint32_t itop)
+                                     setVu1StopBits((m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+                                                    (m_vu1.state().stoppedByT ? 0x0400u : 0u), cpuContext); });
+    m_memory.setVu1MscntCallback([this, asyncVif1EeContext, setVu1StopBits](uint32_t top, uint32_t itop)
                                  {
-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-                                     if (!cpuContext)
-                                     {
-                                         cpuContext = &m_cpuContext;
-                                     }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     // On the async VIF1 worker the EE context belongs to the
+                                     // EE thread: use the FBRST snapshot and defer VPU_STAT.
+                                     R5900Context *cpuContext = asyncVif1EeContext();
+                                     const uint32_t fbrst = cpuContext ? cpuContext->vu0_fbrst : g_asyncVif1Fbrst.load(std::memory_order_relaxed);
+                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
+                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                   m_gs, &m_memory, top, itop, 65536);
-                                     cpuContext->vu0_vpu_stat =
-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
+                                     setVu1StopBits((m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+                                                    (m_vu1.state().stoppedByT ? 0x0400u : 0u), cpuContext); });
     resetIop();
     m_vu0.reset();
     m_vu1.reset();
@@ -1864,6 +1883,16 @@ void PS2Runtime::handleSyscall(uint8_t *rdram, R5900Context *ctx, uint32_t encod
 void PS2Runtime::handleBreak(uint8_t *rdram, R5900Context *ctx)
 {
     raiseCop0Exception(ctx, EXCEPTION_BREAKPOINT);
+}
+
+void PS2Runtime::pollAsyncDma()
+{
+    if (!m_memory.asyncVif1Enabled())
+        return;
+    if (R5900Context *context = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr)
+        g_asyncVif1Fbrst.store(context->vu0_fbrst, std::memory_order_relaxed);
+    if (m_memory.pollAsyncVif1())
+        drainCompletedDmacHandlers(m_memory.getRDRAM());
 }
 
 void PS2Runtime::drainCompletedDmacHandlers(uint8_t *rdram)

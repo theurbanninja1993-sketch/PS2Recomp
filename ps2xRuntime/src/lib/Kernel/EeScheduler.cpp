@@ -405,6 +405,7 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
     s_unsynced = 0u;
     m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(batch);
     m_runtime.advanceIopEeCycles(batch);
+    m_runtime.pollAsyncDma();
     if (m_pendingEeTimerInterrupts != 0u)
     {
         m_checkpointPending.store(true, std::memory_order_release);
