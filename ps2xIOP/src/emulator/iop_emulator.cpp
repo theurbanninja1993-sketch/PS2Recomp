@@ -603,7 +603,10 @@ namespace ps2x::iop::detail
                         if (!pendingGuestCallbacks.empty())
                             nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
                         nextWake = timrman.nextEventCycle(nextWake);
-                        nextWake = std::min(nextWake, spuNextSampleCycle);
+                        // Idle steps only need to stop at SPU samples while a stream is running;
+                        // advanceSpu() catches up on everything else.
+                        if (memory.spu2().needsTimelyTicks())
+                            nextWake = std::min(nextWake, spuNextSampleCycle + 64u * Spu2::IopCyclesPerSample);
                         totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
                         continue;
                     }

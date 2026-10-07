@@ -313,6 +313,13 @@ namespace ps2x::iop::detail
                                                                server.gp);
         if (returnPointer == 0u)
             returnPointer = server.buffer;
+        if (s_spuTrace && request.sid == 0x65686579u)
+        {
+            static uint32_t s_resultLogs = 0;
+            if (s_resultLogs++ < 40u)
+                std::cerr << "[iop:rpc-result] sid=0x65686579 fn=0x" << std::hex << request.function << " ret=0x"
+                          << m_memory.read32(returnPointer) << std::dec << std::endl;
+        }
         if (request.receive.address != 0u && request.receive.size != 0u && returnPointer != 0u)
         {
             const uint32_t physical = IopMemory::physicalAddress(returnPointer);

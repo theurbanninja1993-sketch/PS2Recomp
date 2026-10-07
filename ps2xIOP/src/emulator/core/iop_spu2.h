@@ -40,6 +40,8 @@ namespace ps2x::iop::detail
         // AutoDMA progress as seen through the IOP DMA registers.
         [[nodiscard]] bool autoDmaActive(uint32_t core) const { return m_cores[core & 1u].adma.active; }
         [[nodiscard]] uint32_t autoDmaAddress(uint32_t core) const { return m_cores[core & 1u].adma.address; }
+        // Only AutoDMA streams need the IOP to wake for SPU timing (block IRQs).
+        [[nodiscard]] bool needsTimelyTicks() const { return m_cores[0].adma.active || m_cores[1].adma.active; }
 
         // Produces one 48 kHz stereo frame.
         void tick(const uint8_t *ram, size_t ramSize, int16_t &outLeft, int16_t &outRight);

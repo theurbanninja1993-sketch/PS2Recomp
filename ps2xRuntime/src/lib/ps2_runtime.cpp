@@ -25,6 +25,11 @@
 #include <atomic>
 #include <thread>
 #include <unordered_map>
+#include <csignal>
+#include <ucontext.h>
+#include <ctime>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include <sstream>
 
 static void ps2Vu1TraceMscal(const uint8_t *vu1Data, uint32_t startPC, uint32_t top, uint32_t itop);
@@ -1161,6 +1166,74 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
 }
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
+// PS2X_PC_SAMPLE=<file>[,<startFrame>]: SIGPROF-based sampling of the guest PC on
+// the game thread (every 100 us of game-thread CPU time, from startFrame on),
+// written as raw little-endian u32 PCs. Unlike PS2X_COUNT_CALLS this also sees
+// functions reached through direct recompiled calls.
+namespace
+{
+    constexpr size_t kPcSampleCapacity = 1u << 22;
+    uint32_t g_pcSamples[kPcSampleCapacity]; // host RIP - &pcSampleHandler (wraps mod 2^32)
+    std::atomic<uint32_t> g_pcSampleCount{0};
+    uint64_t g_pcSampleStartFrame = 0;
+    PS2Runtime *g_pcSampleRuntime = nullptr;
+
+    // Records the host instruction pointer (offset from this handler's address,
+    // so the PIE load base cancels out); map with nm on ps2EntryRunner.
+    void pcSampleHandler(int, siginfo_t *, void *contextPtr)
+    {
+        if (!g_pcSampleRuntime || g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) < g_pcSampleStartFrame)
+            return;
+        const auto *context = static_cast<const ucontext_t *>(contextPtr);
+        const uint64_t rip = static_cast<uint64_t>(context->uc_mcontext.gregs[REG_RIP]);
+        const uint32_t index = g_pcSampleCount.load(std::memory_order_relaxed);
+        if (index < kPcSampleCapacity)
+        {
+            g_pcSamples[index] = static_cast<uint32_t>(rip - reinterpret_cast<uint64_t>(&pcSampleHandler));
+            g_pcSampleCount.store(index + 1u, std::memory_order_relaxed);
+        }
+    }
+
+    void startPcSampling(PS2Runtime *runtime)
+    {
+        const char *env = std::getenv("PS2X_PC_SAMPLE");
+        if (!env)
+            return;
+        if (const char *comma = std::strchr(env, ','))
+            g_pcSampleStartFrame = std::strtoull(comma + 1, nullptr, 10);
+        g_pcSampleRuntime = runtime;
+        struct sigaction action{};
+        action.sa_sigaction = pcSampleHandler;
+        action.sa_flags = SA_SIGINFO | SA_RESTART;
+        sigaction(SIGPROF, &action, nullptr);
+        sigevent event{};
+        event.sigev_notify = SIGEV_THREAD_ID;
+        event.sigev_signo = SIGPROF;
+        event._sigev_un._tid = static_cast<pid_t>(syscall(SYS_gettid));
+        timer_t timer{};
+        if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &timer) != 0)
+            return;
+        itimerspec spec{};
+        spec.it_interval.tv_nsec = 100000;
+        spec.it_value.tv_nsec = 100000;
+        timer_settime(timer, 0, &spec, nullptr);
+    }
+
+    void writePcSamples()
+    {
+        const char *env = std::getenv("PS2X_PC_SAMPLE");
+        if (!env)
+            return;
+        std::string path(env);
+        path = path.substr(0, path.find(','));
+        if (FILE *f = std::fopen(path.c_str(), "wb"))
+        {
+            std::fwrite(g_pcSamples, sizeof(uint32_t), g_pcSampleCount.load(), f);
+            std::fclose(f);
+        }
+    }
+}
 
 // PS2X_VU1_TRACE=<frame>[,<count>]: from that presented frame on, log <count> (default 8)
 // VU1 microprogram starts with the input buffer at TOP, plus the GIF packets they XGKICK.
@@ -2515,6 +2588,7 @@ void PS2Runtime::run()
         try
         {
             m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
+            startPcSampling(this);
             m_eeScheduler->run();
             uint32_t pc = m_debugPc.load(std::memory_order_relaxed);
             RUNTIME_LOG("Game thread returned. PC=0x" << std::hex << pc
@@ -2626,6 +2700,8 @@ void PS2Runtime::run()
                 if (s_traceOn)
                     std::cout << "[gs:frame] " << s_presentedFrames << " vsync=" << m_eeScheduler->currentVSyncTick() << std::endl;
             });
+            if ((s_presentedFrames % 1200u) == 0u)
+                writePcSamples();
             // PS2X_DUMP_RAM_FRAME=<frame>: write EE RAM + scratchpad to ram_<frame>.bin / spr_<frame>.bin.
             {
                 static const uint64_t s_dumpFrame = []() -> uint64_t
@@ -2682,6 +2758,7 @@ void PS2Runtime::run()
         m_debugUiShutdownCallback(*this, m_debugUiUserData);
         m_debugUiInitialized = false;
     }
+    writePcSamples();
     UnloadTexture(frameTex);
     CloseWindow();
 
