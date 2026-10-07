@@ -477,9 +477,18 @@ uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
             right = normalizeOperand(m_state.vf[ft][component]);
         }
 
-        float product = left * right;
-        const long double exactProduct = static_cast<long double>(left) * static_cast<long double>(right);
-        const uint8_t productFlags = normalizeFmacExactResult(product, exactProduct);
+        // The product of two floats is exact in a double (48-bit significand,
+        // exponent within range), so this matches the long double evaluation
+        // of normalizeFmacExactResult without x87 arithmetic.
+        const double exactProduct = static_cast<double>(left) * static_cast<double>(right);
+        const double magnitude = std::fabs(exactProduct);
+        uint32_t productFlags = std::signbit(exactProduct) ? 0x2u : 0u;
+        if (magnitude == 0.0)
+            productFlags |= 0x1u;
+        else if (magnitude > static_cast<double>(std::numeric_limits<float>::max()))
+            productFlags |= 0x8u;
+        else if (magnitude < static_cast<double>(std::numeric_limits<float>::min()))
+            productFlags |= 0x5u;
         // Product-sum instructions report Z/S/U/O from the add/subtract result
         // as current flags, while every product condition accumulates into the
         // corresponding sticky flag.
