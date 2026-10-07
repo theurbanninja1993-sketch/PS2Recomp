@@ -1180,9 +1180,10 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
         m_vfRegReady[upperWrite.reg] = std::max(m_vfRegReady[upperWrite.reg], m_cycle + latency);
     }
 
-    for (uint32_t reg = 1; reg < m_viReady.size(); ++reg)
+    for (uint32_t mask = decoded.lowerUsage.viWrite & 0xFFFEu; mask != 0u; mask &= mask - 1u)
     {
-        if ((decoded.lowerUsage.viWrite & (1u << reg)) != 0u)
+        const uint32_t reg = static_cast<uint32_t>(__builtin_ctz(mask));
+        if (reg < m_viReady.size())
             m_viReady[reg] = m_cycle + (decoded.lowerUsage.viLatency != 0u ? decoded.lowerUsage.viLatency : decoded.lowerUsage.latency);
     }
     for (uint32_t component = 0; component < 4u; ++component)
@@ -1794,14 +1795,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
 
         uint8_t writtenVi = 0u;
         int32_t oldVi = 0;
-        for (uint32_t reg = 1; reg < 16u; ++reg)
+        if (const uint32_t viMask = decoded.lowerUsage.viWrite & 0xFFFEu; viMask != 0u)
         {
-            if ((decoded.lowerUsage.viWrite & (1u << reg)) != 0u)
-            {
-                writtenVi = static_cast<uint8_t>(reg);
-                oldVi = m_state.vi[reg];
-                break;
-            }
+            writtenVi = static_cast<uint8_t>(__builtin_ctz(viMask));
+            oldVi = m_state.vi[writtenVi];
         }
 
         const VfAccess upperWrite = decoded.upperUsage.vfWrite;
@@ -1815,11 +1812,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         float newLowerVf[4]{};
         float oldAcc[4]{};
         float newAcc[4]{};
-        if (hasUpperWrite)
+        const bool queueWrites = !fastCommitEnabled();
+        if (queueWrites && hasUpperWrite)
             std::memcpy(oldUpperVf, m_state.vf[upperWrite.reg], sizeof(oldUpperVf));
-        if (hasDistinctLowerWrite)
+        if (queueWrites && hasDistinctLowerWrite)
             std::memcpy(oldLowerVf, m_state.vf[lowerWrite.reg], sizeof(oldLowerVf));
-        if (decoded.upperUsage.accWrite != 0u)
+        if (queueWrites && decoded.upperUsage.accWrite != 0u)
             std::memcpy(oldAcc, m_state.acc, sizeof(oldAcc));
 
         if (decoded.iBit)

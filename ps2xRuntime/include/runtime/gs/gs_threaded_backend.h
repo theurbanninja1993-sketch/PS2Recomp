@@ -141,6 +141,11 @@ private:
     uint64_t m_statRangeMerges = 0;
     uint32_t m_statHazardSamples = 0;
     uint64_t m_statBackpressureWaits = 0;
+    // Producer (EE thread) time blocked, in microseconds: queue back-pressure
+    // and full drains (host reads of GS state).
+    double m_statBackpressureUs = 0.0;
+    mutable double m_statDrainUs = 0.0;
+    mutable uint64_t m_statDrains = 0;
     uint64_t m_statLastReport = 0;
     void reportStats();
 

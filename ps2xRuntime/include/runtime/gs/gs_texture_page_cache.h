@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 
 namespace GSMem
 {
@@ -21,6 +22,14 @@ namespace GSMem
         // pointer is valid only until the next miss or invalidation.
         const uint8_t* Resolve(const uint8_t* vram, uint32_t byteAddress) noexcept
         {
+            // Read VRAM directly: the page snapshot cost an 8 KiB copy on every
+            // page change (bilinear taps and large textures thrash it), and the
+            // banded rasterizer already orders texture reads after the writes
+            // they depend on (hazard barriers / TEXFLUSH). PS2X_GS_TEXCACHE=1
+            // restores the snapshot behaviour for comparison.
+            static const bool s_snapshot = std::getenv("PS2X_GS_TEXCACHE") != nullptr;
+            if (!s_snapshot)
+                return vram + byteAddress;
             const uint32_t pageBase = byteAddress & ~(kPageSize - 1u);
             if (m_pageBase != pageBase)
             {

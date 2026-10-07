@@ -167,10 +167,13 @@ void GSThreadedBackend::enqueue(Command &&command)
         if (m_published - slowestPosition() >= kMaxCommandsAhead)
         {
             ++m_statBackpressureWaits;
+            const auto waitStart = std::chrono::steady_clock::now();
             m_progressWaiters.fetch_add(1u);
             m_progress.wait(lock, [this]()
                             { return m_published - slowestPosition() < kMaxCommandsAhead; });
             m_progressWaiters.fetch_sub(1u);
+            if (m_statsEnabled)
+                m_statBackpressureUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - waitStart).count();
         }
 
         // Drop chunks every worker has finished with.
@@ -210,16 +213,23 @@ void GSThreadedBackend::reportStats()
         std::cerr << " " << kNames[i] << "=" << m_statCounts[i];
     std::cerr << " hazard=" << m_statHazardBarriers << " (tex=" << m_statHazardCause[0] << " clut=" << m_statHazardCause[1]
               << " upload=" << m_statHazardCause[2] << " merges=" << m_statRangeMerges << ")"
-              << " backpressure=" << m_statBackpressureWaits << std::endl;
+              << " backpressure=" << m_statBackpressureWaits << " (" << static_cast<uint64_t>(m_statBackpressureUs / 1000.0)
+              << " ms) drains=" << m_statDrains << " (" << static_cast<uint64_t>(m_statDrainUs / 1000.0) << " ms)" << std::endl;
 }
 
 void GSThreadedBackend::drain() const
 {
     std::unique_lock<std::mutex> lock(m_mutex);
+    const auto waitStart = std::chrono::steady_clock::now();
     m_progressWaiters.fetch_add(1u);
     m_progress.wait(lock, [this]()
                     { return slowestPosition() >= m_published; });
     m_progressWaiters.fetch_sub(1u);
+    if (m_statsEnabled)
+    {
+        ++m_statDrains;
+        m_statDrainUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - waitStart).count();
+    }
 }
 
 void GSThreadedBackend::runExclusive(Command &command)
