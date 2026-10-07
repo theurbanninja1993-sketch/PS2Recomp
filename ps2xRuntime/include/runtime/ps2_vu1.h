@@ -220,8 +220,12 @@ private:
     std::array<PendingVfWrite, kMaxPendingVfWrites> m_vfWritePipeline{};
     std::array<PendingViWrite, kMaxPendingViWrites> m_viWritePipeline{};
     std::array<PendingAccWrite, kMaxPendingAccWrites> m_accWritePipeline{};
+    // Valid-slot bitmasks mirroring the `valid` flags above, so the per-cycle
+    // commit only visits live entries.
+    uint32_t m_flagMask = 0, m_efuMask = 0, m_storeMask = 0, m_vfMask = 0, m_viMask = 0, m_accMask = 0;
     XgkickPipeline m_xgkick{};
     std::array<std::array<uint64_t, 4>, 32> m_vfReady{};
+    std::array<uint64_t, 32> m_vfRegReady{}; // upper bound of m_vfReady[reg][*]
     std::array<uint64_t, 16> m_viReady{};
     std::array<uint64_t, 4> m_accReady{};
     std::array<std::array<uint64_t, 4>, 32> m_vfLatestWrite{};

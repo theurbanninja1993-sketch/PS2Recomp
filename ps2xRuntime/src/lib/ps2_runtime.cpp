@@ -93,6 +93,8 @@ struct ProgramHeader
     uint32_t align;
 };
 
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
 namespace
 {
     constexpr uint32_t kGuestHeapDefaultBase = 0x00100000u;
@@ -712,9 +714,50 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     // PS2X_VU1_CAPTURE=<file>,<startFrame>,<count>: record MSCALs
+                                     // (state + code + data before, state + data after) for the
+                                     // offline VU1 replay benchmark (tools/vu1_replay).
+                                     static FILE *s_capture = nullptr;
+                                     static uint64_t s_captureStart = 0;
+                                     static uint32_t s_captureLeft = 0;
+                                     static const bool s_captureInit = [&]()
+                                     {
+                                         if (const char *env = std::getenv("PS2X_VU1_CAPTURE"))
+                                         {
+                                             std::string spec(env);
+                                             const auto c1 = spec.find(',');
+                                             const auto c2 = c1 == std::string::npos ? std::string::npos : spec.find(',', c1 + 1);
+                                             s_capture = std::fopen(spec.substr(0, c1).c_str(), "wb");
+                                             s_captureStart = c1 == std::string::npos ? 0u : std::strtoull(spec.c_str() + c1 + 1, nullptr, 10);
+                                             s_captureLeft = c2 == std::string::npos ? 2000u : static_cast<uint32_t>(std::strtoul(spec.c_str() + c2 + 1, nullptr, 10));
+                                         }
+                                         return true;
+                                     }();
+                                     (void)s_captureInit;
+                                     const bool capture = s_capture && s_captureLeft > 0u &&
+                                                          g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) >= s_captureStart;
+                                     if (capture)
+                                     {
+                                         const uint32_t header[4] = {0x31555643u /* 'CVU1' */, startPC, top, itop};
+                                         std::fwrite(header, sizeof(header), 1, s_capture);
+                                         std::fwrite(&m_vu1.state(), sizeof(VU1State), 1, s_capture);
+                                         std::fwrite(m_memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, s_capture);
+                                         std::fwrite(m_memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, s_capture);
+                                     }
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, 65536);
+                                     if (capture)
+                                     {
+                                         std::fwrite(&m_vu1.state(), sizeof(VU1State), 1, s_capture);
+                                         std::fwrite(m_memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, s_capture);
+                                         if (--s_captureLeft == 0u)
+                                         {
+                                             std::fclose(s_capture);
+                                             s_capture = nullptr;
+                                             std::cerr << "[vu1:capture] done" << std::endl;
+                                         }
+                                     }
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -1167,7 +1210,6 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
     }
 }
 
-extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 
 // PS2X_PC_SAMPLE=<file>[,<startFrame>]: SIGPROF-based sampling of the guest PC on
 // the game thread (every 100 us of game-thread CPU time, from startFrame on),

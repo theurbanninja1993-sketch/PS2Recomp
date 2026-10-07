@@ -625,3 +625,9 @@ endif()
 install(DIRECTORY include/
     DESTINATION include
 )
+
+# Offline VU1 replay benchmark (see tools/vu1_replay.cpp); not built by default.
+if(NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
+    add_executable(vu1_replay EXCLUDE_FROM_ALL tools/vu1_replay.cpp)
+    target_link_libraries(vu1_replay PRIVATE ps2_runtime)
+endif()
