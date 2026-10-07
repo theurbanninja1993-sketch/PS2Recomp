@@ -85,6 +85,8 @@ private:
     struct Chunk
     {
         Command commands[kChunkSize];
+        // UploadImage: 0 = unclaimed, 1 = being written, 2 = written.
+        std::atomic<uint8_t> uploadState[kChunkSize]{};
     };
 
     struct Worker

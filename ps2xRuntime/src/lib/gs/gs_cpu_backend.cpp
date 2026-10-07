@@ -1618,6 +1618,11 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
     const uint32_t rrw = m_transfer.trxreg.rrw;
     const uint32_t dsax = m_transfer.trxpos.dsax;
     uint32_t offset = 0u;
+    auto writeUpload = [this](uint32_t psm, uint32_t bp, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
+    {
+        if (m_uploadWrites)
+            WriteVramUnlocked(psm, bp, bw, x, y, value);
+    };
 
     auto advancePixel = [&](uint32_t count)
     {
@@ -1647,7 +1652,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
                 return;
             uint32_t value = 0u;
             std::memcpy(&value, data + offset, sizeof(value));
-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
+            writeUpload(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
             offset += 4u;
             advancePixel(1u);
             break;
@@ -1660,7 +1665,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
             const uint32_t value = static_cast<uint32_t>(data[offset]) |
                                    (static_cast<uint32_t>(data[offset + 1u]) << 8u) |
                                    (static_cast<uint32_t>(data[offset + 2u]) << 16u);
-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
+            writeUpload(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
             offset += 3u;
             advancePixel(1u);
             break;
@@ -1674,14 +1679,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
                 return;
             uint16_t value = 0u;
             std::memcpy(&value, data + offset, sizeof(value));
-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
+            writeUpload(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
             offset += 2u;
             advancePixel(1u);
             break;
         }
         case GS_PSM_T8:
         case GS_PSM_T8H:
-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, data[offset++]);
+            writeUpload(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, data[offset++]);
             advancePixel(1u);
             break;
         case GS_PSM_T4:
@@ -1690,14 +1695,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
         {
             const uint8_t packed = data[offset++];
             const uint32_t firstPixel = m_transferState.copiedPixels;
-            WriteVramUnlocked(dpsm, dbp, dbw,
+            writeUpload(dpsm, dbp, dbw,
                               dsax + (firstPixel % rrw),
                               m_transfer.trxpos.dsay + (firstPixel / rrw),
                               packed & 0x0Fu);
             if (firstPixel + 1u < m_transferState.totalPixels)
             {
                 const uint32_t secondPixel = firstPixel + 1u;
-                WriteVramUnlocked(dpsm, dbp, dbw,
+                writeUpload(dpsm, dbp, dbw,
                                   dsax + (secondPixel % rrw),
                                   m_transfer.trxpos.dsay + (secondPixel / rrw),
                                   (packed >> 4u) & 0x0Fu);

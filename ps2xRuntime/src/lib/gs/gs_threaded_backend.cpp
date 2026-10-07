@@ -309,11 +309,29 @@ void GSThreadedBackend::workerLoop(uint32_t index)
                 backend.TextureFlush();
                 break;
             case CommandType::UploadImage:
-                // Every worker writes the (identical) host->local data itself, so
-                // its own later draws see it without waiting for the others.
-                backend.UploadImage(command.data.data(), static_cast<uint32_t>(command.data.size()));
+            {
+                // The first worker to arrive writes the data; the others wait for
+                // it and only advance their transfer state. Writing early is safe:
+                // BeginTransfer inserts a barrier if earlier commands still read
+                // or draw this memory.
+                std::atomic<uint8_t> &state = chunk->uploadState[position - chunkBase];
+                uint8_t expected = 0u;
+                if (state.compare_exchange_strong(expected, 1u, std::memory_order_acq_rel))
+                {
+                    backend.UploadImage(command.data.data(), static_cast<uint32_t>(command.data.size()));
+                    state.store(2u, std::memory_order_release);
+                }
+                else
+                {
+                    while (state.load(std::memory_order_acquire) != 2u)
+                        cpuRelax();
+                    backend.SetUploadWrites(false);
+                    backend.UploadImage(command.data.data(), static_cast<uint32_t>(command.data.size()));
+                    backend.SetUploadWrites(true);
+                }
                 backend.TextureFlush();
                 break;
+            }
             case CommandType::BeginTransfer:
                 if (command.transfer.direction == 0u)
                 {

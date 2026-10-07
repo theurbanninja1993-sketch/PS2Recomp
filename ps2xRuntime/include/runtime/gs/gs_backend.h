@@ -35,4 +35,8 @@ public:
     // Restrict drawing to the 8-row strips with (y / 8) % count == index, for
     // banded multi-threaded rasterization. Transfers and clears are unaffected.
     virtual void SetRowBand(uint32_t index, uint32_t count) { (void)index; (void)count; }
+    // Banded workers share VRAM: only one of them performs a host->local
+    // upload's writes; the others call UploadImage with writes disabled so
+    // their transfer bookkeeping still advances.
+    virtual void SetUploadWrites(bool enabled) { (void)enabled; }
 };
