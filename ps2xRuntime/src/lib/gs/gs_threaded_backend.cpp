@@ -1,6 +1,10 @@
 #include "runtime/gs/gs_threaded_backend.h"
 
+#include <sys/syscall.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -48,9 +52,62 @@ namespace
         const uint32_t pagesWide = (strideWidth + shape.width - 1u) / shape.width;
         const uint32_t pagesHigh = (std::max<uint32_t>(height, 1u) + shape.height - 1u) / shape.height;
         begin = baseBytes & ~(kPageBytes - 1u);
-        // One extra page covers a base that isn't page aligned.
-        const uint64_t bytes = static_cast<uint64_t>(pagesWide) * pagesHigh * kPageBytes + kPageBytes;
+        // One extra page covers a base that isn't page aligned (frame/Z bases
+        // always are; a spurious extra page made adjacent buffers "overlap").
+        const uint32_t misalignPage = (baseBytes & (kPageBytes - 1u)) != 0u ? kPageBytes : 0u;
+        const uint64_t bytes = static_cast<uint64_t>(pagesWide) * pagesHigh * kPageBytes + misalignPage;
         end = static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(begin) + bytes, kLocalMemoryBytes));
+    }
+
+    // Bytes a textured draw can read: the texel rows its coordinates span
+    // (plus a filtering margin) instead of the whole 2^TH-high texture.
+    void textureReadRange(const GSPrimitiveBatch &batch, uint32_t &begin, uint32_t &end)
+    {
+        const auto &tex0 = batch.state.context.tex0;
+        const uint32_t texHeight = 1u << std::min<uint32_t>(tex0.th, 11u);
+        bufferRange(tex0.tbp0 * 256u, tex0.tbw, texHeight, tex0.psm, begin, end);
+
+        const uint32_t count = std::min<uint32_t>(batch.vertexCount, 3u);
+        if (count == 0u || ((tex0.tbp0 * 256u) & (kPageBytes - 1u)) != 0u)
+            return;
+        // CLAMP.WMT (bits 2-3): REGION_REPEAT (3) can remap rows anywhere.
+        if (((batch.state.context.clamp >> 2) & 3u) == 3u)
+            return;
+        float vMin = 1.0e30f, vMax = -1.0e30f;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const GSVertex &vertex = batch.vertices[i];
+            float v = 0.0f;
+            if (batch.state.prim.fst)
+                v = static_cast<float>(vertex.v) / 16.0f;
+            else
+            {
+                if (!(std::fabs(vertex.q) > 1.0e-6f))
+                    return; // degenerate perspective: keep the full texture
+                v = vertex.t / vertex.q * static_cast<float>(texHeight);
+            }
+            if (!std::isfinite(v))
+                return;
+            vMin = std::min(vMin, v);
+            vMax = std::max(vMax, v);
+        }
+        constexpr float kMargin = 2.0f; // bilinear neighbours + rounding
+        if (vMin - kMargin < 0.0f || vMax + kMargin >= static_cast<float>(texHeight))
+            return; // touches an edge: wrapping/clamping may reach any row
+        const PageShape shape = pageShapeForPsm(tex0.psm);
+        const uint32_t strideWidth = std::max<uint32_t>(tex0.tbw, 1u) * 64u;
+        const uint32_t pagesWide = (strideWidth + shape.width - 1u) / shape.width;
+        const uint32_t rowBegin = static_cast<uint32_t>(vMin - kMargin);
+        const uint32_t rowEnd = static_cast<uint32_t>(vMax + kMargin) + 1u;
+        const uint32_t pageRowBegin = rowBegin / shape.height;
+        const uint32_t pageRowEnd = (rowEnd + shape.height - 1u) / shape.height;
+        const uint64_t base = tex0.tbp0 * 256u;
+        const uint64_t narrowBegin = base + static_cast<uint64_t>(pageRowBegin) * pagesWide * kPageBytes;
+        const uint64_t narrowEnd = base + static_cast<uint64_t>(pageRowEnd) * pagesWide * kPageBytes;
+        if (narrowBegin >= narrowEnd)
+            return;
+        begin = static_cast<uint32_t>(std::min<uint64_t>(narrowBegin, kLocalMemoryBytes));
+        end = static_cast<uint32_t>(std::min<uint64_t>(narrowEnd, kLocalMemoryBytes));
     }
 }
 
@@ -151,7 +208,9 @@ void GSThreadedBackend::reportStats()
     std::cerr << "[gs:stats]";
     for (uint32_t i = 0; i < 7u; ++i)
         std::cerr << " " << kNames[i] << "=" << m_statCounts[i];
-    std::cerr << " hazard=" << m_statHazardBarriers << " backpressure=" << m_statBackpressureWaits << std::endl;
+    std::cerr << " hazard=" << m_statHazardBarriers << " (tex=" << m_statHazardCause[0] << " clut=" << m_statHazardCause[1]
+              << " upload=" << m_statHazardCause[2] << " merges=" << m_statRangeMerges << ")"
+              << " backpressure=" << m_statBackpressureWaits << std::endl;
 }
 
 void GSThreadedBackend::drain() const
@@ -184,8 +243,13 @@ void GSThreadedBackend::runExclusive(Command &command)
     }
 }
 
+// Thread id of rasterizer worker 0, for PS2X_PC_SAMPLE_GS profiling.
+std::atomic<int> g_ps2GsWorkerTid{0};
+
 void GSThreadedBackend::workerLoop(uint32_t index)
 {
+    if (index == 0u)
+        g_ps2GsWorkerTid.store(static_cast<int>(syscall(SYS_gettid)));
     Worker &self = *m_workers[index];
     GSRasterBackend &backend = *self.backend;
     const uint32_t workerCount = static_cast<uint32_t>(m_workers.size());
@@ -314,6 +378,7 @@ void GSThreadedBackend::addRange(std::vector<Range> &ranges, uint32_t beginByte,
     }
     if (ranges.size() >= 16u)
     {
+        ++m_statRangeMerges;
         // Too many distinct ranges: keep one conservative span.
         Range merged{beginByte, endByte};
         for (const Range &range : ranges)
@@ -325,6 +390,17 @@ void GSThreadedBackend::addRange(std::vector<Range> &ranges, uint32_t beginByte,
         return;
     }
     ranges.push_back(Range{beginByte, endByte});
+}
+
+void GSThreadedBackend::logHazard(const char *cause, uint32_t beginByte, uint32_t endByte)
+{
+    if (!m_statsEnabled || m_statHazardSamples >= 40u || (m_statHazardBarriers % 5000u) != 0u)
+        return;
+    ++m_statHazardSamples;
+    std::cerr << std::hex << "[gs:hazard] " << cause << " read=[0x" << beginByte << ",0x" << endByte << ") dirty=";
+    for (const Range &range : m_dirtyTargets)
+        std::cerr << "[0x" << range.begin << ",0x" << range.end << ")";
+    std::cerr << std::dec << std::endl;
 }
 
 void GSThreadedBackend::enqueueBarrier()
@@ -375,12 +451,15 @@ void GSThreadedBackend::Submit(const GSPrimitiveBatch &batch)
     const GSDrawState &state = batch.state;
     if (state.prim.tme)
     {
-        const auto &tex0 = state.context.tex0;
         uint32_t begin = 0;
         uint32_t end = 0;
-        bufferRange(tex0.tbp0 * 256u, tex0.tbw, 1u << std::min<uint32_t>(tex0.th, 11u), tex0.psm, begin, end);
+        textureReadRange(batch, begin, end);
         if (overlaps(m_dirtyTargets, begin, end))
+        {
+            ++m_statHazardCause[0];
+            logHazard("texture", begin, end);
             enqueueBarrier();
+        }
         addRange(m_readSources, begin, end);
     }
 
@@ -395,7 +474,11 @@ void GSThreadedBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texc
 {
     const uint32_t begin = tex0.cbp * 256u;
     if (overlaps(m_dirtyTargets, begin, begin + 1024u))
+    {
+        ++m_statHazardCause[1];
+        logHazard("clut", begin, begin + 1024u);
         enqueueBarrier();
+    }
     addRange(m_readSources, begin, begin + 1024u);
     Command command;
     command.type = CommandType::LoadClut;
@@ -417,7 +500,11 @@ void GSThreadedBackend::BeginTransfer(const GSTransferCommand &command)
         bufferRange(buf.dbp * 256u, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh,
                     buf.dpsm, begin, end);
         if (overlaps(m_dirtyTargets, begin, end) || overlaps(m_readSources, begin, end))
+        {
+            ++m_statHazardCause[2];
+            logHazard("upload", begin, end);
             enqueueBarrier();
+        }
     }
     Command queued;
     queued.type = CommandType::BeginTransfer;

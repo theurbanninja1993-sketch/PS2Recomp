@@ -1368,12 +1368,53 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
     const u32 earlyZpsm = ctx.zbuf.psm;
     const u32 earlyFbw = std::max<u32>(ctx.frame.fbw, 1u);
 
+    // Per-row x span: each barycentric weight is linear in x, so the pixels
+    // passing the edge test form an interval. It is computed in double and
+    // widened by kSpanMargin; the exact per-pixel test below is unchanged, so
+    // the output is identical (PS2X_GS_SPAN_CHECK verifies the margin).
+    // Edges with |dw/dx| tiny constrain x only weakly and are ignored.
+    static const bool s_spanCheck = std::getenv("PS2X_GS_SPAN_CHECK") != nullptr;
+    constexpr int kSpanMargin = 4;
+    const double scale = static_cast<double>(winding) * static_cast<double>(invAbsDenom);
+    const double edgeA[3] = {static_cast<double>(fy1 - fy2) * scale, static_cast<double>(fy2 - fy0) * scale, 0.0};
+    const double edgeBy[3] = {static_cast<double>(fx2 - fx1) * scale, static_cast<double>(fx0 - fx2) * scale, 0.0};
+    const double edgeA2 = -(edgeA[0] + edgeA[1]);
+    const double edgeBy2 = -(edgeBy[0] + edgeBy[1]);
+
     for (int y = minY; y <= maxY; ++y)
     {
         if (!ownsRow(y))
             continue;
         float py = static_cast<float>(y) + 0.5f;
-        for (int x = minX; x <= maxX; ++x)
+
+        int spanX0 = minX;
+        int spanX1 = maxX;
+        {
+            const double dy = static_cast<double>(py) - static_cast<double>(fy2);
+            double lo = -1.0e30, hi = 1.0e30;
+            auto limit = [&](double a, double c)
+            {
+                // a * (px - fx2) + c >= -eps  (px = x + 0.5)
+                if (std::fabs(a) < 1.0e-3 * std::max(std::fabs(edgeA[0]) + std::fabs(edgeA[1]), 1.0e-12))
+                    return;
+                const double bound = (-static_cast<double>(kEdgeEpsilon) - c) / a + static_cast<double>(fx2) - 0.5;
+                if (a > 0.0)
+                    lo = std::max(lo, bound);
+                else
+                    hi = std::min(hi, bound);
+            };
+            limit(edgeA[0], edgeBy[0] * dy);
+            limit(edgeA[1], edgeBy[1] * dy);
+            // w2 = 1 - w0 - w1
+            limit(edgeA2, 1.0 + edgeBy2 * dy);
+            if (lo > -1.0e29)
+                spanX0 = std::max(spanX0, static_cast<int>(std::floor(lo)) - kSpanMargin);
+            if (hi < 1.0e29)
+                spanX1 = std::min(spanX1, static_cast<int>(std::ceil(hi)) + kSpanMargin);
+        }
+        const int loopX0 = s_spanCheck ? minX : spanX0;
+        const int loopX1 = s_spanCheck ? maxX : spanX1;
+        for (int x = loopX0; x <= loopX1; ++x)
         {
             float px = static_cast<float>(x) + 0.5f;
 
@@ -1383,6 +1424,13 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
 
             if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
                 continue;
+            if (s_spanCheck && (x < spanX0 || x > spanX1))
+            {
+                static std::atomic<uint32_t> s_misses{0};
+                if (s_misses.fetch_add(1u) < 20u)
+                    std::cerr << "[gs:span-check] covered pixel outside span x=" << x << " y=" << y << " span=["
+                              << spanX0 << "," << spanX1 << "]" << std::endl;
+            }
 
             double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
             if (ztestMethod >= 2u)

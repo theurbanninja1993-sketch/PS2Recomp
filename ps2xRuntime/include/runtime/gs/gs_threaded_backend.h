@@ -97,7 +97,8 @@ private:
     void enqueue(Command &&command);
     void noteDrawTargets(const GSDrawState &state);
     static bool overlaps(const std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte);
-    static void addRange(std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte);
+    void addRange(std::vector<Range> &ranges, uint32_t beginByte, uint32_t endByte);
+    void logHazard(const char *cause, uint32_t beginByte, uint32_t endByte);
     void drain() const;
     void workerLoop(uint32_t index);
     void runExclusive(Command &command);
@@ -132,6 +133,9 @@ private:
     bool m_statsEnabled = false;
     uint64_t m_statCounts[8]{};
     uint64_t m_statHazardBarriers = 0;
+    uint64_t m_statHazardCause[3]{}; // textured draw, CLUT load, host->local transfer
+    uint64_t m_statRangeMerges = 0;
+    uint32_t m_statHazardSamples = 0;
     uint64_t m_statBackpressureWaits = 0;
     uint64_t m_statLastReport = 0;
     void reportStats();

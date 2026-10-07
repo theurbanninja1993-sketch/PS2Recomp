@@ -96,6 +96,7 @@ struct ProgramHeader
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 // Present only in -fprofile-generate builds.
 extern "C" void __gcov_dump(void) __attribute__((weak));
+extern std::atomic<int> g_ps2GsWorkerTid; // gs_threaded_backend.cpp
 
 namespace
 {
@@ -1320,6 +1321,9 @@ namespace
         event.sigev_notify = SIGEV_THREAD_ID;
         event.sigev_signo = SIGPROF;
         event._sigev_un._tid = static_cast<pid_t>(syscall(SYS_gettid));
+        // PS2X_PC_SAMPLE_GS=1: sample GS rasterizer worker 0 instead.
+        if (std::getenv("PS2X_PC_SAMPLE_GS") && g_ps2GsWorkerTid.load() != 0)
+            event._sigev_un._tid = static_cast<pid_t>(g_ps2GsWorkerTid.load());
         timer_t timer{};
         if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &timer) != 0)
             return;
