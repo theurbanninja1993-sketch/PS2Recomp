@@ -78,9 +78,18 @@ private:
     uint32_t m_bandIndex = 0;
     uint32_t m_bandCount = 1;
     bool m_uploadWrites = true;
+    // Row-band ownership per 8-row strip, precomputed by SetRowBand: ownsRow()
+    // runs per pixel and the modulo by a runtime band count was a division.
+    static constexpr uint32_t kBandTableStrips = 1024u;
+    std::array<uint8_t, kBandTableStrips> m_ownsStrip{};
     bool ownsRow(int y) const
     {
-        return m_bandCount <= 1u || (static_cast<uint32_t>(y >> 3) % m_bandCount) == m_bandIndex;
+        if (m_bandCount <= 1u)
+            return true;
+        const uint32_t strip = static_cast<uint32_t>(y >> 3);
+        if (strip < kBandTableStrips)
+            return m_ownsStrip[strip] != 0u;
+        return (strip % m_bandCount) == m_bandIndex;
     }
 
     GSTransferCommand m_transfer{};

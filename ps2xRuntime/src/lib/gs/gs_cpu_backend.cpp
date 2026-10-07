@@ -730,6 +730,8 @@ void GSCpuBackend::SetRowBand(uint32_t index, uint32_t count)
     std::lock_guard<std::mutex> lock(m_mutex);
     m_bandCount = std::max<uint32_t>(count, 1u);
     m_bandIndex = index % m_bandCount;
+    for (uint32_t strip = 0; strip < kBandTableStrips; ++strip)
+        m_ownsStrip[strip] = (strip % m_bandCount) == m_bandIndex ? 1u : 0u;
 }
 
 // Presented-frame counter published by the host present loop; PS2X_GS_TRACE_FRAME=<n>
@@ -772,6 +774,11 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
 {
     const GSDrawState &state = batch.state;
     const auto &ctx = state.context;
+    // Per-primitive debug logging only when asked for: the shared counters
+    // below otherwise bounce one cache line between every rasterizer worker.
+    static const bool s_primitiveLogs = std::getenv("PS2X_GS_PRIM_LOG") || std::getenv("PS2X_GS_TRACE_FRAME") ||
+                                        std::getenv("PS2X_GS_TRACE_FBP");
+    if (s_primitiveLogs)
     PS2_IF_AGRESSIVE_LOGS({
         const uint32_t primitiveIndex = s_debugPrimitiveCount.fetch_add(1u, std::memory_order_relaxed);
         if (primitiveIndex < 64u || ps2GsFrameTraceActive(static_cast<int32_t>(ctx.frame.fbp)))
@@ -841,6 +848,7 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
         }
     });
 
+    if (s_primitiveLogs)
     PS2_IF_AGRESSIVE_LOGS({
         if ((state.prim.ctxt != 0u || ctx.frame.fbp == 150u) &&
             s_debugContext1PrimitiveCount.fetch_add(1u, std::memory_order_relaxed) < 32u)
