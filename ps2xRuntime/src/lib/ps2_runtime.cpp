@@ -1,3 +1,4 @@
+#include <cctype>
 #include "ps2_runtime.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -1218,6 +1219,41 @@ void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
         paths.hostRoot = paths.elfDirectory;
         paths.cdRoot = paths.elfDirectory;
         paths.mcRoot = paths.elfDirectory / "mc0";
+    }
+
+    // Raw-sector fallback for CD/DVD reads outside any searched file (games
+    // that read archives/streams by LBN): PS2X_CD_IMAGE=<iso>, or with
+    // PS2X_CD_IMAGE_AUTO=1 a single *.iso in the ELF directory or its parent.
+    // Opt-in for now: VCS reads hidden-sector streams this way, and with them
+    // available the post-intro load currently stalls (CDSTREAM; under study).
+    if (paths.cdImage.empty())
+    {
+        if (const char *env = std::getenv("PS2X_CD_IMAGE"))
+        {
+            paths.cdImage = normalizeAbsolutePath(std::filesystem::path(env));
+        }
+        else if (!paths.elfDirectory.empty() && std::getenv("PS2X_CD_IMAGE_AUTO"))
+        {
+            for (const std::filesystem::path &dir : {paths.elfDirectory, paths.elfDirectory.parent_path()})
+            {
+                std::error_code ec;
+                std::vector<std::filesystem::path> images;
+                for (const auto &entry : std::filesystem::directory_iterator(dir, ec))
+                {
+                    std::string ext = entry.path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c)
+                                   { return static_cast<char>(std::tolower(c)); });
+                    if (entry.is_regular_file(ec) && ext == ".iso")
+                        images.push_back(entry.path());
+                }
+                if (images.size() == 1u)
+                {
+                    paths.cdImage = normalizeAbsolutePath(images.front());
+                    std::cerr << "[cd] using disc image " << paths.cdImage.string() << std::endl;
+                    break;
+                }
+            }
+        }
     }
 
     setIoPaths(paths);
