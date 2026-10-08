@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -50,13 +51,6 @@ namespace gsgpu
         [[nodiscard]] bool gpuAvailable() const { return m_gpu; }
 
     private:
-        enum class Owner : uint8_t
-        {
-            Synced,
-            GpuNewer, // GL texture has data the CPU copy lacks
-            CpuNewer, // CPU copy changed since the texture was filled
-        };
-
         struct Target
         {
             bool depth = false;
@@ -64,10 +58,20 @@ namespace gsgpu
             uint32_t bw = 0;    // buffer width in 64-pixel units
             uint8_t psm = 0;
             uint32_t width = 0, height = 0;
+            // Rows [0, usedRows) have been drawn or are about to be; the texture
+            // only mirrors memory there, and [beginByte, endByte) covers them.
+            uint32_t usedRows = 0;
             uint32_t beginByte = 0, endByte = 0;
             GLuint texture = 0;
-            Owner owner = Owner::CpuNewer;
-            uint32_t dirtyY0 = ~0u, dirtyY1 = 0; // rows the GPU wrote since last download
+            // Rows the GPU wrote since the last download, and rows whose
+            // texture contents are stale (memory changed by the CPU or by
+            // another target). A target never has both at once.
+            uint32_t dirtyY0 = ~0u, dirtyY1 = 0;
+            uint32_t cpuY0 = ~0u, cpuY1 = 0;
+            uint64_t drawSeq = 0; // last draw into it, to order overlapping downloads
+
+            [[nodiscard]] bool gpuDirty() const { return dirtyY0 <= dirtyY1; }
+            [[nodiscard]] bool cpuDirty() const { return cpuY0 <= cpuY1; }
         };
 
         struct CachedTexture
@@ -110,7 +114,7 @@ namespace gsgpu
         Target &depthTarget(const GSZbufReg &zbuf, uint32_t bw);
         Target &findOrCreateTarget(bool depth, uint32_t block, uint32_t bw, uint8_t psm);
         GLuint framebufferFor(const Target &color, const Target *depth);
-        void uploadTarget(Target &target);   // CPU -> GL
+        void uploadTarget(Target &target, uint32_t y0, uint32_t rows); // CPU -> GL
         void downloadTarget(Target &target); // GL -> CPU (dirty rows)
         // Before the CPU reads [begin, end): download GPU-newer targets there.
         void syncRangeToCpu(uint32_t beginByte, uint32_t endByte);
@@ -118,8 +122,19 @@ namespace gsgpu
         void cpuWroteRange(uint32_t beginByte, uint32_t endByte);
         // Before the GPU draws into `target`: refresh it, and retire other
         // targets aliasing its memory.
-        void prepareTargetForDraw(Target &target);
+        void prepareTargetForDraw(Target &target, int32_t drawY0, int32_t drawY1);
+        // Mirror more rows of `target` (fetched from memory).
+        void growTarget(Target &target, uint32_t needRows);
+        // Memory bytes holding rows [y0, y1] of `target` (whole page rows).
+        void rowsToBytes(const Target &target, uint32_t y0, uint32_t y1, uint32_t &begin, uint32_t &end) const;
+        // Rows of `target` (within its used rows) stored in [begin, end).
+        bool bytesToRows(const Target &target, uint32_t begin, uint32_t end, uint32_t &y0, uint32_t &y1) const;
+        void markCpuRows(Target &target, uint32_t beginByte, uint32_t endByte);
+        void uploadCpuRows(Target &target);
         GLuint textureFor(const GSDrawState &state, const DrawKey &key);
+        // A colour target whose GPU texture holds this draw's texture
+        // (same base/width, compatible 32/24/16-bit format), or null.
+        Target *textureTarget(const GSDrawState &state, const DrawKey &key);
 
         GLContext m_context;
         bool m_gpu = false;
@@ -143,11 +158,16 @@ namespace gsgpu
         Target *m_drawColor = nullptr;
         Target *m_drawDepth = nullptr;
         int32_t m_drawY0 = 0, m_drawY1 = 0;
+        int32_t m_batchY0 = 0, m_batchY1 = 0; // vertex row bounds of the pending batch
+        uint64_t m_drawSeq = 0;
 
         // Current host->local transfer destination, for coherency.
         uint32_t m_transferBegin = 0, m_transferEnd = 0;
         bool m_transferActive = false;
 
         uint64_t m_statDraws = 0, m_statDownloads = 0, m_statUploads = 0, m_statTextureDecodes = 0;
+        uint64_t m_statTargetTextures = 0;
+        const char *m_syncReason = "other";
+        std::unordered_map<std::string, uint64_t> m_statDownloadReasons;
     };
 }

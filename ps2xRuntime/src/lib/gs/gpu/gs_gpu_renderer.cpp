@@ -126,6 +126,9 @@ layout(location = 0, index = 1) out vec4 o_factor;
 layout(binding = 0) uniform sampler2D u_tex;
 layout(binding = 1) uniform sampler2D u_target;
 uniform int u_tme, u_tfx, u_tcc, u_fge;
+uniform int u_texFromTarget, u_texFormat; // texture sampled from a render target: 0 CT32, 1 CT24, 2 CT16
+uniform vec2 u_texScale;                  // texture size / target size
+uniform vec3 u_texa;                      // TA0, TA1, AEM
 uniform int u_ate, u_atst, u_aref, u_afail;
 uniform int u_abe, u_csel, u_pabe, u_date, u_datm, u_fba;
 uniform vec4 u_blend; // s_k, s_c, d_k, d_c (alpha_s = C*s_k + s_c, alpha_d = C*d_k + d_c)
@@ -138,7 +141,16 @@ void main()
     vec4 c = cf;
     if (u_tme != 0)
     {
-        vec4 ct = floor(texture(u_tex, v_stq.xy / v_stq.z) * 255.0 + 0.5);
+        vec4 ct = floor(texture(u_tex, v_stq.xy / v_stq.z * u_texScale) * 255.0 + 0.5);
+        if (u_texFromTarget != 0 && u_texFormat != 0)
+        {
+            // TEXA expansion (decoded textures get it on the CPU).
+            bool black = u_texa.z != 0.0 && ct.r == 0.0 && ct.g == 0.0 && ct.b == 0.0;
+            if (u_texFormat == 1)
+                ct.a = black ? 0.0 : u_texa.x;
+            else
+                ct.a = (ct.a >= 128.0) ? u_texa.y : (black ? 0.0 : u_texa.x);
+        }
         if (u_tfx == 0)
         {
             c.rgb = min(floor(ct.rgb * cf.rgb / 128.0), 255.0);
@@ -263,8 +275,14 @@ void main()
     Renderer::~Renderer()
     {
         if (std::getenv("PS2X_GS_GPU_STATS"))
+        {
             std::cerr << "[gs:gpu] draws=" << m_statDraws << " downloads=" << m_statDownloads << " uploads=" << m_statUploads
-                      << " textureDecodes=" << m_statTextureDecodes << std::endl;
+                      << " textureDecodes=" << m_statTextureDecodes << " targetTextures=" << m_statTargetTextures << std::endl;
+            for (auto &t : m_targets)
+                std::cerr << "  target block=" << t->block << " bw=" << t->bw << " psm=" << int(t->psm) << " depth=" << t->depth
+                          << " rows=" << t->usedRows << " bytes=[" << t->beginByte << "," << t->endByte << ")" << std::endl;
+            for (auto &r : m_statDownloadReasons) std::cerr << "  downloads[" << r.first << "]=" << r.second << std::endl;
+        }
     }
 
     void Renderer::initGpuObjects()
@@ -327,7 +345,6 @@ void main()
         const uint32_t bytesPerPixel = bits16 ? 2u : 4u;
         const uint32_t available = kLocalMemoryBytes - std::min(kLocalMemoryBytes, block * 256u);
         target->height = std::clamp<uint32_t>(available / (target->width * bytesPerPixel), 1u, kMaxTargetHeight);
-        bufferRange(block, target->bw, target->height, psm, target->beginByte, target->endByte);
 
         GL &gl = m_context.gl;
         gl.glCreateTextures(GL_TEXTURE_2D, 1, &target->texture);
@@ -335,7 +352,6 @@ void main()
                               static_cast<GLsizei>(target->width), static_cast<GLsizei>(target->height));
         gl.glTextureParameteri(target->texture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         gl.glTextureParameteri(target->texture, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        target->owner = Owner::CpuNewer;
         m_targets.push_back(std::move(target));
         return *m_targets.back();
     }
@@ -370,19 +386,19 @@ void main()
         return fbo;
     }
 
-    void Renderer::uploadTarget(Target &target)
+    void Renderer::uploadTarget(Target &target, uint32_t y0, uint32_t rows)
     {
         ++m_statUploads;
         GL &gl = m_context.gl;
-        std::vector<uint32_t> raw(static_cast<size_t>(target.width) * target.height);
-        m_cpu->ReadVramRect(target.psm, target.block, target.bw, 0u, 0u, target.width, target.height, raw.data());
+        std::vector<uint32_t> raw(static_cast<size_t>(target.width) * rows);
+        m_cpu->ReadVramRect(target.psm, target.block, target.bw, 0u, y0, target.width, rows, raw.data());
         if (target.depth)
         {
             std::vector<float> depth(raw.size());
             for (size_t i = 0; i < raw.size(); ++i)
                 depth[i] = static_cast<float>(static_cast<double>(raw[i]) * (1.0 / 4294967296.0));
-            gl.glTextureSubImage2D(target.texture, 0, 0, 0, static_cast<GLsizei>(target.width),
-                                   static_cast<GLsizei>(target.height), GL_DEPTH_COMPONENT, GL_FLOAT, depth.data());
+            gl.glTextureSubImage2D(target.texture, 0, 0, static_cast<GLint>(y0), static_cast<GLsizei>(target.width),
+                                   static_cast<GLsizei>(rows), GL_DEPTH_COMPONENT, GL_FLOAT, depth.data());
         }
         else
         {
@@ -393,23 +409,47 @@ void main()
                 else if (target.psm == PSM_CT24)
                     pixel = (pixel & 0x00FFFFFFu) | 0x80000000u;
             }
-            gl.glTextureSubImage2D(target.texture, 0, 0, 0, static_cast<GLsizei>(target.width),
-                                   static_cast<GLsizei>(target.height), GL_RGBA, GL_UNSIGNED_BYTE, raw.data());
+            gl.glTextureSubImage2D(target.texture, 0, 0, static_cast<GLint>(y0), static_cast<GLsizei>(target.width),
+                                   static_cast<GLsizei>(rows), GL_RGBA, GL_UNSIGNED_BYTE, raw.data());
         }
-        target.owner = Owner::Synced;
-        target.dirtyY0 = ~0u;
-        target.dirtyY1 = 0;
+    }
+
+    void Renderer::rowsToBytes(const Target &target, uint32_t y0, uint32_t y1, uint32_t &begin, uint32_t &end) const
+    {
+        const PageShape shape = pageShape(target.psm);
+        const uint32_t rowBytes = (target.bw * 64u + shape.width - 1u) / shape.width * kPageBytes;
+        const uint32_t baseBytes = target.block * 256u;
+        const uint32_t base = baseBytes & ~(kPageBytes - 1u);
+        const uint32_t misalign = (baseBytes & (kPageBytes - 1u)) != 0u ? kPageBytes : 0u;
+        begin = static_cast<uint32_t>(std::min<uint64_t>(base + uint64_t(y0 / shape.height) * rowBytes, kLocalMemoryBytes));
+        end = static_cast<uint32_t>(
+            std::min<uint64_t>(base + uint64_t(y1 / shape.height + 1u) * rowBytes + misalign, kLocalMemoryBytes));
+    }
+
+    bool Renderer::bytesToRows(const Target &target, uint32_t begin, uint32_t end, uint32_t &y0, uint32_t &y1) const
+    {
+        const uint32_t lo = std::max(begin, target.beginByte), hi = std::min(end, target.endByte);
+        if (lo >= hi || target.usedRows == 0u)
+            return false;
+        const PageShape shape = pageShape(target.psm);
+        const uint32_t rowBytes = (target.bw * 64u + shape.width - 1u) / shape.width * kPageBytes;
+        const uint32_t baseBytes = target.block * 256u;
+        const uint32_t base = baseBytes & ~(kPageBytes - 1u);
+        const uint32_t misalign = (baseBytes & (kPageBytes - 1u)) != 0u ? kPageBytes : 0u;
+        // With a misaligned base a memory page holds parts of two buffer pages.
+        const uint32_t first = (std::max(lo, base + misalign) - misalign - base) / rowBytes;
+        const uint32_t last = (hi - 1u - base) / rowBytes;
+        y0 = first * shape.height;
+        y1 = std::min((last + 1u) * shape.height - 1u, target.usedRows - 1u);
+        return y0 <= y1;
     }
 
     void Renderer::downloadTarget(Target &target)
     {
-        if (target.owner != Owner::GpuNewer || target.dirtyY0 > target.dirtyY1)
-        {
-            if (target.owner == Owner::GpuNewer)
-                target.owner = Owner::Synced;
+        if (!target.gpuDirty())
             return;
-        }
         ++m_statDownloads;
+        ++m_statDownloadReasons[m_syncReason];
         GL &gl = m_context.gl;
         const uint32_t y0 = target.dirtyY0;
         const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
@@ -434,13 +474,12 @@ void main()
                     pixel = rgba8888To5551(pixel);
         }
         m_cpu->WriteVramRect(target.psm, target.block, target.bw, 0u, y0, target.width, rows, raw.data());
-        target.owner = Owner::Synced;
+        uint32_t begin = 0, end = 0;
+        rowsToBytes(target, target.dirtyY0, target.dirtyY1, begin, end);
         target.dirtyY0 = ~0u;
         target.dirtyY1 = 0;
 
         // CPU memory changed: cached textures over it are stale.
-        uint32_t begin = 0, end = 0;
-        bufferRange(target.block, target.bw, target.height, target.psm, begin, end);
         for (auto it = m_textures.begin(); it != m_textures.end();)
         {
             if (it->second.beginByte < end && begin < it->second.endByte)
@@ -460,8 +499,41 @@ void main()
         if (!m_inFlush)
             flushBatch();
         for (auto &target : m_targets)
-            if (target->owner == Owner::GpuNewer && target->beginByte < endByte && beginByte < target->endByte)
+        {
+            if (!target->gpuDirty())
+                continue;
+            uint32_t begin = 0, end = 0;
+            rowsToBytes(*target, target->dirtyY0, target->dirtyY1, begin, end);
+            if (begin < endByte && beginByte < end)
                 downloadTarget(*target);
+        }
+    }
+
+    void Renderer::markCpuRows(Target &target, uint32_t beginByte, uint32_t endByte)
+    {
+        uint32_t y0 = 0, y1 = 0;
+        if (!bytesToRows(target, beginByte, endByte, y0, y1))
+            return;
+        if (target.gpuDirty())
+            downloadTarget(target); // keep its GPU rows; memory there is current
+        target.cpuY0 = std::min(target.cpuY0, y0);
+        target.cpuY1 = std::max(target.cpuY1, y1);
+    }
+
+    void Renderer::uploadCpuRows(Target &target)
+    {
+        if (!target.cpuDirty())
+            return;
+        const uint32_t y0 = target.cpuY0, y1 = std::min(target.cpuY1, target.usedRows - 1u);
+        target.cpuY0 = ~0u;
+        target.cpuY1 = 0;
+        if (y0 > y1)
+            return;
+        uint32_t begin = 0, end = 0;
+        rowsToBytes(target, y0, y1, begin, end);
+        m_syncReason = "stale";
+        syncRangeToCpu(begin, end); // other targets' data there
+        uploadTarget(target, y0, y1 - y0 + 1u);
     }
 
     void Renderer::cpuWroteRange(uint32_t beginByte, uint32_t endByte)
@@ -469,8 +541,7 @@ void main()
         if (!m_gpu)
             return;
         for (auto &target : m_targets)
-            if (target->beginByte < endByte && beginByte < target->endByte)
-                target->owner = Owner::CpuNewer;
+            markCpuRows(*target, beginByte, endByte);
         GL &gl = m_context.gl;
         for (auto it = m_textures.begin(); it != m_textures.end();)
         {
@@ -484,32 +555,105 @@ void main()
         }
     }
 
-    void Renderer::prepareTargetForDraw(Target &target)
+    void Renderer::growTarget(Target &target, uint32_t needRows)
     {
-        // Other views of the same memory: their GPU data must reach the CPU
-        // copy first, and they go stale once we draw here.
-        bool aliasDownloaded = false;
-        for (auto &other : m_targets)
+        const uint32_t oldRows = target.usedRows;
+        const uint32_t newRows = std::min(needRows, target.height);
+        if (newRows <= oldRows)
+            return;
+        uint32_t begin = 0, end = 0;
+        rowsToBytes(target, oldRows, newRows - 1u, begin, end);
+        m_syncReason = "grow";
+        syncRangeToCpu(begin, end);
+        target.usedRows = newRows;
+        bufferRange(target.block, target.bw, newRows, target.psm, target.beginByte, target.endByte);
+        uploadTarget(target, oldRows, newRows - oldRows);
+    }
+
+    void Renderer::prepareTargetForDraw(Target &target, int32_t drawY0, int32_t drawY1)
+    {
+        growTarget(target, static_cast<uint32_t>(std::max(0, drawY1 + 1)));
+        if (drawY1 >= drawY0 && drawY1 >= 0 && target.usedRows != 0u)
         {
-            if (other.get() == &target || other->depth != target.depth)
-                continue;
-            if (other->beginByte < target.endByte && target.beginByte < other->endByte)
+            uint32_t begin = 0, end = 0;
+            rowsToBytes(target, static_cast<uint32_t>(std::max(0, drawY0)),
+                        std::min(static_cast<uint32_t>(drawY1), target.usedRows - 1u), begin, end);
+
+            // Other views of the memory drawn here: their GPU data reaches
+            // memory first (oldest first, so the newest wins where they
+            // overlap), this target picks it up, and they go stale.
+            std::vector<Target *> pending;
+            for (auto &other : m_targets)
             {
-                if (other->owner == Owner::GpuNewer)
-                {
-                    downloadTarget(*other);
-                    aliasDownloaded = true;
-                }
-                other->owner = Owner::CpuNewer;
+                if (other.get() == &target || other->usedRows == 0u || !other->gpuDirty())
+                    continue;
+                uint32_t y0 = 0, y1 = 0;
+                if (bytesToRows(*other, begin, end, y0, y1))
+                    pending.push_back(other.get());
             }
+            if (!pending.empty())
+            {
+                std::vector<std::pair<uint32_t, uint32_t>> ranges;
+                for (Target *other : pending)
+                {
+                    uint32_t b = 0, e = 0;
+                    rowsToBytes(*other, other->dirtyY0, other->dirtyY1, b, e);
+                    ranges.emplace_back(b, e);
+                }
+                if (target.gpuDirty())
+                    pending.push_back(&target);
+                std::sort(pending.begin(), pending.end(),
+                          [](const Target *a, const Target *b)
+                          { return a->drawSeq < b->drawSeq; });
+                m_syncReason = "alias";
+                for (Target *t : pending)
+                    downloadTarget(*t);
+                for (const auto &range : ranges)
+                    markCpuRows(target, range.first, range.second);
+            }
+            for (auto &other : m_targets)
+                if (other.get() != &target)
+                    markCpuRows(*other, begin, end);
         }
-        if (aliasDownloaded && target.owner != Owner::CpuNewer)
-            target.owner = Owner::CpuNewer;
-        if (target.owner == Owner::CpuNewer)
-            uploadTarget(target);
+        uploadCpuRows(target);
     }
 
     // ----------------------------------------------------------------- textures
+
+    Renderer::Target *Renderer::textureTarget(const GSDrawState &state, const DrawKey &key)
+    {
+        const uint8_t psm = static_cast<uint8_t>(key.tpsm);
+        const bool direct = psm == PSM_CT32 || psm == PSM_CT24 || is16Bit(psm);
+        if (!direct)
+            return nullptr;
+        Target *match = nullptr;
+        for (auto &target : m_targets)
+        {
+            if (!target->depth && target->block == key.tbp0 && target->bw == std::max<uint32_t>(key.tbw, 1u) &&
+                is16Bit(target->psm) == is16Bit(psm) && state.textureHeight <= target->usedRows &&
+                state.textureWidth <= target->width)
+            {
+                match = target.get();
+                break;
+            }
+        }
+        if (!match)
+            return nullptr;
+        // Another view of this memory holds newer data: take the slow path.
+        uint32_t begin = 0, end = 0;
+        rowsToBytes(*match, 0u, state.textureHeight - 1u, begin, end);
+        for (auto &other : m_targets)
+        {
+            if (other.get() == match || !other->gpuDirty())
+                continue;
+            uint32_t b = 0, e = 0;
+            rowsToBytes(*other, other->dirtyY0, other->dirtyY1, b, e);
+            if (b < end && begin < e)
+                return nullptr;
+        }
+        uploadCpuRows(*match);
+        return match;
+    }
 
     GLuint Renderer::textureFor(const GSDrawState &state, const DrawKey &key)
     {
@@ -526,6 +670,7 @@ void main()
         const uint32_t height = state.textureHeight;
         uint32_t begin = 0, end = 0;
         bufferRange(key.tbp0, key.tbw, height, static_cast<uint8_t>(key.tpsm), begin, end);
+        m_syncReason = "texture";
         syncRangeToCpu(begin, end); // render-to-texture: GPU data must reach memory first
         if (isPalettized(static_cast<uint8_t>(key.tpsm)))
         {
@@ -561,9 +706,12 @@ void main()
         const uint32_t ztst = static_cast<uint32_t>((ctx.test >> 17) & 3u);
         const bool useDepth = ztst != 1u || !ctx.zbuf.zmask;
         Target *depth = useDepth ? &depthTarget(ctx.zbuf, ctx.frame.fbw) : nullptr;
-        prepareTargetForDraw(color);
+        // Rows this draw can touch: scissor clipped to the geometry.
+        const int32_t drawY0 = std::max(key.scissor[1], m_batchY0);
+        const int32_t drawY1 = std::min(key.scissor[3], m_batchY1);
+        prepareTargetForDraw(color, drawY0, drawY1);
         if (depth)
-            prepareTargetForDraw(*depth);
+            prepareTargetForDraw(*depth, drawY0, drawY1);
         m_drawColor = &color;
         m_drawDepth = depth;
 
@@ -574,8 +722,8 @@ void main()
         const int x1 = std::min<int>(key.scissor[2], static_cast<int>(color.width) - 1);
         const int y1 = std::min<int>(key.scissor[3], static_cast<int>(color.height) - 1);
         gl.glScissor(x0, y0, std::max(0, x1 - x0 + 1), std::max(0, y1 - y0 + 1));
-        m_drawY0 = y0;
-        m_drawY1 = y1;
+        m_drawY0 = std::max(y0, drawY0);
+        m_drawY1 = std::min(y1, drawY1);
 
         // Depth: GS Z grows towards the viewer.
         if (depth)
@@ -658,7 +806,29 @@ void main()
                               float(state.fogG), float(state.fogB));
         if (state.prim.tme)
         {
-            GLuint texture = textureFor(state, key);
+            GLuint texture = 0;
+            float scaleX = 1.0f, scaleY = 1.0f;
+            int fromTarget = 0, format = 0;
+            if (Target *source = textureTarget(state, key))
+            {
+                ++m_statTargetTextures;
+                texture = source->texture;
+                scaleX = static_cast<float>(state.textureWidth) / static_cast<float>(source->width);
+                scaleY = static_cast<float>(state.textureHeight) / static_cast<float>(source->height);
+                fromTarget = 1;
+                format = key.tpsm == PSM_CT24 ? 1 : (is16Bit(static_cast<uint8_t>(key.tpsm)) ? 2 : 0);
+                if (source == &color)
+                    gl.glTextureBarrier(); // sampling what this target last rendered
+            }
+            else
+            {
+                texture = textureFor(state, key);
+            }
+            set1("u_texFromTarget", fromTarget);
+            set1("u_texFormat", format);
+            gl.glProgramUniform2f(m_program, gl.glGetUniformLocation(m_program, "u_texScale"), scaleX, scaleY);
+            gl.glProgramUniform3f(m_program, gl.glGetUniformLocation(m_program, "u_texa"), float(state.texa.ta0),
+                                  float(state.texa.ta1), state.texa.aem ? 1.0f : 0.0f);
             // textureFor may download targets and change bindings; rebind.
             gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebufferFor(color, depth));
             const GLint filter = state.linearFilter ? GL_LINEAR : GL_NEAREST;
@@ -680,6 +850,20 @@ void main()
             m_haveKey = false;
             return;
         }
+        if (((m_keyState.context.test >> 17) & 3u) == 0u) // ZTST NEVER: nothing drawn
+        {
+            m_vertices.clear();
+            m_haveKey = false;
+            return;
+        }
+        float minY = m_vertices[0].y, maxY = m_vertices[0].y;
+        for (const Vertex &v : m_vertices)
+        {
+            minY = std::min(minY, v.y);
+            maxY = std::max(maxY, v.y);
+        }
+        m_batchY0 = static_cast<int32_t>(std::floor(minY));
+        m_batchY1 = static_cast<int32_t>(std::ceil(maxY)) - 1; // an edge at y covers rows < y
         GL &gl = m_context.gl;
         m_inFlush = true;
         applyDrawState(m_key, m_keyState);
@@ -704,7 +888,7 @@ void main()
         {
             if (!target)
                 return;
-            target->owner = Owner::GpuNewer;
+            target->drawSeq = ++m_drawSeq;
             target->dirtyY0 = std::min<uint32_t>(target->dirtyY0, static_cast<uint32_t>(std::max(0, m_drawY0)));
             target->dirtyY1 = std::max<uint32_t>(target->dirtyY1, static_cast<uint32_t>(std::max(0, m_drawY1)));
         };
@@ -875,7 +1059,15 @@ void main()
         flushBatch();
         m_cpu->Reset();
         for (auto &target : m_targets)
-            target->owner = Owner::CpuNewer;
+        {
+            target->dirtyY0 = ~0u;
+            target->dirtyY1 = 0;
+            if (target->usedRows != 0u)
+            {
+                target->cpuY0 = 0;
+                target->cpuY1 = target->usedRows - 1u;
+            }
+        }
     }
 
     void Renderer::loadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
@@ -883,6 +1075,7 @@ void main()
         if (m_gpu && tex0.cld != 0u)
         {
             const uint32_t begin = tex0.cbp * 256u;
+            m_syncReason = "clut";
             syncRangeToCpu(begin, begin + 1024u);
         }
         m_cpu->LoadClut(tex0, texclut);
@@ -899,6 +1092,7 @@ void main()
                 bufferRange(buf.dbp, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh, buf.dpsm,
                             m_transferBegin, m_transferEnd);
                 // Partial writes must merge with GPU-rendered data.
+                m_syncReason = "transferDst";
                 syncRangeToCpu(m_transferBegin, m_transferEnd);
                 m_transferActive = true;
             }
@@ -907,6 +1101,7 @@ void main()
                 uint32_t begin = 0, end = 0;
                 bufferRange(buf.sbp, buf.sbw, static_cast<uint32_t>(command.trxpos.ssay) + command.trxreg.rrh, buf.spsm,
                             begin, end);
+                m_syncReason = "transferSrc";
                 syncRangeToCpu(begin, end);
             }
         }
@@ -938,6 +1133,7 @@ void main()
     PresentationFrame Renderer::present(const GSPresentationRequest &request)
     {
         // Presentation reads local memory (both circuits, preferred source).
+        m_syncReason = "present";
         syncLocalMemory();
         m_cpu->Sync(GSSyncReason::Presentation);
         return m_cpu->Present(request);
