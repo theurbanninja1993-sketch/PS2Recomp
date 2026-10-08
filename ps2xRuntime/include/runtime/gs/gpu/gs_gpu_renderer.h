@@ -15,13 +15,14 @@ namespace gsgpu
 {
     // GS rendering state that lives on the GPU backend's render thread.
     //
-    // Local memory: the CPU copy (shared with an inner GSCpuBackend, which
-    // also performs transfers, CLUT loads and presentation) is the reference.
-    // Frame and Z buffers drawn by the GPU live in GL textures ("targets");
-    // each target tracks whether the GPU or the CPU copy is newer and is
-    // synchronized on demand: before CPU consumers read its memory
-    // (presentation, texture decode, transfers) and before GPU draws use
-    // memory the CPU changed.
+    // Local memory: a 4 MiB GPU buffer ("VRAM") in the GS's swizzled layout
+    // is the reference. Transfers, CLUT loads and texture sampling operate on
+    // it directly in shaders. Frame and Z buffers drawn by the GPU live in GL
+    // textures ("targets"); each tracks rows it drew that VRAM lacks (resolved
+    // into VRAM on demand by a compute pass) and rows VRAM changed since it
+    // was filled (reloaded before it is drawn). The CPU copy of local memory
+    // (shared with an inner GSCpuBackend, which presents frames) is refreshed
+    // from VRAM only when the CPU needs it.
     class Renderer
     {
     public:
@@ -37,7 +38,7 @@ namespace gsgpu
         void uploadImage(const uint8_t *data, uint32_t sizeBytes);
         void textureFlush();
 
-        // Brings CPU local memory up to date with GPU-rendered data.
+        // Brings CPU local memory up to date with the GPU.
         void syncLocalMemory();
         PresentationFrame present(const GSPresentationRequest &request);
         bool clearFramebuffer(const GSContext &context, uint32_t rgba);
@@ -63,22 +64,15 @@ namespace gsgpu
             uint32_t usedRows = 0;
             uint32_t beginByte = 0, endByte = 0;
             GLuint texture = 0;
-            // Rows the GPU wrote since the last download, and rows whose
-            // texture contents are stale (memory changed by the CPU or by
-            // another target). A target never has both at once.
+            GLuint loadFramebuffer = 0; // the texture alone, for load passes
+            // Rows the GPU drew that VRAM lacks, and rows whose texture
+            // contents are stale (VRAM changed). A target never has both.
             uint32_t dirtyY0 = ~0u, dirtyY1 = 0;
-            uint32_t cpuY0 = ~0u, cpuY1 = 0;
-            uint64_t drawSeq = 0; // last draw into it, to order overlapping downloads
+            uint32_t staleY0 = ~0u, staleY1 = 0;
+            uint64_t drawSeq = 0; // last draw into it, to order overlapping resolves
 
             [[nodiscard]] bool gpuDirty() const { return dirtyY0 <= dirtyY1; }
-            [[nodiscard]] bool cpuDirty() const { return cpuY0 <= cpuY1; }
-        };
-
-        struct CachedTexture
-        {
-            GLuint texture = 0;
-            uint32_t width = 0, height = 0;
-            uint32_t beginByte = 0, endByte = 0;
+            [[nodiscard]] bool stale() const { return staleY0 <= staleY1; }
         };
 
         struct Vertex
@@ -106,53 +100,62 @@ namespace gsgpu
             bool operator==(const DrawKey &other) const;
         };
 
+        struct Program
+        {
+            GLuint id = 0;
+            std::unordered_map<const char *, GLint> locations;
+        };
+
         void initGpuObjects();
         void flushBatch();
         void applyDrawState(const DrawKey &key, const GSDrawState &state);
+        GLint uniform(Program &program, const char *name);
 
         Target &colorTarget(const GSFrameReg &frame);
         Target &depthTarget(const GSZbufReg &zbuf, uint32_t bw);
         Target &findOrCreateTarget(bool depth, uint32_t block, uint32_t bw, uint8_t psm);
         GLuint framebufferFor(const Target &color, const Target *depth);
-        void uploadTarget(Target &target, uint32_t y0, uint32_t rows); // CPU -> GL
-        void downloadTarget(Target &target); // GL -> CPU (dirty rows)
-        // Before the CPU reads [begin, end): download GPU-newer targets there.
-        void syncRangeToCpu(uint32_t beginByte, uint32_t endByte);
-        // After the CPU wrote [begin, end): targets and textures there are stale.
-        void cpuWroteRange(uint32_t beginByte, uint32_t endByte);
-        // Before the GPU draws into `target`: refresh it, and retire other
-        // targets aliasing its memory.
+        void loadRows(Target &target, uint32_t y0, uint32_t rows); // VRAM -> texture
+        void resolveTarget(Target &target);                        // texture -> VRAM (dirty rows)
+        // Before VRAM [begin, end) is read: resolve targets drawn there.
+        void resolveRange(uint32_t beginByte, uint32_t endByte);
+        // After VRAM [begin, end) changed: targets there are stale.
+        void vramWroteRange(uint32_t beginByte, uint32_t endByte);
+        // Before the GPU draws rows [drawY0, drawY1] of `target`: refresh
+        // it, and retire other targets aliasing that memory.
         void prepareTargetForDraw(Target &target, int32_t drawY0, int32_t drawY1);
-        // Mirror more rows of `target` (fetched from memory).
+        // Mirror more rows of `target` (fetched from VRAM).
         void growTarget(Target &target, uint32_t needRows);
         // Memory bytes holding rows [y0, y1] of `target` (whole page rows).
         void rowsToBytes(const Target &target, uint32_t y0, uint32_t y1, uint32_t &begin, uint32_t &end) const;
         // Rows of `target` (within its used rows) stored in [begin, end).
         bool bytesToRows(const Target &target, uint32_t begin, uint32_t end, uint32_t &y0, uint32_t &y1) const;
-        void markCpuRows(Target &target, uint32_t beginByte, uint32_t endByte);
-        void uploadCpuRows(Target &target);
-        GLuint textureFor(const GSDrawState &state, const DrawKey &key);
-        // A colour target whose GPU texture holds this draw's texture
-        // (same base/width, compatible 32/24/16-bit format), or null.
-        Target *textureTarget(const GSDrawState &state, const DrawKey &key);
+        void markStaleRows(Target &target, uint32_t beginByte, uint32_t endByte);
+        void loadStaleRows(Target &target);
+
+        // CPU copy of local memory <-> VRAM.
+        void readbackVram();
+        void uploadVram(uint32_t beginByte, uint32_t endByte);
+        void dispatchHostToLocal(const uint8_t *data, uint32_t pixels, uint32_t streamBytes);
+        void dispatchLocalToLocal(const GSTransferCommand &command);
 
         GLContext m_context;
         bool m_gpu = false;
-        std::unique_ptr<GSCpuBackend> m_cpu; // transfers, CLUT, presentation, reference
+        std::unique_ptr<GSCpuBackend> m_cpu; // presentation, local->host transfers
         uint8_t *m_vram = nullptr;
 
         std::vector<std::unique_ptr<Target>> m_targets;
         std::unordered_map<uint64_t, GLuint> m_framebuffers; // (color tex, depth tex) -> FBO
-        std::unordered_map<uint64_t, CachedTexture> m_textures;
-        std::unordered_map<uint64_t, uint64_t> m_textureKeys; // hash -> key check
 
-        GLuint m_program = 0;
-        GLuint m_vao = 0;
+        GLuint m_vramBuffer = 0, m_swizzleBuffer = 0, m_clutBuffer = 0, m_stagingBuffer = 0;
+        size_t m_stagingCapacity = 0;
+        Program m_draw, m_loadColor, m_loadDepth, m_resolve, m_hostToLocal, m_localToLocal, m_clutLoad;
+        GLuint m_vao = 0, m_emptyVao = 0;
         GLuint m_vbo = 0;
         size_t m_vboCapacity = 0;
         std::vector<Vertex> m_vertices;
         bool m_haveKey = false;
-        bool m_inFlush = false; // applyDrawState may sync memory mid-flush
+        bool m_inFlush = false; // applyDrawState may resolve memory mid-flush
         DrawKey m_key{};
         GSDrawState m_keyState{};
         Target *m_drawColor = nullptr;
@@ -161,13 +164,20 @@ namespace gsgpu
         int32_t m_batchY0 = 0, m_batchY1 = 0; // vertex row bounds of the pending batch
         uint64_t m_drawSeq = 0;
 
-        // Current host->local transfer destination, for coherency.
-        uint32_t m_transferBegin = 0, m_transferEnd = 0;
-        bool m_transferActive = false;
+        // CLUT: CBP0/CBP1 registers for the CLD compare modes, and a version
+        // bumped per load so batches don't straddle one.
+        uint32_t m_clutCbp[2] = {0, 0};
+        uint64_t m_clutVersion = 0;
 
-        uint64_t m_statDraws = 0, m_statDownloads = 0, m_statUploads = 0, m_statTextureDecodes = 0;
-        uint64_t m_statTargetTextures = 0;
+        // Current host->local transfer.
+        GSTransferCommand m_transfer{};
+        GSTransferSnapshot m_transferState{};
+        bool m_cpuTransfer = false; // local->host: served by m_cpu
+
+        uint64_t m_statDraws = 0, m_statResolves = 0, m_statLoads = 0, m_statReadbacks = 0, m_statClutLoads = 0,
+                 m_statTransfers = 0;
         const char *m_syncReason = "other";
-        std::unordered_map<std::string, uint64_t> m_statDownloadReasons;
+        std::unordered_map<std::string, uint64_t> m_statResolveReasons;
+        double m_timeReadback = 0, m_timeDraw = 0, m_timePresent = 0;
     };
 }

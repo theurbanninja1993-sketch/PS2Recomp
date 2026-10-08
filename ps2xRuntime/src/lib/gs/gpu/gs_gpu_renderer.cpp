@@ -1,8 +1,10 @@
 #include "runtime/gs/gpu/gs_gpu_renderer.h"
 
 #include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/ps2_gs_memory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +15,14 @@ namespace gsgpu
 {
     namespace
     {
+        // Adds the scope's duration to a stats counter.
+        struct ScopeTimer
+        {
+            double &total;
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~ScopeTimer() { total += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); }
+        };
+
         constexpr uint32_t kLocalMemoryBytes = 4u * 1024u * 1024u;
         constexpr uint32_t kPageBytes = 8192u;
         constexpr uint32_t kMaxTargetHeight = 1024u;
@@ -21,6 +31,24 @@ namespace gsgpu
         constexpr uint8_t PSM_CT32 = 0x00, PSM_CT24 = 0x01, PSM_CT16 = 0x02, PSM_CT16S = 0x0A;
         constexpr uint8_t PSM_T8 = 0x13, PSM_T4 = 0x14, PSM_T8H = 0x1B, PSM_T4HL = 0x24, PSM_T4HH = 0x2C;
         constexpr uint8_t PSM_Z32 = 0x30, PSM_Z24 = 0x31, PSM_Z16 = 0x32, PSM_Z16S = 0x3A;
+
+        // Swizzle tables uploaded to the GPU, one per page layout: pixel index
+        // within a page for (x, y) at block 0 (base blocks add whole blocks).
+        struct SwizzleClass
+        {
+            uint32_t width, height, offset;
+        };
+        constexpr SwizzleClass kSwizzleClasses[8] = {
+            {64u, 32u, 0u},      // C32 (also C24, T8H, T4HL, T4HH)
+            {64u, 32u, 2048u},   // Z32 (also Z24)
+            {64u, 64u, 4096u},   // C16
+            {64u, 64u, 8192u},   // C16S
+            {64u, 64u, 12288u},  // Z16
+            {64u, 64u, 16384u},  // Z16S
+            {128u, 64u, 20480u}, // T8
+            {128u, 128u, 28672u} // T4
+        };
+        constexpr uint32_t kSwizzleEntries = 28672u + 16384u;
 
         struct PageShape
         {
@@ -55,6 +83,11 @@ namespace gsgpu
             return psm == PSM_T8 || psm == PSM_T4 || psm == PSM_T8H || psm == PSM_T4HL || psm == PSM_T4HH;
         }
 
+        uint32_t bitsPerPixel(uint8_t psm)
+        {
+            return static_cast<uint32_t>(GSMem::BitsPerPixel(static_cast<GSMem::PixelStorageMode>(psm)));
+        }
+
         // Byte range of a buffer: whole pages from the base page.
         void bufferRange(uint32_t block, uint32_t bw, uint32_t height, uint8_t psm, uint32_t &begin, uint32_t &end)
         {
@@ -69,33 +102,164 @@ namespace gsgpu
             end = static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(begin) + bytes, kLocalMemoryBytes));
         }
 
-        uint32_t rgba5551To8888(uint32_t c)
+        // Builds the swizzle tables by reading a page of memory whose pixel
+        // units hold their own index, so they match GSMem exactly.
+        std::vector<uint32_t> buildSwizzleTables()
         {
-            const uint32_t r = ((c >> 0) & 0x1Fu) << 3;
-            const uint32_t g = ((c >> 5) & 0x1Fu) << 3;
-            const uint32_t b = ((c >> 10) & 0x1Fu) << 3;
-            const uint32_t a = ((c >> 15) & 0x01u) << 7;
-            return r | (g << 8) | (b << 16) | (a << 24);
-        }
-
-        uint32_t rgba8888To5551(uint32_t c)
-        {
-            const uint32_t r = ((c >> 0) & 0xFFu) >> 3;
-            const uint32_t g = ((c >> 8) & 0xFFu) >> 3;
-            const uint32_t b = ((c >> 16) & 0xFFu) >> 3;
-            const uint32_t a = ((c >> 24) & 0xFFu) >> 7;
-            return r | (g << 5) | (b << 10) | (a << 15);
-        }
-
-        uint64_t fnv(uint64_t hash, uint64_t value)
-        {
-            for (int i = 0; i < 8; ++i)
+            std::vector<uint32_t> tables(kSwizzleEntries, 0u);
+            std::vector<uint8_t> memory(GSMem::MEMORY_SIZE, 0u);
+            using Reader = uint32_t (*)(uint8_t *, uint32_t, uint32_t, uint32_t, uint32_t);
+            struct Probe
             {
-                hash ^= (value >> (8 * i)) & 0xFFu;
-                hash *= 1099511628211ull;
+                Reader read;
+                uint32_t unitBits;
+            };
+            const Probe probes[8] = {{GSMem::ReadCT32, 32u}, {GSMem::ReadZ32, 32u}, {GSMem::ReadCT16, 16u},
+                                     {GSMem::ReadCT16S, 16u}, {GSMem::ReadZ16, 16u}, {GSMem::ReadZ16S, 16u},
+                                     {GSMem::ReadP8, 8u}, {GSMem::ReadP4, 4u}};
+            for (uint32_t cls = 0; cls < 8u; ++cls)
+            {
+                const SwizzleClass &shape = kSwizzleClasses[cls];
+                const uint32_t units = shape.width * shape.height;
+                const uint32_t bw = shape.width / 64u;
+                // Each pass stores `unitBits` bits of every unit's index.
+                const uint32_t bitsNeeded = 32u - static_cast<uint32_t>(__builtin_clz(units - 1u));
+                for (uint32_t shift = 0; shift < bitsNeeded; shift += probes[cls].unitBits)
+                {
+                    for (uint32_t unit = 0; unit < units; ++unit)
+                    {
+                        const uint32_t part = (unit >> shift) & ((probes[cls].unitBits == 32u) ? 0xFFFFFFFFu : ((1u << probes[cls].unitBits) - 1u));
+                        const uint32_t bit = unit * probes[cls].unitBits;
+                        if (probes[cls].unitBits == 32u)
+                            std::memcpy(&memory[bit / 8u], &part, 4u);
+                        else if (probes[cls].unitBits == 16u)
+                        {
+                            const uint16_t v = static_cast<uint16_t>(part);
+                            std::memcpy(&memory[bit / 8u], &v, 2u);
+                        }
+                        else if (probes[cls].unitBits == 8u)
+                            memory[bit / 8u] = static_cast<uint8_t>(part);
+                        else
+                            memory[bit / 8u] = static_cast<uint8_t>((memory[bit / 8u] & ~(0xFu << (bit % 8u))) |
+                                                                    (part << (bit % 8u)));
+                    }
+                    for (uint32_t y = 0; y < shape.height; ++y)
+                        for (uint32_t x = 0; x < shape.width; ++x)
+                        {
+                            const uint32_t value = probes[cls].read(memory.data(), 0u, bw, x, y);
+                            tables[shape.offset + y * shape.width + x] |= value << shift;
+                        }
+                }
             }
-            return hash;
+            return tables;
         }
+
+        // ------------------------------------------------------------ shaders
+
+        // VRAM access shared by every shader: swizzled pixel addressing and
+        // field reads/writes, mirroring GSMem::PixelStorageTraits.
+        const char *kVramGlsl = R"(
+layout(std430, binding = 0) coherent buffer VramBuffer { uint vram[]; };
+layout(std430, binding = 1) readonly buffer SwizzleBuffer { uint swizzle[]; };
+
+uint psmClass(uint psm)
+{
+    switch (psm)
+    {
+    case 0x30u: case 0x31u: return 1u;
+    case 0x02u: return 2u;
+    case 0x0Au: return 3u;
+    case 0x32u: return 4u;
+    case 0x3Au: return 5u;
+    case 0x13u: return 6u;
+    case 0x14u: return 7u;
+    default: return 0u;
+    }
+}
+
+const uint kClassWidth[8] = uint[8](64u, 64u, 64u, 64u, 64u, 64u, 128u, 128u);
+const uint kClassHeight[8] = uint[8](32u, 32u, 64u, 64u, 64u, 64u, 64u, 128u);
+const uint kClassOffset[8] = uint[8](0u, 2048u, 4096u, 8192u, 12288u, 16384u, 20480u, 28672u);
+
+// Word, bit shift and mask of pixel (x, y) of a buffer.
+void vramField(uint psm, uint base, uint bw, uint x, uint y, out uint word, out uint shift, out uint mask)
+{
+    uint cls = psmClass(psm);
+    uint pw = kClassWidth[cls], ph = kClassHeight[cls];
+    uint page = base / 32u + (y / ph) * ((bw * 64u) / pw) + x / pw;
+    uint addr = page * (pw * ph) + (base % 32u) * ((pw * ph) / 32u) + swizzle[kClassOffset[cls] + (y % ph) * pw + (x % pw)];
+    if (cls <= 1u)
+    {
+        word = ((addr * 4u) & 0x3FFFFCu) >> 2;
+        shift = 0u;
+        mask = 0xFFFFFFFFu;
+        if (psm == 0x01u || psm == 0x31u) mask = 0x00FFFFFFu;
+        else if (psm == 0x1Bu) { shift = 24u; mask = 0xFFu; }
+        else if (psm == 0x24u) { shift = 24u; mask = 0xFu; }
+        else if (psm == 0x2Cu) { shift = 28u; mask = 0xFu; }
+    }
+    else if (cls <= 5u)
+    {
+        uint byteAddr = (addr * 2u) & 0x3FFFFEu;
+        word = byteAddr >> 2;
+        shift = (byteAddr & 2u) * 8u;
+        mask = 0xFFFFu;
+    }
+    else if (cls == 6u)
+    {
+        uint byteAddr = addr & 0x3FFFFFu;
+        word = byteAddr >> 2;
+        shift = (byteAddr & 3u) * 8u;
+        mask = 0xFFu;
+    }
+    else
+    {
+        uint bits = addr * 4u;
+        uint byteAddr = (bits >> 3) & 0x3FFFFFu;
+        word = byteAddr >> 2;
+        shift = (byteAddr & 3u) * 8u + (bits & 7u);
+        mask = 0xFu;
+    }
+}
+
+uint readVram(uint psm, uint base, uint bw, uint x, uint y)
+{
+    uint word, shift, mask;
+    vramField(psm, base, bw, x, y, word, shift, mask);
+    return (vram[word] >> shift) & mask;
+}
+
+void writeVram(uint psm, uint base, uint bw, uint x, uint y, uint value)
+{
+    uint word, shift, mask;
+    vramField(psm, base, bw, x, y, word, shift, mask);
+    if (mask == 0xFFFFFFFFu)
+    {
+        vram[word] = value;
+    }
+    else
+    {
+        // Neighbouring fields of the word may be written concurrently.
+        atomicAnd(vram[word], ~(mask << shift));
+        atomicOr(vram[word], (value & mask) << shift);
+    }
+}
+
+uint rgba5551To8888(uint c)
+{
+    return ((c & 0x1Fu) << 3) | (((c >> 5) & 0x1Fu) << 11) | (((c >> 10) & 0x1Fu) << 19) | (((c >> 15) & 1u) << 31);
+}
+
+uint rgba8888To5551(uint c)
+{
+    return ((c & 0xFFu) >> 3) | ((((c >> 8) & 0xFFu) >> 3) << 5) | ((((c >> 16) & 0xFFu) >> 3) << 10) | ((c >> 31) << 15);
+}
+
+bool is16BitPsm(uint psm)
+{
+    return psm == 0x02u || psm == 0x0Au || psm == 0x32u || psm == 0x3Au;
+}
+)";
 
         const char *kVertexShader = R"(#version 460 core
 layout(location = 0) in vec2 a_pos;
@@ -117,23 +281,107 @@ void main()
 }
 )";
 
-        const char *kFragmentShader = R"(#version 460 core
+        const char *kFragmentShader = R"(
 in vec4 v_color;
 noperspective in vec3 v_stq;
 noperspective in float v_fog;
 layout(location = 0, index = 0) out vec4 o_color;
 layout(location = 0, index = 1) out vec4 o_factor;
-layout(binding = 0) uniform sampler2D u_tex;
 layout(binding = 1) uniform sampler2D u_target;
+layout(std430, binding = 2) readonly buffer ClutBuffer { uint clut[]; };
 uniform int u_tme, u_tfx, u_tcc, u_fge;
-uniform int u_texFromTarget, u_texFormat; // texture sampled from a render target: 0 CT32, 1 CT24, 2 CT16
-uniform vec2 u_texScale;                  // texture size / target size
-uniform vec3 u_texa;                      // TA0, TA1, AEM
+uniform uvec4 u_tex;      // TBP0, TBW, PSM, CPSM
+uniform uvec4 u_tex2;     // CSM, CSA, WMS | WMT << 2, linear
+uniform ivec4 u_region;   // MINU, MAXU, MINV, MAXV
+uniform ivec2 u_texSize;
+uniform uvec3 u_texa;     // TA0, TA1, AEM
 uniform int u_ate, u_atst, u_aref, u_afail;
 uniform int u_abe, u_csel, u_pabe, u_date, u_datm, u_fba;
 uniform vec4 u_blend; // s_k, s_c, d_k, d_c (alpha_s = C*s_k + s_c, alpha_d = C*d_k + d_c)
 uniform float u_fix;
 uniform vec3 u_fogColor;
+
+uint applyTexa(uint psm, uint texel)
+{
+    if (psm == 0x00u)
+        return texel;
+    bool rgbZero = (texel & 0x00FFFFFFu) == 0u;
+    uint a = texel >> 24;
+    if (psm == 0x01u)
+        a = (u_texa.z != 0u && rgbZero) ? 0u : u_texa.x;
+    else if (psm == 0x02u || psm == 0x0Au)
+        a = ((a & 0x80u) != 0u) ? u_texa.y : ((u_texa.z != 0u && rgbZero) ? 0u : u_texa.x);
+    return (texel & 0x00FFFFFFu) | (a << 24);
+}
+
+uint lookupClut(uint index)
+{
+    uint tpsm = u_tex.z, cpsm = u_tex.w, csm = u_tex2.x, csa = u_tex2.y;
+    bool sixteenBit = cpsm == 0x02u || cpsm == 0x0Au;
+    bool fourBit = tpsm == 0x14u || tpsm == 0x24u || tpsm == 0x2Cu;
+    bool eightBit = tpsm == 0x13u || tpsm == 0x1Bu;
+    uint clutBase = (csa & (sixteenBit ? 0x1Fu : 0x0Fu)) << 4;
+    uint sourceIndex = fourBit ? (index & 0x0Fu) : index;
+    uint clutIndex = (clutBase + sourceIndex) & (sixteenBit ? 0x1FFu : 0x0FFu);
+    if (!sixteenBit && csm == 0u && eightBit)
+        clutIndex = min((sourceIndex & 0xF0u) + clutBase, 240u) + (sourceIndex & 0x0Fu);
+    if (cpsm == 0x00u)
+        return clut[clutIndex] | (clut[clutIndex + 256u] << 16);
+    if (cpsm == 0x01u)
+        return applyTexa(cpsm, (clut[clutIndex] | (clut[clutIndex + 256u] << 16)) & 0x00FFFFFFu);
+    if (sixteenBit)
+        return applyTexa(cpsm, rgba5551To8888(clut[clutIndex]));
+    return 0xFFFF00FFu;
+}
+
+int wrapCoordinate(int coordinate, int size, uint mode, int regionMin, int regionMax)
+{
+    if (mode == 0u) return int(uint(coordinate) & uint(size - 1));
+    if (mode == 1u) return clamp(coordinate, 0, size - 1);
+    if (mode == 2u) return min(max(coordinate, regionMin), regionMax);
+    return int((uint(coordinate) & uint(regionMin)) | uint(regionMax));
+}
+
+uint texel(int u, int v)
+{
+    u = wrapCoordinate(u, u_texSize.x, u_tex2.z & 3u, u_region.x, u_region.y);
+    v = wrapCoordinate(v, u_texSize.y, (u_tex2.z >> 2) & 3u, u_region.z, u_region.w);
+    uint psm = u_tex.z;
+    uint raw = readVram(psm, u_tex.x, u_tex.y, uint(u), uint(v));
+    switch (psm)
+    {
+    case 0x00u: case 0x30u: case 0x01u: case 0x31u:
+        return applyTexa(psm, raw);
+    case 0x02u: case 0x0Au: case 0x32u: case 0x3Au:
+        return applyTexa(psm, rgba5551To8888(raw));
+    case 0x13u: case 0x1Bu: case 0x14u: case 0x24u: case 0x2Cu:
+        return lookupClut(raw & 0xFFu);
+    }
+    return 0xFFFF00FFu;
+}
+
+// Two 8-bit channels (bits 0-7 and 16-23) blended with an 8-bit weight.
+uint lerp2(uint a, uint b, uint w)
+{
+    uint lo = ((a & 0xFFu) * (256u - w) + (b & 0xFFu) * w + 128u) >> 8;
+    uint hi = (((a >> 16) & 0xFFu) * (256u - w) + ((b >> 16) & 0xFFu) * w + 128u) >> 8;
+    return lo | (hi << 16);
+}
+
+uint sampleTexture(vec2 uv)
+{
+    if (u_tex2.w == 0u)
+        return texel(int(uv.x), int(uv.y));
+    vec2 s = uv - 0.5;
+    int u0 = int(floor(s.x)), v0 = int(floor(s.y));
+    uint wx = uint((s.x - float(u0)) * 256.0 + 0.5);
+    uint wy = uint((s.y - float(v0)) * 256.0 + 0.5);
+    uint c00 = texel(u0, v0), c10 = texel(u0 + 1, v0), c01 = texel(u0, v0 + 1), c11 = texel(u0 + 1, v0 + 1);
+    uint even = lerp2(lerp2(c00 & 0x00FF00FFu, c10 & 0x00FF00FFu, wx), lerp2(c01 & 0x00FF00FFu, c11 & 0x00FF00FFu, wx), wy);
+    uint odd = lerp2(lerp2((c00 >> 8) & 0x00FF00FFu, (c10 >> 8) & 0x00FF00FFu, wx),
+                     lerp2((c01 >> 8) & 0x00FF00FFu, (c11 >> 8) & 0x00FF00FFu, wx), wy);
+    return even | (odd << 8);
+}
 
 void main()
 {
@@ -141,16 +389,10 @@ void main()
     vec4 c = cf;
     if (u_tme != 0)
     {
-        vec4 ct = floor(texture(u_tex, v_stq.xy / v_stq.z * u_texScale) * 255.0 + 0.5);
-        if (u_texFromTarget != 0 && u_texFormat != 0)
-        {
-            // TEXA expansion (decoded textures get it on the CPU).
-            bool black = u_texa.z != 0.0 && ct.r == 0.0 && ct.g == 0.0 && ct.b == 0.0;
-            if (u_texFormat == 1)
-                ct.a = black ? 0.0 : u_texa.x;
-            else
-                ct.a = (ct.a >= 128.0) ? u_texa.y : (black ? 0.0 : u_texa.x);
-        }
+        float q = abs(v_stq.z) > 1.0e-8 ? v_stq.z : 1.0;
+        vec2 uv = v_stq.xy * (1.0 / q) * vec2(u_texSize);
+        uint t = sampleTexture(uv);
+        vec4 ct = vec4(float(t & 0xFFu), float((t >> 8) & 0xFFu), float((t >> 16) & 0xFFu), float(t >> 24));
         if (u_tfx == 0)
         {
             c.rgb = min(floor(ct.rgb * cf.rgb / 128.0), 255.0);
@@ -229,10 +471,179 @@ void main()
 }
 )";
 
-        GLuint compileShader(GL &gl, GLenum type, const char *source)
+        // Full-target triangle for load passes (rows limited by the scissor).
+        const char *kFullscreenVertexShader = R"(#version 460 core
+void main()
+{
+    vec2 p = vec2((gl_VertexID & 1) * 4 - 1, (gl_VertexID & 2) * 2 - 1);
+    gl_Position = vec4(p, 0.0, 1.0);
+}
+)";
+
+        // VRAM -> colour target.
+        const char *kLoadColorShader = R"(
+uniform uvec3 u_buffer; // block, bw, psm
+out vec4 o_color;
+void main()
+{
+    uint x = uint(gl_FragCoord.x), y = uint(gl_FragCoord.y);
+    uint raw = readVram(u_buffer.z, u_buffer.x, u_buffer.y, x, y);
+    uint c = is16BitPsm(u_buffer.z) ? rgba5551To8888(raw)
+           : (u_buffer.z == 0x01u ? ((raw & 0x00FFFFFFu) | 0x80000000u) : raw);
+    o_color = unpackUnorm4x8(c);
+}
+)";
+
+        // VRAM -> depth target.
+        const char *kLoadDepthShader = R"(
+uniform uvec3 u_buffer; // block, bw, psm
+void main()
+{
+    uint x = uint(gl_FragCoord.x), y = uint(gl_FragCoord.y);
+    uint raw = readVram(u_buffer.z, u_buffer.x, u_buffer.y, x, y);
+    gl_FragDepth = float(double(raw) * (1.0LF / 4294967296.0LF));
+}
+)";
+
+        // Target rows -> VRAM.
+        const char *kResolveShader = R"(
+layout(local_size_x = 64, local_size_y = 4) in;
+layout(binding = 0) uniform sampler2D u_source;
+uniform uvec4 u_buffer; // block, bw, psm, depth
+uniform uvec3 u_rows;   // first row, row count, width
+void main()
+{
+    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;
+    if (x >= u_rows.z || y >= u_rows.y)
+        return;
+    y += u_rows.x;
+    vec4 t = texelFetch(u_source, ivec2(x, y), 0);
+    uint value;
+    if (u_buffer.w != 0u)
+    {
+        double d = double(t.r) * 4294967296.0LF;
+        value = d >= 4294967295.0LF ? 0xFFFFFFFFu : uint(floor(d + 0.5LF));
+    }
+    else
+    {
+        uint c = packUnorm4x8(t);
+        value = is16BitPsm(u_buffer.z) ? rgba8888To5551(c) : c;
+    }
+    writeVram(u_buffer.z, u_buffer.x, u_buffer.y, x, y, value);
+}
+)";
+
+        // Host -> local transfer of `count` pixels from the staging stream.
+        const char *kHostToLocalShader = R"(
+layout(local_size_x = 64) in;
+layout(std430, binding = 3) readonly buffer StagingBuffer { uint staging[]; };
+uniform uvec4 u_dest;  // DBP, DBW, DPSM, RRW
+uniform uvec4 u_pos;   // DSAX, DSAY, first pixel, count
+uniform uint u_bits;   // stream bits per pixel
+uint stagingByte(uint i) { return (staging[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu; }
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= u_pos.w)
+        return;
+    uint value;
+    if (u_bits == 32u)
+        value = staging[i];
+    else if (u_bits == 24u)
+        value = stagingByte(i * 3u) | (stagingByte(i * 3u + 1u) << 8) | (stagingByte(i * 3u + 2u) << 16);
+    else if (u_bits == 16u)
+        value = (staging[i >> 1] >> ((i & 1u) * 16u)) & 0xFFFFu;
+    else if (u_bits == 8u)
+        value = stagingByte(i);
+    else
+        value = (stagingByte(i >> 1) >> ((i & 1u) * 4u)) & 0xFu;
+    uint pixel = u_pos.z + i;
+    writeVram(u_dest.z, u_dest.x, u_dest.y, u_pos.x + pixel % u_dest.w, u_pos.y + pixel / u_dest.w, value);
+}
+)";
+
+        // Local -> local transfer; `u_serial` copies in order on one thread
+        // when source and destination overlap.
+        const char *kLocalToLocalShader = R"(
+layout(local_size_x = 64) in;
+uniform uvec4 u_source; // SBP, SBW, SPSM, SSAX
+uniform uvec4 u_dest;   // DBP, DBW, DPSM, DSAX
+uniform uvec4 u_rect;   // RRW, RRH, SSAY, DSAY
+uniform uvec2 u_mode;   // DIR, serial
+void copyPixel(uint pixel)
+{
+    uint x = pixel % u_rect.x, y = pixel / u_rect.x;
+    if ((u_mode.x & 2u) != 0u) x = u_rect.x - x - 1u;
+    if ((u_mode.x & 1u) != 0u) y = u_rect.y - y - 1u;
+    uint value = readVram(u_source.z, u_source.x, u_source.y, x + u_source.w, y + u_rect.z);
+    writeVram(u_dest.z, u_dest.x, u_dest.y, x + u_dest.w, y + u_rect.w, value);
+}
+void main()
+{
+    uint total = u_rect.x * u_rect.y;
+    if (u_mode.y != 0u)
+    {
+        if (gl_GlobalInvocationID.x == 0u)
+            for (uint pixel = 0u; pixel < total; ++pixel)
+                copyPixel(pixel);
+        return;
+    }
+    if (gl_GlobalInvocationID.x < total)
+        copyPixel(gl_GlobalInvocationID.x);
+}
+)";
+
+        // CLUT buffer load (GSCpuBackend::LoadClutUnlocked); one entry per
+        // invocation. The CLUT holds 512 16-bit entries, one per uint.
+        const char *kClutLoadShader = R"(
+layout(local_size_x = 256) in;
+layout(std430, binding = 2) buffer ClutBuffer { uint clut[]; };
+uniform uvec4 u_clut;  // CPSM, CBP, CSM, CSA
+uniform uvec4 u_clut2; // CBW, COU, COV, four-bit
+void main()
+{
+    uint entry = gl_LocalInvocationID.x;
+    uint cpsm = u_clut.x;
+    bool fourBit = u_clut2.w != 0u;
+    bool sixteenBit = cpsm == 0x02u || cpsm == 0x0Au;
+    uint entryCount = fourBit ? 16u : 256u;
+    uint destinationBase = (u_clut.w & (sixteenBit ? 0x1Fu : 0x0Fu)) << 4;
+    bool csm1Suffix = u_clut.z == 0u && !sixteenBit && !fourBit;
+    uint firstEntry = csm1Suffix ? destinationBase : 0u;
+    if (entry < firstEntry || entry >= entryCount)
+        return;
+    uint sourceX, sourceY, sourceWidth = 1u;
+    if (u_clut.z == 0u)
+    {
+        uint index = (entry & ~0x18u) | ((entry & 0x08u) << 1) | ((entry & 0x10u) >> 1);
+        sourceX = index & 0x0Fu;
+        sourceY = index >> 4;
+    }
+    else
+    {
+        sourceWidth = u_clut2.x != 0u ? u_clut2.x : 1u;
+        sourceX = (u_clut2.y << 4) + entry;
+        sourceY = u_clut2.z;
+    }
+    uint raw = readVram(cpsm, u_clut.y, sourceWidth, sourceX, sourceY);
+    uint destination = (csm1Suffix ? entry : destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
+    if (sixteenBit)
+    {
+        clut[destination] = raw & 0xFFFFu;
+    }
+    else
+    {
+        clut[destination] = raw & 0xFFFFu;
+        clut[destination + 256u] = raw >> 16;
+    }
+}
+)";
+
+        GLuint compileShader(GL &gl, GLenum type, const std::string &source)
         {
             GLuint shader = gl.glCreateShader(type);
-            gl.glShaderSource(shader, 1, &source, nullptr);
+            const char *text = source.c_str();
+            gl.glShaderSource(shader, 1, &text, nullptr);
             gl.glCompileShader(shader);
             GLint ok = 0;
             gl.glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
@@ -244,6 +655,26 @@ void main()
                           << log << std::endl;
             }
             return shader;
+        }
+
+        GLuint linkProgram(GL &gl, std::initializer_list<GLuint> shaders)
+        {
+            GLuint program = gl.glCreateProgram();
+            for (GLuint shader : shaders)
+                gl.glAttachShader(program, shader);
+            gl.glLinkProgram(program);
+            GLint ok = 0;
+            gl.glGetProgramiv(program, GL_LINK_STATUS, &ok);
+            if (!ok)
+            {
+                char log[4096];
+                gl.glGetProgramInfoLog(program, sizeof(log), nullptr, log);
+                std::cerr << "[gs:gpu] program link error:\n"
+                          << log << std::endl;
+            }
+            for (GLuint shader : shaders)
+                gl.glDeleteShader(shader);
+            return program;
         }
     }
 
@@ -274,15 +705,34 @@ void main()
 
     Renderer::~Renderer()
     {
+        if (m_gpu && m_vram)
+        {
+            flushBatch();
+            readbackVram(); // leave local memory complete for the owner
+        }
         if (std::getenv("PS2X_GS_GPU_STATS"))
         {
-            std::cerr << "[gs:gpu] draws=" << m_statDraws << " downloads=" << m_statDownloads << " uploads=" << m_statUploads
-                      << " textureDecodes=" << m_statTextureDecodes << " targetTextures=" << m_statTargetTextures << std::endl;
+            std::cerr << "[gs:gpu] draws=" << m_statDraws << " resolves=" << m_statResolves << " loads=" << m_statLoads
+                      << " readbacks=" << m_statReadbacks << " clutLoads=" << m_statClutLoads
+                      << " transfers=" << m_statTransfers << std::endl;
+            std::cerr << "  time: readback=" << m_timeReadback << " draw=" << m_timeDraw << " present=" << m_timePresent
+                      << std::endl;
             for (auto &t : m_targets)
                 std::cerr << "  target block=" << t->block << " bw=" << t->bw << " psm=" << int(t->psm) << " depth=" << t->depth
                           << " rows=" << t->usedRows << " bytes=[" << t->beginByte << "," << t->endByte << ")" << std::endl;
-            for (auto &r : m_statDownloadReasons) std::cerr << "  downloads[" << r.first << "]=" << r.second << std::endl;
+            for (auto &r : m_statResolveReasons)
+                std::cerr << "  resolves[" << r.first << "]=" << r.second << std::endl;
         }
+    }
+
+    GLint Renderer::uniform(Program &program, const char *name)
+    {
+        auto it = program.locations.find(name);
+        if (it != program.locations.end())
+            return it->second;
+        const GLint location = m_context.gl.glGetUniformLocation(program.id, name);
+        program.locations.emplace(name, location);
+        return location;
     }
 
     void Renderer::initGpuObjects()
@@ -290,24 +740,31 @@ void main()
         GL &gl = m_context.gl;
         gl.glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
-        GLuint vs = compileShader(gl, GL_VERTEX_SHADER, kVertexShader);
-        GLuint fs = compileShader(gl, GL_FRAGMENT_SHADER, kFragmentShader);
-        m_program = gl.glCreateProgram();
-        gl.glAttachShader(m_program, vs);
-        gl.glAttachShader(m_program, fs);
-        gl.glLinkProgram(m_program);
-        GLint ok = 0;
-        gl.glGetProgramiv(m_program, GL_LINK_STATUS, &ok);
-        if (!ok)
-        {
-            char log[4096];
-            gl.glGetProgramInfoLog(m_program, sizeof(log), nullptr, log);
-            std::cerr << "[gs:gpu] program link error:\n"
-                      << log << std::endl;
-        }
-        gl.glDeleteShader(vs);
-        gl.glDeleteShader(fs);
+        const std::string header = std::string("#version 460 core\n") + kVramGlsl;
+        m_draw.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kVertexShader),
+                                     compileShader(gl, GL_FRAGMENT_SHADER, header + kFragmentShader)});
+        m_loadColor.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
+                                          compileShader(gl, GL_FRAGMENT_SHADER, header + kLoadColorShader)});
+        m_loadDepth.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
+                                          compileShader(gl, GL_FRAGMENT_SHADER, header + kLoadDepthShader)});
+        m_resolve.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kResolveShader)});
+        m_hostToLocal.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kHostToLocalShader)});
+        m_localToLocal.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kLocalToLocalShader)});
+        m_clutLoad.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kClutLoadShader)});
 
+        gl.glCreateBuffers(1, &m_vramBuffer);
+        gl.glNamedBufferStorage(m_vramBuffer, kLocalMemoryBytes, nullptr, GL_DYNAMIC_STORAGE_BIT);
+        const std::vector<uint32_t> swizzle = buildSwizzleTables();
+        gl.glCreateBuffers(1, &m_swizzleBuffer);
+        gl.glNamedBufferStorage(m_swizzleBuffer, static_cast<GLsizeiptr>(swizzle.size() * sizeof(uint32_t)), swizzle.data(), 0);
+        const std::vector<uint32_t> clut(512u, 0u);
+        gl.glCreateBuffers(1, &m_clutBuffer);
+        gl.glNamedBufferStorage(m_clutBuffer, static_cast<GLsizeiptr>(clut.size() * sizeof(uint32_t)), clut.data(), 0);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_vramBuffer);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_swizzleBuffer);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_clutBuffer);
+
+        gl.glCreateVertexArrays(1, &m_emptyVao);
         gl.glCreateVertexArrays(1, &m_vao);
         gl.glEnableVertexArrayAttrib(m_vao, 0);
         gl.glVertexArrayAttribFormat(m_vao, 0, 2, GL_FLOAT, GL_FALSE, offsetof(Vertex, x));
@@ -330,9 +787,21 @@ void main()
         const bool bits16 = is16Bit(psm);
         for (auto &target : m_targets)
         {
-            if (target->depth == depth && target->block == block && target->bw == bw && is16Bit(target->psm) == bits16)
+            if (target->depth == depth && target->block == block && target->bw == std::max<uint32_t>(bw, 1u) &&
+                is16Bit(target->psm) == bits16)
             {
-                target->psm = psm;
+                if (target->psm != psm)
+                {
+                    // Same layout class, different format (e.g. CT32 <-> CT24):
+                    // the texture's interpretation changes.
+                    resolveTarget(*target);
+                    target->psm = psm;
+                    if (target->usedRows != 0u)
+                    {
+                        target->staleY0 = 0u;
+                        target->staleY1 = target->usedRows - 1u;
+                    }
+                }
                 return *target;
             }
         }
@@ -352,6 +821,17 @@ void main()
                               static_cast<GLsizei>(target->width), static_cast<GLsizei>(target->height));
         gl.glTextureParameteri(target->texture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         gl.glTextureParameteri(target->texture, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        gl.glCreateFramebuffers(1, &target->loadFramebuffer);
+        if (depth)
+        {
+            gl.glNamedFramebufferTexture(target->loadFramebuffer, GL_DEPTH_ATTACHMENT, target->texture, 0);
+            gl.glNamedFramebufferDrawBuffer(target->loadFramebuffer, GL_NONE);
+        }
+        else
+        {
+            gl.glNamedFramebufferTexture(target->loadFramebuffer, GL_COLOR_ATTACHMENT0, target->texture, 0);
+            gl.glNamedFramebufferDrawBuffer(target->loadFramebuffer, GL_COLOR_ATTACHMENT0);
+        }
         m_targets.push_back(std::move(target));
         return *m_targets.back();
     }
@@ -386,32 +866,53 @@ void main()
         return fbo;
     }
 
-    void Renderer::uploadTarget(Target &target, uint32_t y0, uint32_t rows)
+    void Renderer::loadRows(Target &target, uint32_t y0, uint32_t rows)
     {
-        ++m_statUploads;
+        if (rows == 0u)
+            return;
+        ++m_statLoads;
         GL &gl = m_context.gl;
-        std::vector<uint32_t> raw(static_cast<size_t>(target.width) * rows);
-        m_cpu->ReadVramRect(target.psm, target.block, target.bw, 0u, y0, target.width, rows, raw.data());
+        Program &program = target.depth ? m_loadDepth : m_loadColor;
+        gl.glUseProgram(program.id);
+        gl.glProgramUniform3ui(program.id, uniform(program, "u_buffer"), target.block, target.bw, target.psm);
+        gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target.loadFramebuffer);
+        gl.glViewport(0, 0, static_cast<GLsizei>(target.width), static_cast<GLsizei>(target.height));
+        gl.glEnable(GL_SCISSOR_TEST);
+        gl.glScissor(0, static_cast<GLint>(y0), static_cast<GLsizei>(target.width), static_cast<GLsizei>(rows));
+        gl.glDisable(GL_BLEND);
         if (target.depth)
         {
-            std::vector<float> depth(raw.size());
-            for (size_t i = 0; i < raw.size(); ++i)
-                depth[i] = static_cast<float>(static_cast<double>(raw[i]) * (1.0 / 4294967296.0));
-            gl.glTextureSubImage2D(target.texture, 0, 0, static_cast<GLint>(y0), static_cast<GLsizei>(target.width),
-                                   static_cast<GLsizei>(rows), GL_DEPTH_COMPONENT, GL_FLOAT, depth.data());
+            gl.glEnable(GL_DEPTH_TEST);
+            gl.glDepthFunc(GL_ALWAYS);
+            gl.glDepthMask(GL_TRUE);
         }
         else
         {
-            for (uint32_t &pixel : raw)
-            {
-                if (is16Bit(target.psm))
-                    pixel = rgba5551To8888(pixel);
-                else if (target.psm == PSM_CT24)
-                    pixel = (pixel & 0x00FFFFFFu) | 0x80000000u;
-            }
-            gl.glTextureSubImage2D(target.texture, 0, 0, static_cast<GLint>(y0), static_cast<GLsizei>(target.width),
-                                   static_cast<GLsizei>(rows), GL_RGBA, GL_UNSIGNED_BYTE, raw.data());
+            gl.glDisable(GL_DEPTH_TEST);
+            gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         }
+        gl.glBindVertexArray(m_emptyVao);
+        gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    void Renderer::resolveTarget(Target &target)
+    {
+        if (!target.gpuDirty())
+            return;
+        ++m_statResolves;
+        ++m_statResolveReasons[m_syncReason];
+        GL &gl = m_context.gl;
+        const uint32_t y0 = target.dirtyY0;
+        const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
+        gl.glUseProgram(m_resolve.id);
+        gl.glProgramUniform4ui(m_resolve.id, uniform(m_resolve, "u_buffer"), target.block, target.bw, target.psm,
+                               target.depth ? 1u : 0u);
+        gl.glProgramUniform3ui(m_resolve.id, uniform(m_resolve, "u_rows"), y0, rows, target.width);
+        gl.glBindTextureUnit(0, target.texture);
+        gl.glDispatchCompute((target.width + 63u) / 64u, (rows + 3u) / 4u, 1u);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        target.dirtyY0 = ~0u;
+        target.dirtyY1 = 0;
     }
 
     void Renderer::rowsToBytes(const Target &target, uint32_t y0, uint32_t y1, uint32_t &begin, uint32_t &end) const
@@ -444,55 +945,7 @@ void main()
         return y0 <= y1;
     }
 
-    void Renderer::downloadTarget(Target &target)
-    {
-        if (!target.gpuDirty())
-            return;
-        ++m_statDownloads;
-        ++m_statDownloadReasons[m_syncReason];
-        GL &gl = m_context.gl;
-        const uint32_t y0 = target.dirtyY0;
-        const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
-        std::vector<uint32_t> raw(static_cast<size_t>(target.width) * rows);
-        if (target.depth)
-        {
-            std::vector<float> depth(raw.size());
-            gl.glGetTextureSubImage(target.texture, 0, 0, static_cast<GLint>(y0), 0, static_cast<GLsizei>(target.width),
-                                    static_cast<GLsizei>(rows), 1, GL_DEPTH_COMPONENT, GL_FLOAT,
-                                    static_cast<GLsizei>(depth.size() * sizeof(float)), depth.data());
-            for (size_t i = 0; i < raw.size(); ++i)
-                raw[i] = static_cast<uint32_t>(std::min(std::llround(static_cast<double>(depth[i]) * 4294967296.0),
-                                                        static_cast<long long>(0xFFFFFFFFu)));
-        }
-        else
-        {
-            gl.glGetTextureSubImage(target.texture, 0, 0, static_cast<GLint>(y0), 0, static_cast<GLsizei>(target.width),
-                                    static_cast<GLsizei>(rows), 1, GL_RGBA, GL_UNSIGNED_BYTE,
-                                    static_cast<GLsizei>(raw.size() * sizeof(uint32_t)), raw.data());
-            if (is16Bit(target.psm))
-                for (uint32_t &pixel : raw)
-                    pixel = rgba8888To5551(pixel);
-        }
-        m_cpu->WriteVramRect(target.psm, target.block, target.bw, 0u, y0, target.width, rows, raw.data());
-        uint32_t begin = 0, end = 0;
-        rowsToBytes(target, target.dirtyY0, target.dirtyY1, begin, end);
-        target.dirtyY0 = ~0u;
-        target.dirtyY1 = 0;
-
-        // CPU memory changed: cached textures over it are stale.
-        for (auto it = m_textures.begin(); it != m_textures.end();)
-        {
-            if (it->second.beginByte < end && begin < it->second.endByte)
-            {
-                gl.glDeleteTextures(1, &it->second.texture);
-                it = m_textures.erase(it);
-            }
-            else
-                ++it;
-        }
-    }
-
-    void Renderer::syncRangeToCpu(uint32_t beginByte, uint32_t endByte)
+    void Renderer::resolveRange(uint32_t beginByte, uint32_t endByte)
     {
         if (!m_gpu)
             return;
@@ -505,54 +958,43 @@ void main()
             uint32_t begin = 0, end = 0;
             rowsToBytes(*target, target->dirtyY0, target->dirtyY1, begin, end);
             if (begin < endByte && beginByte < end)
-                downloadTarget(*target);
+                resolveTarget(*target);
         }
     }
 
-    void Renderer::markCpuRows(Target &target, uint32_t beginByte, uint32_t endByte)
+    void Renderer::markStaleRows(Target &target, uint32_t beginByte, uint32_t endByte)
     {
         uint32_t y0 = 0, y1 = 0;
         if (!bytesToRows(target, beginByte, endByte, y0, y1))
             return;
         if (target.gpuDirty())
-            downloadTarget(target); // keep its GPU rows; memory there is current
-        target.cpuY0 = std::min(target.cpuY0, y0);
-        target.cpuY1 = std::max(target.cpuY1, y1);
+            resolveTarget(target); // keep its drawn rows; VRAM there is current
+        target.staleY0 = std::min(target.staleY0, y0);
+        target.staleY1 = std::max(target.staleY1, y1);
     }
 
-    void Renderer::uploadCpuRows(Target &target)
+    void Renderer::loadStaleRows(Target &target)
     {
-        if (!target.cpuDirty())
+        if (!target.stale())
             return;
-        const uint32_t y0 = target.cpuY0, y1 = std::min(target.cpuY1, target.usedRows - 1u);
-        target.cpuY0 = ~0u;
-        target.cpuY1 = 0;
+        const uint32_t y0 = target.staleY0, y1 = std::min(target.staleY1, target.usedRows - 1u);
+        target.staleY0 = ~0u;
+        target.staleY1 = 0;
         if (y0 > y1)
             return;
         uint32_t begin = 0, end = 0;
         rowsToBytes(target, y0, y1, begin, end);
         m_syncReason = "stale";
-        syncRangeToCpu(begin, end); // other targets' data there
-        uploadTarget(target, y0, y1 - y0 + 1u);
+        resolveRange(begin, end); // other targets' data there
+        loadRows(target, y0, y1 - y0 + 1u);
     }
 
-    void Renderer::cpuWroteRange(uint32_t beginByte, uint32_t endByte)
+    void Renderer::vramWroteRange(uint32_t beginByte, uint32_t endByte)
     {
         if (!m_gpu)
             return;
         for (auto &target : m_targets)
-            markCpuRows(*target, beginByte, endByte);
-        GL &gl = m_context.gl;
-        for (auto it = m_textures.begin(); it != m_textures.end();)
-        {
-            if (it->second.beginByte < endByte && beginByte < it->second.endByte)
-            {
-                gl.glDeleteTextures(1, &it->second.texture);
-                it = m_textures.erase(it);
-            }
-            else
-                ++it;
-        }
+            markStaleRows(*target, beginByte, endByte);
     }
 
     void Renderer::growTarget(Target &target, uint32_t needRows)
@@ -564,10 +1006,10 @@ void main()
         uint32_t begin = 0, end = 0;
         rowsToBytes(target, oldRows, newRows - 1u, begin, end);
         m_syncReason = "grow";
-        syncRangeToCpu(begin, end);
+        resolveRange(begin, end);
         target.usedRows = newRows;
         bufferRange(target.block, target.bw, newRows, target.psm, target.beginByte, target.endByte);
-        uploadTarget(target, oldRows, newRows - oldRows);
+        loadRows(target, oldRows, newRows - oldRows);
     }
 
     void Renderer::prepareTargetForDraw(Target &target, int32_t drawY0, int32_t drawY1)
@@ -579,8 +1021,8 @@ void main()
             rowsToBytes(target, static_cast<uint32_t>(std::max(0, drawY0)),
                         std::min(static_cast<uint32_t>(drawY1), target.usedRows - 1u), begin, end);
 
-            // Other views of the memory drawn here: their GPU data reaches
-            // memory first (oldest first, so the newest wins where they
+            // Other views of the memory drawn here: their drawn data reaches
+            // VRAM first (oldest first, so the newest wins where they
             // overlap), this target picks it up, and they go stale.
             std::vector<Target *> pending;
             for (auto &other : m_targets)
@@ -607,92 +1049,15 @@ void main()
                           { return a->drawSeq < b->drawSeq; });
                 m_syncReason = "alias";
                 for (Target *t : pending)
-                    downloadTarget(*t);
+                    resolveTarget(*t);
                 for (const auto &range : ranges)
-                    markCpuRows(target, range.first, range.second);
+                    markStaleRows(target, range.first, range.second);
             }
             for (auto &other : m_targets)
                 if (other.get() != &target)
-                    markCpuRows(*other, begin, end);
+                    markStaleRows(*other, begin, end);
         }
-        uploadCpuRows(target);
-    }
-
-    // ----------------------------------------------------------------- textures
-
-    Renderer::Target *Renderer::textureTarget(const GSDrawState &state, const DrawKey &key)
-    {
-        const uint8_t psm = static_cast<uint8_t>(key.tpsm);
-        const bool direct = psm == PSM_CT32 || psm == PSM_CT24 || is16Bit(psm);
-        if (!direct)
-            return nullptr;
-        Target *match = nullptr;
-        for (auto &target : m_targets)
-        {
-            if (!target->depth && target->block == key.tbp0 && target->bw == std::max<uint32_t>(key.tbw, 1u) &&
-                is16Bit(target->psm) == is16Bit(psm) && state.textureHeight <= target->usedRows &&
-                state.textureWidth <= target->width)
-            {
-                match = target.get();
-                break;
-            }
-        }
-        if (!match)
-            return nullptr;
-        // Another view of this memory holds newer data: take the slow path.
-        uint32_t begin = 0, end = 0;
-        rowsToBytes(*match, 0u, state.textureHeight - 1u, begin, end);
-        for (auto &other : m_targets)
-        {
-            if (other.get() == match || !other->gpuDirty())
-                continue;
-            uint32_t b = 0, e = 0;
-            rowsToBytes(*other, other->dirtyY0, other->dirtyY1, b, e);
-            if (b < end && begin < e)
-                return nullptr;
-        }
-        uploadCpuRows(*match);
-        return match;
-    }
-
-    GLuint Renderer::textureFor(const GSDrawState &state, const DrawKey &key)
-    {
-        uint64_t hash = 1469598103934665603ull;
-        for (uint64_t v : {uint64_t(key.tbp0), uint64_t(key.tbw), uint64_t(key.tpsm), uint64_t(key.tw), uint64_t(key.th),
-                           uint64_t(key.cbp), uint64_t(key.cpsm), uint64_t(key.csm), uint64_t(key.csa), key.clutVersion,
-                           uint64_t(key.ta0), uint64_t(key.ta1), uint64_t(key.aem)})
-            hash = fnv(hash, v);
-        auto it = m_textures.find(hash);
-        if (it != m_textures.end())
-            return it->second.texture;
-
-        const uint32_t width = state.textureWidth;
-        const uint32_t height = state.textureHeight;
-        uint32_t begin = 0, end = 0;
-        bufferRange(key.tbp0, key.tbw, height, static_cast<uint8_t>(key.tpsm), begin, end);
-        m_syncReason = "texture";
-        syncRangeToCpu(begin, end); // render-to-texture: GPU data must reach memory first
-        if (isPalettized(static_cast<uint8_t>(key.tpsm)))
-        {
-            const uint32_t clutBegin = key.cbp * 256u;
-            syncRangeToCpu(clutBegin, clutBegin + 1024u);
-        }
-
-        ++m_statTextureDecodes;
-        std::vector<uint32_t> texels(static_cast<size_t>(width) * height);
-        m_cpu->DecodeTexture(state, width, height, texels.data());
-        GL &gl = m_context.gl;
-        CachedTexture cached;
-        cached.width = width;
-        cached.height = height;
-        cached.beginByte = begin;
-        cached.endByte = end;
-        gl.glCreateTextures(GL_TEXTURE_2D, 1, &cached.texture);
-        gl.glTextureStorage2D(cached.texture, 1, GL_RGBA8, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
-        gl.glTextureSubImage2D(cached.texture, 0, 0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), GL_RGBA,
-                               GL_UNSIGNED_BYTE, texels.data());
-        m_textures.emplace(hash, cached);
-        return cached.texture;
+        loadStaleRows(target);
     }
 
     // -------------------------------------------------------------------- draws
@@ -715,6 +1080,17 @@ void main()
         m_drawColor = &color;
         m_drawDepth = depth;
 
+        // The texture is read from VRAM: targets drawn over it go there first.
+        if (state.prim.tme)
+        {
+            uint32_t begin = 0, end = 0;
+            bufferRange(key.tbp0, key.tbw, state.textureHeight, static_cast<uint8_t>(key.tpsm), begin, end);
+            m_syncReason = "texture";
+            resolveRange(begin, end);
+        }
+
+        Program &p = m_draw;
+        gl.glUseProgram(p.id);
         gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebufferFor(color, depth));
         gl.glViewport(0, 0, static_cast<GLsizei>(color.width), static_cast<GLsizei>(color.height));
         gl.glEnable(GL_SCISSOR_TEST);
@@ -744,9 +1120,8 @@ void main()
                        (fbmsk & 0xFF000000u) != 0xFF000000u && ctx.frame.psm != PSM_CT24);
 
         // Blend: Cv = (A - B) * C / 128 + D, A/B/D in {Cs, Cd, 0}, C in {As, Ad, FIX}.
-        gl.glUseProgram(m_program);
         auto set1 = [&](const char *name, int value)
-        { gl.glProgramUniform1i(m_program, gl.glGetUniformLocation(m_program, name), value); };
+        { gl.glProgramUniform1i(p.id, uniform(p, name), value); };
         const uint64_t alpha = ctx.alpha;
         const uint32_t a = alpha & 3u, b = (alpha >> 2) & 3u, c = (alpha >> 4) & 3u, d = (alpha >> 6) & 3u;
         const float sk = float(a == 0u) - float(b == 0u), sc = float(d == 0u);
@@ -766,17 +1141,13 @@ void main()
         {
             gl.glDisable(GL_BLEND);
         }
-        gl.glProgramUniform4f(m_program, gl.glGetUniformLocation(m_program, "u_blend"), sk, sc, dk, dc);
-        gl.glProgramUniform1i(m_program, gl.glGetUniformLocation(m_program, "u_abe"), state.prim.abe ? 1 : 0);
+        gl.glProgramUniform4f(p.id, uniform(p, "u_blend"), sk, sc, dk, dc);
+        set1("u_abe", state.prim.abe ? 1 : 0);
         set1("u_csel", static_cast<int>(c));
-        gl.glProgramUniform1i(m_program, gl.glGetUniformLocation(m_program, "u_pabe"), state.pabe ? 1 : 0);
-        gl.glProgramUniform2f(m_program, gl.glGetUniformLocation(m_program, "u_targetSize"), static_cast<float>(color.width),
+        set1("u_pabe", state.pabe ? 1 : 0);
+        gl.glProgramUniform2f(p.id, uniform(p, "u_targetSize"), static_cast<float>(color.width),
                               static_cast<float>(color.height));
-        gl.glProgramUniform4f(m_program, gl.glGetUniformLocation(m_program, "u_blend"), sk, sc, dk, dc);
-        {
-            const float fix = static_cast<float>((alpha >> 32) & 0xFFu);
-            gl.glProgramUniform1f(m_program, gl.glGetUniformLocation(m_program, "u_fix"), fix);
-        }
+        gl.glProgramUniform1f(p.id, uniform(p, "u_fix"), static_cast<float>((alpha >> 32) & 0xFFu));
 
         // Tests.
         const uint64_t test = ctx.test;
@@ -802,42 +1173,19 @@ void main()
         set1("u_fge", state.prim.fge ? 1 : 0);
         set1("u_tfx", static_cast<int>(ctx.tex0.tfx));
         set1("u_tcc", static_cast<int>(ctx.tex0.tcc));
-        gl.glProgramUniform3f(m_program, gl.glGetUniformLocation(m_program, "u_fogColor"), float(state.fogR),
-                              float(state.fogG), float(state.fogB));
+        gl.glProgramUniform3f(p.id, uniform(p, "u_fogColor"), float(state.fogR), float(state.fogG), float(state.fogB));
         if (state.prim.tme)
         {
-            GLuint texture = 0;
-            float scaleX = 1.0f, scaleY = 1.0f;
-            int fromTarget = 0, format = 0;
-            if (Target *source = textureTarget(state, key))
-            {
-                ++m_statTargetTextures;
-                texture = source->texture;
-                scaleX = static_cast<float>(state.textureWidth) / static_cast<float>(source->width);
-                scaleY = static_cast<float>(state.textureHeight) / static_cast<float>(source->height);
-                fromTarget = 1;
-                format = key.tpsm == PSM_CT24 ? 1 : (is16Bit(static_cast<uint8_t>(key.tpsm)) ? 2 : 0);
-                if (source == &color)
-                    gl.glTextureBarrier(); // sampling what this target last rendered
-            }
-            else
-            {
-                texture = textureFor(state, key);
-            }
-            set1("u_texFromTarget", fromTarget);
-            set1("u_texFormat", format);
-            gl.glProgramUniform2f(m_program, gl.glGetUniformLocation(m_program, "u_texScale"), scaleX, scaleY);
-            gl.glProgramUniform3f(m_program, gl.glGetUniformLocation(m_program, "u_texa"), float(state.texa.ta0),
-                                  float(state.texa.ta1), state.texa.aem ? 1.0f : 0.0f);
-            // textureFor may download targets and change bindings; rebind.
-            gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebufferFor(color, depth));
-            const GLint filter = state.linearFilter ? GL_LINEAR : GL_NEAREST;
-            gl.glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, filter);
-            gl.glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, filter);
-            const uint32_t wms = ctx.clamp & 3u, wmt = (ctx.clamp >> 2) & 3u;
-            gl.glTextureParameteri(texture, GL_TEXTURE_WRAP_S, (wms == 0u || wms == 3u) ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-            gl.glTextureParameteri(texture, GL_TEXTURE_WRAP_T, (wmt == 0u || wmt == 3u) ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-            gl.glBindTextureUnit(0, texture);
+            const uint64_t clamp = ctx.clamp;
+            gl.glProgramUniform4ui(p.id, uniform(p, "u_tex"), ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, ctx.tex0.cpsm);
+            gl.glProgramUniform4ui(p.id, uniform(p, "u_tex2"), ctx.tex0.csm, ctx.tex0.csa,
+                                   static_cast<uint32_t>(clamp & 0xFu), state.linearFilter ? 1u : 0u);
+            gl.glProgramUniform4i(p.id, uniform(p, "u_region"), static_cast<int>((clamp >> 4) & 0x3FFu),
+                                  static_cast<int>((clamp >> 14) & 0x3FFu), static_cast<int>((clamp >> 24) & 0x3FFu),
+                                  static_cast<int>((clamp >> 34) & 0x3FFu));
+            gl.glProgramUniform2i(p.id, uniform(p, "u_texSize"), static_cast<int>(state.textureWidth),
+                                  static_cast<int>(state.textureHeight));
+            gl.glProgramUniform3ui(p.id, uniform(p, "u_texa"), state.texa.ta0, state.texa.ta1, state.texa.aem ? 1u : 0u);
         }
         gl.glBindVertexArray(m_vao);
     }
@@ -869,6 +1217,7 @@ void main()
         applyDrawState(m_key, m_keyState);
         m_inFlush = false;
 
+        ScopeTimer timer{m_timeDraw};
         const size_t bytes = m_vertices.size() * sizeof(Vertex);
         if (bytes > m_vboCapacity)
         {
@@ -883,7 +1232,7 @@ void main()
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
         ++m_statDraws;
 
-        // The targets now hold GPU-only data in the drawn rows.
+        // The targets now hold data VRAM lacks in the drawn rows.
         auto markDirty = [&](Target *target)
         {
             if (!target)
@@ -950,7 +1299,7 @@ void main()
                 key.cpsm = ctx.tex0.cpsm;
                 key.csm = ctx.tex0.csm;
                 key.csa = ctx.tex0.csa;
-                key.clutVersion = m_cpu->ClutVersion();
+                key.clutVersion = m_clutVersion;
             }
             key.ta0 = state.texa.ta0;
             key.ta1 = state.texa.ta1;
@@ -1048,102 +1397,302 @@ void main()
 
     // ------------------------------------------------------------- memory side
 
+    void Renderer::readbackVram()
+    {
+        if (!m_gpu || !m_vram)
+            return;
+        flushBatch();
+        m_syncReason = "readback";
+        resolveRange(0u, kLocalMemoryBytes);
+        ++m_statReadbacks;
+        ScopeTimer timer{m_timeReadback};
+        GL &gl = m_context.gl;
+        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        gl.glGetNamedBufferSubData(m_vramBuffer, 0, kLocalMemoryBytes, m_vram);
+    }
+
+    void Renderer::uploadVram(uint32_t beginByte, uint32_t endByte)
+    {
+        if (!m_gpu || !m_vram || beginByte >= endByte)
+            return;
+        flushBatch();
+        m_context.gl.glNamedBufferSubData(m_vramBuffer, beginByte, endByte - beginByte, m_vram + beginByte);
+        vramWroteRange(beginByte, endByte);
+    }
+
     void Renderer::initialize(uint8_t *vram, uint32_t vramSize)
     {
         m_vram = vram;
         m_cpu->Initialize(vram, vramSize);
+        if (m_gpu && m_vram)
+            m_context.gl.glNamedBufferSubData(m_vramBuffer, 0, std::min(vramSize, kLocalMemoryBytes), m_vram);
     }
 
     void Renderer::reset()
     {
         flushBatch();
         m_cpu->Reset();
-        for (auto &target : m_targets)
+        m_clutCbp[0] = m_clutCbp[1] = 0u;
+        m_transferState = {};
+        m_transferState.direction = 3u;
+        m_cpuTransfer = false;
+        if (m_gpu && m_vram)
         {
-            target->dirtyY0 = ~0u;
-            target->dirtyY1 = 0;
-            if (target->usedRows != 0u)
+            for (auto &target : m_targets)
             {
-                target->cpuY0 = 0;
-                target->cpuY1 = target->usedRows - 1u;
+                target->dirtyY0 = ~0u;
+                target->dirtyY1 = 0;
             }
+            uploadVram(0u, kLocalMemoryBytes);
         }
     }
 
     void Renderer::loadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
     {
-        if (m_gpu && tex0.cld != 0u)
+        if (!m_gpu)
         {
-            const uint32_t begin = tex0.cbp * 256u;
-            m_syncReason = "clut";
-            syncRangeToCpu(begin, begin + 1024u);
+            m_cpu->LoadClut(tex0, texclut);
+            return;
         }
-        m_cpu->LoadClut(tex0, texclut);
+        const bool fourBit = tex0.psm == PSM_T4 || tex0.psm == PSM_T4HL || tex0.psm == PSM_T4HH;
+        const bool eightBit = tex0.psm == PSM_T8 || tex0.psm == PSM_T8H;
+        if (!fourBit && !eightBit)
+            return;
+        switch (tex0.cld)
+        {
+        case 1u:
+            break;
+        case 2u:
+            m_clutCbp[0] = tex0.cbp;
+            break;
+        case 3u:
+            m_clutCbp[1] = tex0.cbp;
+            break;
+        case 4u:
+            if (m_clutCbp[0] == tex0.cbp)
+                return;
+            m_clutCbp[0] = tex0.cbp;
+            break;
+        case 5u:
+            if (m_clutCbp[1] == tex0.cbp)
+                return;
+            m_clutCbp[1] = tex0.cbp;
+            break;
+        default:
+            return;
+        }
+        const bool sixteenBit = tex0.cpsm == PSM_CT16 || tex0.cpsm == PSM_CT16S;
+        const bool thirtyTwoBit = tex0.cpsm == PSM_CT32 || tex0.cpsm == PSM_CT24;
+        if (!sixteenBit && !thirtyTwoBit)
+            return;
+
+        flushBatch(); // queued draws use the previous CLUT
+        uint32_t begin = 0, end = 0;
+        const uint32_t sourceWidth = tex0.csm == 0u ? 1u : std::max<uint32_t>(texclut.cbw, 1u);
+        const uint32_t sourceRows = tex0.csm == 0u ? 16u : static_cast<uint32_t>(texclut.cov) + 1u;
+        bufferRange(tex0.cbp, sourceWidth, sourceRows, tex0.cpsm, begin, end);
+        m_syncReason = "clut";
+        resolveRange(begin, end);
+
+        ++m_statClutLoads;
+        ++m_clutVersion;
+        GL &gl = m_context.gl;
+        gl.glUseProgram(m_clutLoad.id);
+        gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut"), tex0.cpsm, tex0.cbp, tex0.csm, tex0.csa);
+        gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut2"), texclut.cbw, texclut.cou, texclut.cov,
+                               fourBit ? 1u : 0u);
+        gl.glDispatchCompute(1u, 1u, 1u);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    void Renderer::dispatchHostToLocal(const uint8_t *data, uint32_t pixels, uint32_t streamBytes)
+    {
+        GL &gl = m_context.gl;
+        const size_t bytes = (streamBytes + 3u) & ~3u;
+        if (bytes > m_stagingCapacity)
+        {
+            if (m_stagingBuffer)
+                gl.glDeleteBuffers(1, &m_stagingBuffer);
+            m_stagingCapacity = std::max<size_t>(bytes, 1u << 20);
+            gl.glCreateBuffers(1, &m_stagingBuffer);
+            gl.glNamedBufferStorage(m_stagingBuffer, static_cast<GLsizeiptr>(m_stagingCapacity), nullptr,
+                                    GL_DYNAMIC_STORAGE_BIT);
+            gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, m_stagingBuffer);
+        }
+        if (streamBytes & 3u)
+        {
+            std::vector<uint8_t> padded(bytes, 0u);
+            std::memcpy(padded.data(), data, streamBytes);
+            gl.glNamedBufferSubData(m_stagingBuffer, 0, static_cast<GLsizeiptr>(bytes), padded.data());
+        }
+        else
+        {
+            gl.glNamedBufferSubData(m_stagingBuffer, 0, static_cast<GLsizeiptr>(bytes), data);
+        }
+        const auto &buf = m_transfer.bitbltbuf;
+        gl.glUseProgram(m_hostToLocal.id);
+        gl.glProgramUniform4ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_dest"), buf.dbp,
+                               std::max<uint32_t>(buf.dbw, 1u), buf.dpsm, m_transfer.trxreg.rrw);
+        gl.glProgramUniform4ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_pos"), m_transfer.trxpos.dsax,
+                               m_transfer.trxpos.dsay, m_transferState.copiedPixels, pixels);
+        gl.glProgramUniform1ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_bits"), bitsPerPixel(buf.dpsm));
+        gl.glDispatchCompute((pixels + 63u) / 64u, 1u, 1u);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    }
+
+    void Renderer::dispatchLocalToLocal(const GSTransferCommand &command)
+    {
+        const auto &buf = command.bitbltbuf;
+        const uint32_t rrw = command.trxreg.rrw, rrh = command.trxreg.rrh;
+        if (rrw == 0u || rrh == 0u)
+            return;
+        uint32_t srcBegin = 0, srcEnd = 0, dstBegin = 0, dstEnd = 0;
+        bufferRange(buf.sbp, buf.sbw, command.trxpos.ssay + rrh, buf.spsm, srcBegin, srcEnd);
+        bufferRange(buf.dbp, buf.dbw, command.trxpos.dsay + rrh, buf.dpsm, dstBegin, dstEnd);
+        const bool overlap = srcBegin < dstEnd && dstBegin < srcEnd;
+        GL &gl = m_context.gl;
+        gl.glUseProgram(m_localToLocal.id);
+        gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_source"), buf.sbp,
+                               std::max<uint32_t>(buf.sbw, 1u), buf.spsm, command.trxpos.ssax);
+        gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_dest"), buf.dbp,
+                               std::max<uint32_t>(buf.dbw, 1u), buf.dpsm, command.trxpos.dsax);
+        gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_rect"), rrw, rrh, command.trxpos.ssay,
+                               command.trxpos.dsay);
+        gl.glProgramUniform2ui(m_localToLocal.id, uniform(m_localToLocal, "u_mode"), command.trxpos.dir,
+                               overlap ? 1u : 0u);
+        gl.glDispatchCompute(overlap ? 1u : (rrw * rrh + 63u) / 64u, 1u, 1u);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
     }
 
     void Renderer::beginTransfer(const GSTransferCommand &command)
     {
-        if (m_gpu)
+        if (!m_gpu)
         {
-            flushBatch();
-            const auto &buf = command.bitbltbuf;
-            if (command.direction == 0u || command.direction == 2u)
-            {
-                bufferRange(buf.dbp, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh, buf.dpsm,
-                            m_transferBegin, m_transferEnd);
-                // Partial writes must merge with GPU-rendered data.
-                m_syncReason = "transferDst";
-                syncRangeToCpu(m_transferBegin, m_transferEnd);
-                m_transferActive = true;
-            }
-            if (command.direction == 1u || command.direction == 2u)
-            {
-                uint32_t begin = 0, end = 0;
-                bufferRange(buf.sbp, buf.sbw, static_cast<uint32_t>(command.trxpos.ssay) + command.trxreg.rrh, buf.spsm,
-                            begin, end);
-                m_syncReason = "transferSrc";
-                syncRangeToCpu(begin, end);
-            }
+            m_cpu->BeginTransfer(command);
+            return;
         }
-        m_cpu->BeginTransfer(command);
-        if (m_gpu && command.direction == 2u)
+        flushBatch();
+        ++m_statTransfers;
+        m_transfer = command;
+        m_cpuTransfer = false;
+        m_transferState = {};
+        m_transferState.x = command.trxpos.dsax;
+        m_transferState.y = command.trxpos.dsay;
+        m_transferState.totalPixels = static_cast<uint32_t>(command.trxreg.rrw) * command.trxreg.rrh;
+        m_transferState.direction = command.direction;
+        const auto &buf = command.bitbltbuf;
+
+        if (command.direction == 0u || command.direction == 2u)
         {
-            cpuWroteRange(m_transferBegin, m_transferEnd); // local->local runs immediately
-            m_transferActive = false;
+            // Partial writes must merge with drawn data.
+            uint32_t begin = 0, end = 0;
+            bufferRange(buf.dbp, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh, buf.dpsm,
+                        begin, end);
+            m_syncReason = "transferDst";
+            resolveRange(begin, end);
+        }
+        if (command.direction == 1u || command.direction == 2u)
+        {
+            uint32_t begin = 0, end = 0;
+            bufferRange(buf.sbp, buf.sbw, static_cast<uint32_t>(command.trxpos.ssay) + command.trxreg.rrh, buf.spsm,
+                        begin, end);
+            m_syncReason = "transferSrc";
+            resolveRange(begin, end);
+        }
+
+        if (command.direction == 1u)
+        {
+            // Local -> host: the CPU backend reads the refreshed local memory.
+            readbackVram();
+            m_cpu->BeginTransfer(command);
+            m_cpuTransfer = true;
+        }
+        else if (command.direction == 2u)
+        {
+            dispatchLocalToLocal(command);
+            uint32_t begin = 0, end = 0;
+            bufferRange(buf.dbp, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh, buf.dpsm,
+                        begin, end);
+            vramWroteRange(begin, end);
+            m_transferState.copiedPixels = m_transferState.totalPixels;
+            m_transferState.direction = 3u;
+        }
+        else if (command.direction == 0u && (m_transferState.totalPixels == 0u || command.trxreg.rrw == 0u))
+        {
+            m_transferState.direction = 3u;
         }
     }
 
     void Renderer::uploadImage(const uint8_t *data, uint32_t sizeBytes)
     {
-        m_cpu->UploadImage(data, sizeBytes);
-        if (m_gpu && m_transferActive)
-            cpuWroteRange(m_transferBegin, m_transferEnd);
+        if (!m_gpu)
+        {
+            m_cpu->UploadImage(data, sizeBytes);
+            return;
+        }
+        if (!data || sizeBytes == 0u || m_transferState.direction != 0u)
+            return;
+        // Whole pixels only (a partial trailing pixel is dropped, as on the CPU path).
+        const uint32_t bits = bitsPerPixel(m_transfer.bitbltbuf.dpsm);
+        const uint32_t remaining = m_transferState.totalPixels - m_transferState.copiedPixels;
+        uint32_t pixels = 0;
+        if (bits == 4u)
+            pixels = std::min<uint32_t>(remaining, sizeBytes * 2u);
+        else
+            pixels = std::min<uint32_t>(remaining, sizeBytes / (bits / 8u));
+        if (pixels == 0u)
+            return;
+        const uint32_t streamBytes = bits == 4u ? (pixels + 1u) / 2u : pixels * (bits / 8u);
+        flushBatch();
+        dispatchHostToLocal(data, pixels, streamBytes);
+
+        const auto &buf = m_transfer.bitbltbuf;
+        uint32_t begin = 0, end = 0;
+        bufferRange(buf.dbp, buf.dbw, static_cast<uint32_t>(m_transfer.trxpos.dsay) + m_transfer.trxreg.rrh, buf.dpsm,
+                    begin, end);
+        vramWroteRange(begin, end);
+
+        m_transferState.copiedPixels += pixels;
+        if (m_transferState.copiedPixels >= m_transferState.totalPixels)
+        {
+            m_transferState.direction = 3u;
+            m_transferState.totalPixels = 0u;
+        }
+        else
+        {
+            const uint32_t rrw = m_transfer.trxreg.rrw;
+            m_transferState.x = m_transfer.trxpos.dsax + (m_transferState.copiedPixels % rrw);
+            m_transferState.y = m_transfer.trxpos.dsay + (m_transferState.copiedPixels / rrw);
+        }
     }
 
     void Renderer::textureFlush()
     {
-        m_cpu->TextureFlush();
+        if (!m_gpu)
+            m_cpu->TextureFlush();
     }
 
     void Renderer::syncLocalMemory()
     {
-        syncRangeToCpu(0u, kLocalMemoryBytes);
+        readbackVram();
     }
 
     PresentationFrame Renderer::present(const GSPresentationRequest &request)
     {
         // Presentation reads local memory (both circuits, preferred source).
         m_syncReason = "present";
-        syncLocalMemory();
+        readbackVram();
         m_cpu->Sync(GSSyncReason::Presentation);
+        m_cpu->TextureFlush();
+        ScopeTimer timer{m_timePresent};
         return m_cpu->Present(request);
     }
 
     bool Renderer::clearFramebuffer(const GSContext &context, uint32_t rgba)
     {
-        syncLocalMemory();
+        readbackVram();
         const bool cleared = m_cpu->ClearFramebuffer(context, rgba);
-        cpuWroteRange(0u, kLocalMemoryBytes);
+        uploadVram(0u, kLocalMemoryBytes);
         return cleared;
     }
 
@@ -1154,25 +1703,28 @@ void main()
 
     uint32_t Renderer::readVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y)
     {
-        syncLocalMemory();
+        readbackVram();
+        m_cpu->TextureFlush();
         return m_cpu->ReadVram(psm, base, bw, x, y);
     }
 
     void Renderer::writeVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
     {
-        syncLocalMemory();
+        readbackVram();
         m_cpu->WriteVram(psm, base, bw, x, y, value);
-        cpuWroteRange(0u, kLocalMemoryBytes);
+        uploadVram(0u, kLocalMemoryBytes);
     }
 
     void Renderer::snapshotVram(std::vector<uint8_t> &out)
     {
-        syncLocalMemory();
+        readbackVram();
         m_cpu->SnapshotVram(out);
     }
 
     GSTransferSnapshot Renderer::transferSnapshot()
     {
-        return m_cpu->GetTransferSnapshot();
+        if (!m_gpu || m_cpuTransfer)
+            return m_cpu->GetTransferSnapshot();
+        return m_transferState;
     }
 }
