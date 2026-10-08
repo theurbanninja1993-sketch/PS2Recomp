@@ -67,8 +67,9 @@ namespace
         const uint32_t texHeight = 1u << std::min<uint32_t>(tex0.th, 11u);
         bufferRange(tex0.tbp0 * 256u, tex0.tbw, texHeight, tex0.psm, begin, end);
 
+        static const bool s_fullRange = std::getenv("PS2X_GS_FULL_TEXRANGE") != nullptr;
         const uint32_t count = std::min<uint32_t>(batch.vertexCount, 3u);
-        if (count == 0u || ((tex0.tbp0 * 256u) & (kPageBytes - 1u)) != 0u)
+        if (s_fullRange || count == 0u || ((tex0.tbp0 * 256u) & (kPageBytes - 1u)) != 0u)
             return;
         // CLAMP.WMT (bits 2-3): REGION_REPEAT (3) can remap rows anywhere.
         if (((batch.state.context.clamp >> 2) & 3u) == 3u)

@@ -663,3 +663,9 @@ if(NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
     add_executable(vu1_replay EXCLUDE_FROM_ALL tools/vu1_replay.cpp)
     target_link_libraries(vu1_replay PRIVATE ps2_runtime)
 endif()
+
+# Offline GS rasterizer benchmark (see tools/gs_replay.cpp); not built by default.
+if(NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
+    add_executable(gs_replay EXCLUDE_FROM_ALL tools/gs_replay.cpp)
+    target_link_libraries(gs_replay PRIVATE ps2_runtime)
+endif()

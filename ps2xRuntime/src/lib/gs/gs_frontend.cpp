@@ -128,6 +128,85 @@ namespace
     }
 }
 
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
+namespace
+{
+    // PS2X_GS_CAPTURE=<file>,<startFrame>,<frames>: records the GS input stream
+    // (GIF packets, register writes, presentation latches with the privileged
+    // display registers) plus the starting local memory, for tools/gs_replay.
+    // Record: u32 type, u32 size, payload. Types: 1 GIF packet, 2 register
+    // write (u8 addr + u64 value), 3 present (GSRegisters bytes), 4 VRAM image.
+    struct GsCapture
+    {
+        FILE *file = nullptr;
+        uint64_t startFrame = 0;
+        uint64_t endFrame = 0;
+        bool configured = false;
+        bool started = false;
+        bool finished = false;
+    };
+    GsCapture &gsCapture()
+    {
+        static GsCapture capture = []()
+        {
+            GsCapture c;
+            if (const char *env = std::getenv("PS2X_GS_CAPTURE"))
+            {
+                std::string spec(env);
+                const auto c1 = spec.find(',');
+                const auto c2 = c1 == std::string::npos ? std::string::npos : spec.find(',', c1 + 1);
+                c.file = std::fopen(spec.substr(0, c1).c_str(), "wb");
+                c.startFrame = c1 == std::string::npos ? 0u : std::strtoull(spec.c_str() + c1 + 1, nullptr, 10);
+                c.endFrame = c.startFrame + (c2 == std::string::npos ? 300u : std::strtoull(spec.c_str() + c2 + 1, nullptr, 10));
+                c.configured = c.file != nullptr;
+            }
+            return c;
+        }();
+        return capture;
+    }
+    void gsCaptureRecord(uint32_t type, const void *a, uint32_t aSize, const void *b = nullptr, uint32_t bSize = 0)
+    {
+        GsCapture &c = gsCapture();
+        const uint32_t header[2] = {type, aSize + bSize};
+        std::fwrite(header, sizeof(header), 1, c.file);
+        if (aSize)
+            std::fwrite(a, 1, aSize, c.file);
+        if (bSize)
+            std::fwrite(b, 1, bSize, c.file);
+    }
+}
+
+// Called with the GS state mutex held. Returns true while recording.
+static bool gsCaptureActive(GSRasterBackend *backend, bool hasLocalMemory)
+{
+    GsCapture &c = gsCapture();
+    if (!c.configured || c.finished)
+        return false;
+    const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+    if (!c.started)
+    {
+        if (frame < c.startFrame || !backend || !hasLocalMemory)
+            return false;
+        // Starting image of local memory (all queued drawing finished).
+        std::vector<uint8_t> vram;
+        backend->SnapshotVram(vram);
+        gsCaptureRecord(4u, vram.data(), static_cast<uint32_t>(vram.size()));
+        c.started = true;
+        std::cerr << "[gs:capture] started at frame " << frame << std::endl;
+    }
+    if (frame >= c.endFrame)
+    {
+        c.finished = true;
+        std::fclose(c.file);
+        c.file = nullptr;
+        std::cerr << "[gs:capture] done at frame " << frame << std::endl;
+        return false;
+    }
+    return true;
+}
+
+
 GS::GS()
     : m_backend(makeDefaultRasterBackend())
 {
@@ -552,6 +631,8 @@ void GS::latchHostPresentationFrame()
     GSPresentationRequest request{};
     {
         std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+        if (m_privRegs && gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
+            gsCaptureRecord(3u, m_privRegs, sizeof(GSRegisters));
         if (!m_backend || !m_privRegs)
         {
             std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
@@ -661,11 +742,14 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     return true;
 }
 
+
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16 || !m_backend)
         return;
+    if (gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
+        gsCaptureRecord(1u, data, sizeBytes);
 
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;
@@ -1094,6 +1178,8 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
 void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    if (gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
+        gsCaptureRecord(2u, &regAddr, 1u, &value, 8u);
     writeRegisterUnlocked(regAddr, value);
 }
 
