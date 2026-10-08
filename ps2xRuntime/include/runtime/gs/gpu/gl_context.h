@@ -79,7 +79,12 @@ namespace gsgpu
     X(PFNGLPROGRAMUNIFORM1UIPROC, glProgramUniform1ui)                     \
     X(PFNGLPROGRAMUNIFORM2FPROC, glProgramUniform2f)                       \
     X(PFNGLPROGRAMUNIFORM4FPROC, glProgramUniform4f)                       \
-    X(PFNGLPROGRAMUNIFORM4UIPROC, glProgramUniform4ui)
+    X(PFNGLPROGRAMUNIFORM4UIPROC, glProgramUniform4ui)                     \
+    X(PFNGLPROGRAMUNIFORM3FPROC, glProgramUniform3f)                       \
+    X(PFNGLPROGRAMUNIFORM1FPROC, glProgramUniform1f)                       \
+    X(PFNGLCLIPCONTROLPROC, glClipControl)                                 \
+    X(PFNGLBLENDEQUATIONPROC, glBlendEquation)                             \
+    X(PFNGLCLEARNAMEDFRAMEBUFFERFVPROC, glClearNamedFramebufferfv)
 
     struct GL
     {

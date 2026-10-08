@@ -9,7 +9,11 @@
 #include "runtime/ps2_memory.h"
 #include "ps2_runtime.h"
 
+#include <csignal>
+#include <sys/time.h>
+#include <ucontext.h>
 #include <chrono>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +28,19 @@ PS2Runtime::RecompiledFunction g_ps2RecompiledFunctionTable[1] = {};
 
 namespace
 {
+    // GS_REPLAY_PROFILE=<file>: process-wide SIGPROF samples of the host RIP
+    // (all rasterizer workers), as "offset from profileHandler" u32s.
+    std::vector<uint32_t> g_samples;
+    std::atomic<uint32_t> g_sampleCount{0};
+    void profileHandler(int, siginfo_t *, void *contextPtr)
+    {
+        const auto *context = static_cast<const ucontext_t *>(contextPtr);
+        const uint32_t index = g_sampleCount.fetch_add(1u, std::memory_order_relaxed);
+        if (index < g_samples.size())
+            g_samples[index] = static_cast<uint32_t>(context->uc_mcontext.gregs[REG_RIP] -
+                                                     reinterpret_cast<uint64_t>(&profileHandler));
+    }
+
     struct Record
     {
         uint32_t type = 0;
@@ -78,6 +95,18 @@ int main(int argc, char **argv)
     std::printf("%zu records (%zu GIF packets, %zu presents), initial VRAM %zu bytes\n", records.size(), packets,
                 presents, initialVram.size());
 
+    const char *profilePath = std::getenv("GS_REPLAY_PROFILE");
+    if (profilePath)
+    {
+        g_samples.assign(1u << 22, 0u);
+        struct sigaction action{};
+        action.sa_sigaction = profileHandler;
+        action.sa_flags = SA_SIGINFO | SA_RESTART;
+        sigaction(SIGPROF, &action, nullptr);
+        itimerval timer{{0, 200}, {0, 200}};
+        setitimer(ITIMER_PROF, &timer, nullptr);
+    }
+
     double total = 0.0;
     uint64_t hash = 0;
     for (int pass = 0; pass < passes; ++pass)
@@ -114,6 +143,25 @@ int main(int argc, char **argv)
                 if (r.data.size() == sizeof(GSRegisters))
                     std::memcpy(static_cast<void *>(&regs), r.data.data(), sizeof(GSRegisters));
                 gs->latchHostPresentationFrame();
+                // GS_REPLAY_FRAMES=<dir>: save every presented frame as raw RGBA
+                // (<dir>/frame_<n>_<w>x<h>.rgba) for backend comparisons.
+                if (const char *dir = std::getenv("GS_REPLAY_FRAMES"))
+                {
+                    static uint32_t s_frame = 0;
+                    std::vector<uint8_t> pixels;
+                    uint32_t w = 0, h = 0;
+                    if (gs->copyLatchedHostPresentationFrame(pixels, w, h) && !pixels.empty())
+                    {
+                        char path[512];
+                        std::snprintf(path, sizeof(path), "%s/frame_%04u_%ux%u.rgba", dir, s_frame, w, h);
+                        if (FILE *out = std::fopen(path, "wb"))
+                        {
+                            std::fwrite(pixels.data(), 1, pixels.size(), out);
+                            std::fclose(out);
+                        }
+                    }
+                    ++s_frame;
+                }
                 break;
             default:
                 break;
@@ -129,6 +177,16 @@ int main(int argc, char **argv)
                 std::fclose(out);
             }
         std::printf("pass %d: vramHash=%016llx\n", pass, static_cast<unsigned long long>(hash));
+    }
+    if (profilePath)
+    {
+        itimerval off{};
+        setitimer(ITIMER_PROF, &off, nullptr);
+        if (FILE *f = std::fopen(profilePath, "wb"))
+        {
+            std::fwrite(g_samples.data(), sizeof(uint32_t), std::min<size_t>(g_sampleCount.load(), g_samples.size()), f);
+            std::fclose(f);
+        }
     }
     std::printf("time=%.3fs per pass=%.3fs (%.2f ms/present)\n", total, total / passes,
                 presents ? 1000.0 * total / passes / static_cast<double>(presents) : 0.0);

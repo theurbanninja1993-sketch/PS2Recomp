@@ -35,6 +35,18 @@ public:
     void SetRowBand(uint32_t index, uint32_t count) override;
     void SetUploadWrites(bool enabled) override { m_uploadWrites = enabled; }
 
+    // Helpers for the GPU renderer (each takes the backend mutex once).
+    // Raw pixel values in the PSM's native width (no format conversion).
+    void ReadVramRect(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                      uint32_t *out) const;
+    void WriteVramRect(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                       const uint32_t *in);
+    // Decodes the draw state's texture (TEX0, current CLUT, TEXA) to RGBA8
+    // (R in the low byte), point-sampled, width x height texels from (0,0).
+    void DecodeTexture(const GSDrawState &state, uint32_t width, uint32_t height, uint32_t *out);
+    // Changes whenever the CLUT buffer contents may have changed.
+    [[nodiscard]] uint64_t ClutVersion() const { return m_clutVersion; }
+
 private:
     void ResetUnlocked();
     void LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
@@ -81,6 +93,8 @@ private:
     uint32_t m_bandIndex = 0;
     uint32_t m_bandCount = 1;
     bool m_uploadWrites = true;
+    uint64_t m_clutVersion = 1;
+    uint32_t TexelToRgba(const GSDrawState &state, uint32_t raw);
     // Row-band ownership per 8-row strip, precomputed by SetRowBand: ownsRow()
     // runs per pixel and the modulo by a runtime band count was a division.
     static constexpr uint32_t kBandTableStrips = 1024u;

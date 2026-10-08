@@ -607,6 +607,7 @@ void GSCpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 
 void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
+    ++m_clutVersion;
     const bool fourBit = isFourBitIndexedPsm(tex0.psm);
     const bool sixteenBit = tex0.cpsm == GS_PSM_CT16 || tex0.cpsm == GS_PSM_CT16S;
     const bool thirtyTwoBit = tex0.cpsm == GS_PSM_CT32 || tex0.cpsm == GS_PSM_CT24;
@@ -2118,4 +2119,58 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     result.displayFbp = displayFrame.fbp;
     result.sourceFbp = selected.fbp;
     return result;
+}
+
+
+void GSCpuBackend::ReadVramRect(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                uint32_t *out) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (uint32_t row = 0; row < h; ++row)
+        for (uint32_t col = 0; col < w; ++col)
+            out[row * w + col] = ReadVramUnlocked(psm, base, bw, x + col, y + row);
+}
+
+void GSCpuBackend::WriteVramRect(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                 const uint32_t *in)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (uint32_t row = 0; row < h; ++row)
+        for (uint32_t col = 0; col < w; ++col)
+            WriteVramUnlocked(psm, base, bw, x + col, y + row, in[row * w + col]);
+}
+
+uint32_t GSCpuBackend::TexelToRgba(const GSDrawState &state, uint32_t raw)
+{
+    // Same conversions as SampleTexture's point sample.
+    const auto &tex = state.context.tex0;
+    switch (tex.psm)
+    {
+    case GS_PSM_CT32:
+    case GS_PSM_Z32:
+    case GS_PSM_CT24:
+    case GS_PSM_Z24:
+        return applyTexa(state.texa, tex.psm, raw);
+    case GS_PSM_CT16:
+    case GS_PSM_CT16S:
+    case GS_PSM_Z16:
+    case GS_PSM_Z16S:
+        return applyTexa(state.texa, tex.psm, Rgba5551ToRgba8888(raw));
+    case GS_PSM_T8:
+    case GS_PSM_T8H:
+    case GS_PSM_T4:
+    case GS_PSM_T4HL:
+    case GS_PSM_T4HH:
+        return LookupCLUT(state, static_cast<u8>(raw), tex.cpsm, tex.csm, tex.csa, tex.psm);
+    }
+    return 0xFFFF00FFu;
+}
+
+void GSCpuBackend::DecodeTexture(const GSDrawState &state, uint32_t width, uint32_t height, uint32_t *out)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto &tex = state.context.tex0;
+    for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x)
+            out[y * width + x] = TexelToRgba(state, ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, x, y));
 }
