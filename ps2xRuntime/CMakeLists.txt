@@ -385,6 +385,9 @@ add_library(ps2_runtime STATIC
     src/lib/gs/gs_frontend.cpp
     src/lib/gs/gs_cpu_backend.cpp
     src/lib/gs/gs_threaded_backend.cpp
+    src/lib/gs/gs_gpu_backend.cpp
+    src/lib/gs/gpu/gl_context.cpp
+    src/lib/gs/gpu/gs_gpu_renderer.cpp
     src/lib/ps2_iop_host.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
@@ -556,6 +559,10 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
+# GPU GS renderer: headless GL 4.6 via EGL (Linux).
+if(UNIX AND NOT APPLE AND NOT PS2X_IS_ANDROID)
+    target_link_libraries(ps2_runtime PUBLIC EGL)
+endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE
     ps2_runtime

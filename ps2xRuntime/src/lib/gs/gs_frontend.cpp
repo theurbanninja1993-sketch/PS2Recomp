@@ -1,6 +1,7 @@
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/gs_threaded_backend.h"
+#include "runtime/gs/gs_gpu_backend.h"
 #include "ps2_log.h"
 #include "runtime/ps2_memory.h"
 #include <atomic>
@@ -115,6 +116,9 @@ namespace
     {
         if (std::getenv("PS2X_GS_SYNC"))
             return std::make_unique<GSCpuBackend>();
+        // PS2X_GS_GPU=1: GPU renderer (in development, docs/gpu-renderer.md).
+        if (std::getenv("PS2X_GS_GPU"))
+            return std::make_unique<GSGpuBackend>();
         // PS2X_GS_THREADS picks the number of banded rasterizer workers.
         // ~60% of hardware threads leaves room for the EE and VIF1/VU1 threads;
         // more workers oversubscribe and starve VU1 (20-thread i7: 12 best,
