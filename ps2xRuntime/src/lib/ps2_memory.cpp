@@ -1784,9 +1784,12 @@ bool PS2Memory::onAsyncVif1Worker()
     return t_onAsyncVif1Worker;
 }
 
+void ps2PcSampleCurrentThread();
+
 void PS2Memory::asyncVif1WorkerLoop()
 {
     t_onAsyncVif1Worker = true;
+    ps2PcSampleCurrentThread();
     for (;;)
     {
         std::vector<PendingTransfer> batch;

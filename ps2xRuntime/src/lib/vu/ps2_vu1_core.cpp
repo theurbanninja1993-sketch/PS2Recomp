@@ -95,7 +95,8 @@ void VU1Interpreter::resetScheduler()
     m_vfWritePipeline = {};
     m_viWritePipeline = {};
     m_accWritePipeline = {};
-    m_flagMask = m_efuMask = m_storeMask = m_vfMask = m_viMask = m_accMask = 0;
+    m_efuMask = m_storeMask = m_vfMask = m_viMask = m_accMask = 0;
+    m_flagHead = m_flagCount = 0;
     resetXgkickState(m_xgkick);
     m_vfReady = {};
     m_vfRegReady = {};
@@ -542,27 +543,12 @@ void VU1Interpreter::updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest,
         status |= flags;
     }
 
-    FlagPipelineEntry *entry = nullptr;
-    for (FlagPipelineEntry &candidate : m_flagPipeline)
-    {
-        if (!candidate.valid)
-        {
-            entry = &candidate;
-            break;
-        }
-    }
+    FlagPipelineEntry *entry = allocFlagEntry();
     if (!entry)
     {
         reportReservedInstruction(true, 0xFFFFFFFFu);
         return;
     }
-
-    *entry = {};
-    entry->valid = true;
-    m_flagMask |= 1u << static_cast<uint32_t>(entry - m_flagPipeline.data());
-    entry->issueCycle = m_cycle;
-    entry->readyCycle = m_cycle + kFmacLatency;
-    m_nextCommitCycle = std::min(m_nextCommitCycle, entry->readyCycle);
     entry->mac = mac;
     entry->status = status;
     entry->extraSticky = extraSticky;
@@ -588,26 +574,14 @@ void VU1Interpreter::applyFmacDestAcc(float *result, uint8_t dest)
 
 void VU1Interpreter::queueFsset(uint16_t immediate)
 {
-    for (FlagPipelineEntry &entry : m_flagPipeline)
+    for (uint32_t i = 0; i < m_flagCount; ++i)
+        if (flagEntry(i).issueCycle == m_cycle)
+            flagEntry(i).writesStatus = false;
+    if (FlagPipelineEntry *entry = allocFlagEntry())
     {
-        if (entry.valid && entry.issueCycle == m_cycle)
-            entry.writesStatus = false;
-    }
-
-    for (FlagPipelineEntry &entry : m_flagPipeline)
-    {
-        if (!entry.valid)
-        {
-            entry = {};
-            entry.valid = true;
-            m_flagMask |= 1u << static_cast<uint32_t>(&entry - m_flagPipeline.data());
-            entry.issueCycle = m_cycle;
-            entry.readyCycle = m_cycle + kFmacLatency;
-            m_nextCommitCycle = std::min(m_nextCommitCycle, entry.readyCycle);
-            entry.status = static_cast<uint32_t>(immediate) & 0xFC0u;
-            entry.writesSticky = true;
-            return;
-        }
+        entry->status = static_cast<uint32_t>(immediate) & 0xFC0u;
+        entry->writesSticky = true;
+        return;
     }
     reportReservedInstruction(false, 0xFFFFFFFEu);
 }
@@ -615,20 +589,11 @@ void VU1Interpreter::queueFsset(uint16_t immediate)
 void VU1Interpreter::queueClip(uint32_t clip)
 {
     m_workingClip = ((m_workingClip << 6) | (clip & 0x3Fu)) & 0xFFFFFFu;
-    for (FlagPipelineEntry &entry : m_flagPipeline)
+    if (FlagPipelineEntry *entry = allocFlagEntry())
     {
-        if (!entry.valid)
-        {
-            entry = {};
-            entry.valid = true;
-            m_flagMask |= 1u << static_cast<uint32_t>(&entry - m_flagPipeline.data());
-            entry.issueCycle = m_cycle;
-            entry.readyCycle = m_cycle + kFmacLatency;
-            m_nextCommitCycle = std::min(m_nextCommitCycle, entry.readyCycle);
-            entry.clip = m_workingClip;
-            entry.writesClip = true;
-            return;
-        }
+        entry->clip = m_workingClip;
+        entry->writesClip = true;
+        return;
     }
     reportReservedInstruction(true, 0xFFFFFFFDu);
 }
@@ -636,25 +601,14 @@ void VU1Interpreter::queueClip(uint32_t clip)
 void VU1Interpreter::queueFcset(uint32_t clip)
 {
     m_workingClip = clip & 0xFFFFFFu;
-    for (FlagPipelineEntry &entry : m_flagPipeline)
+    for (uint32_t i = 0; i < m_flagCount; ++i)
+        if (flagEntry(i).issueCycle == m_cycle)
+            flagEntry(i).writesClip = false;
+    if (FlagPipelineEntry *entry = allocFlagEntry())
     {
-        if (entry.valid && entry.issueCycle == m_cycle)
-            entry.writesClip = false;
-    }
-    for (FlagPipelineEntry &entry : m_flagPipeline)
-    {
-        if (!entry.valid)
-        {
-            entry = {};
-            entry.valid = true;
-            m_flagMask |= 1u << static_cast<uint32_t>(&entry - m_flagPipeline.data());
-            entry.issueCycle = m_cycle;
-            entry.readyCycle = m_cycle + kFmacLatency;
-            m_nextCommitCycle = std::min(m_nextCommitCycle, entry.readyCycle);
-            entry.clip = m_workingClip;
-            entry.writesClip = true;
-            return;
-        }
+        entry->clip = m_workingClip;
+        entry->writesClip = true;
+        return;
     }
     reportReservedInstruction(false, 0xFFFFFFFAu);
 }
@@ -812,31 +766,7 @@ void VU1Interpreter::commitReadyPipelines()
     uint64_t next = UINT64_MAX;
     const uint64_t cycle = m_cycle;
 
-    for (uint32_t live = m_flagMask; live != 0u; live &= live - 1u)
-    {
-        const uint32_t index = static_cast<uint32_t>(__builtin_ctz(live));
-        FlagPipelineEntry &entry = m_flagPipeline[index];
-        if (entry.readyCycle > cycle)
-        {
-            next = std::min(next, entry.readyCycle);
-            continue;
-        }
-        if (entry.writesMac)
-            m_state.mac = entry.mac;
-        if (entry.writesStatus)
-        {
-            const uint32_t current = entry.status & 0xFu;
-            m_state.status = (m_state.status & 0xFF0u) | current | ((current | entry.extraSticky) << 6);
-        }
-        if (entry.writesSticky)
-        {
-            m_state.status = (m_state.status & 0x03Fu) | (entry.status & 0xFC0u);
-        }
-        if (entry.writesClip)
-            m_state.clip = entry.clip;
-        entry = {};
-        m_flagMask &= ~(1u << index);
-    }
+    commitFlags(cycle, next);
 
     if (m_fdiv.valid)
     {
@@ -1089,7 +1019,7 @@ void VU1Interpreter::advanceTo(uint64_t targetCycle)
 bool VU1Interpreter::pipelinesPending() const
 {
     return m_fdiv.valid || m_xgkick.active ||
-           (m_flagMask | m_efuMask | m_storeMask | m_vfMask | m_viMask | m_accMask) != 0u;
+           (m_flagCount | m_efuMask | m_storeMask | m_vfMask | m_viMask | m_accMask) != 0u;
 }
 
 void VU1Interpreter::flushPipelines()
@@ -1723,6 +1653,8 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
     m_state.vf[0][1] = 0.0f;
     m_state.vf[0][2] = 0.0f;
     m_state.vf[0][3] = 1.0f;
+    // Recompiled programs assume the default (fast-commit) pipeline model.
+    m_compiledEntry = fastCommitEnabled() ? lookupCompiled(vuCode, codeSize, memory, m_state.pc) : nullptr;
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
@@ -1753,16 +1685,39 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     bool programEnded = false;
     // Microcode cannot change while a program runs (MPG needs the VIF, which
     // waits for us), so validate the decode cache once instead of per pair.
+    DecodedInstructionPair uncachedDecoded{};
+    if (m_compiledEntry)
+    {
+        const VU1CompiledFn compiled = m_compiledEntry;
+        m_compiledEntry = nullptr;
+        const uint64_t before = m_cycle;
+        const int exit = compiled(*this, budgetEnd);
+        if (exit == VU1CompiledEnded)
+            programEnded = true;
+        static const bool s_stats = std::getenv("PS2X_VU1_COMPILED_STATS") != nullptr;
+        if (s_stats)
+        {
+            static uint64_t s_calls = 0, s_cycles = 0, s_exits[3] = {0, 0, 0};
+            ++s_calls;
+            s_cycles += m_cycle - before;
+            ++s_exits[exit & 3];
+            if ((s_calls & 1023u) == 0u)
+                std::cerr << "[vu1:compiled] calls=" << s_calls << " cycles/call=" << s_cycles / s_calls << " ended=" << s_exits[0]
+                          << " budget=" << s_exits[1] << " continue=" << s_exits[2] << " lastExitPc=0x" << std::hex << m_state.pc
+                          << std::dec << std::endl;
+        }
+    }
+    // Decode cache for the interpreter loop (skipped when a compiled program
+    // ran to its end).
     const DecodedInstructionPair *decodedCache = nullptr;
-    if (memory != nullptr &&
+    if (!programEnded && memory != nullptr &&
         ((m_unit == Unit::VU1 && vuCode == memory->getVU1Code()) ||
          (m_unit == Unit::VU0 && vuCode == memory->getVU0Code())))
     {
         (void)getDecodedInstructionPairForPc(vuCode, codeSize, memory, 0u);
         decodedCache = m_decodedCodeCache.data();
     }
-    DecodedInstructionPair uncachedDecoded{};
-    while (m_cycle < budgetEnd && !m_stopRequested)
+    while (!programEnded && m_cycle < budgetEnd && !m_stopRequested)
     {
         commitReadyPipelines();
         if (m_state.pc + 8u > codeSize)

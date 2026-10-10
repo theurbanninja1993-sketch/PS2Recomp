@@ -398,6 +398,7 @@ add_library(ps2_runtime STATIC
     src/lib/vu/ps2_vu1_core.cpp
     src/lib/vu/ps2_vu1_upper.cpp
     src/lib/vu/ps2_vu1_lower.cpp
+    src/lib/vu/ps2_vu1_programs.cpp
     src/lib/games_database.cpp
 )
 
@@ -669,6 +670,25 @@ install(DIRECTORY include/
 if(NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
     add_executable(vu1_replay EXCLUDE_FROM_ALL tools/vu1_replay.cpp)
     target_link_libraries(vu1_replay PRIVATE ps2_runtime)
+
+    # VU1 microprogram recompiler (tools/vu1_recomp.cpp): generates C++ for
+    # the programs in VU1 captures. PS2X_VU1_PROGRAMS names the generated
+    # file to link into the runner and vu1_replay.
+    add_executable(vu1_recomp EXCLUDE_FROM_ALL tools/vu1_recomp.cpp)
+    target_link_libraries(vu1_recomp PRIVATE ps2_runtime)
+    set(PS2X_VU1_PROGRAMS "" CACHE PATH "Directory of generated VU1 programs (vu1_recomp output)")
+    if(PS2X_VU1_PROGRAMS AND EXISTS "${PS2X_VU1_PROGRAMS}/vu1_programs.cpp")
+        file(GLOB PS2X_VU1_PROGRAM_SOURCES CONFIGURE_DEPENDS "${PS2X_VU1_PROGRAMS}/*.cpp")
+        add_library(ps2_vu1_programs OBJECT ${PS2X_VU1_PROGRAM_SOURCES})
+        target_include_directories(ps2_vu1_programs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu)
+        target_link_libraries(ps2_vu1_programs PRIVATE ps2_runtime)
+        # Same float semantics as the interpreter (FE_TOWARDZERO at run time).
+        target_compile_options(ps2_vu1_programs PRIVATE -ffp-contract=off -frounding-math -O2)
+        target_link_libraries(vu1_replay PRIVATE ps2_vu1_programs)
+        if(TARGET ps2EntryRunner)
+            target_link_libraries(ps2EntryRunner PRIVATE ps2_vu1_programs)
+        endif()
+    endif()
 endif()
 
 # Offline GS rasterizer benchmark (see tools/gs_replay.cpp); not built by default.

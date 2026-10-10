@@ -7,6 +7,34 @@
 
 class GS;
 class PS2Memory;
+class VU1Interpreter;
+
+// Recompiled VU1 microprograms (see tools/vu1_recomp.cpp). A program is
+// identified by its entry PC and the code reachable from it; its function
+// runs on the interpreter's own state and returns one of VU1CompiledExit.
+enum VU1CompiledExit : int
+{
+    VU1CompiledEnded = 0,    // E-bit program end (pipelines still to flush)
+    VU1CompiledBudget = 1,   // cycle budget exhausted / stop requested; state.pc resumes
+    VU1CompiledContinue = 2, // left compiled code (e.g. JR elsewhere); interpret from state.pc
+};
+using VU1CompiledFn = int (*)(VU1Interpreter &vu, uint64_t budgetEnd);
+struct VU1CompiledProgram
+{
+    uint64_t key;          // ps2Vu1ProgramKey without extra roots
+    VU1CompiledFn run;
+    const uint32_t *roots; // JR/JALR targets compiled as extra entry points
+    uint32_t rootCount;
+    uint64_t fullKey;      // ps2Vu1ProgramKey including the roots
+};
+
+// Key of the program entered at startPC: entry, plus the address and words of
+// every pair reachable from it (and from `roots`) without following JR/JALR.
+uint64_t ps2Vu1ProgramKey(const uint8_t *code, uint32_t codeSize, uint32_t startPC,
+                          const uint32_t *roots = nullptr, uint32_t rootCount = 0);
+
+// Debug/tooling hook called with every JR/JALR target the interpreter takes.
+extern void (*g_ps2Vu1JumpTraceHook)(uint32_t target);
 
 struct VU1State
 {
@@ -64,6 +92,9 @@ public:
     const VU1State &state() const { return m_state; }
 
 private:
+    friend struct VU1Jit;
+    friend class VU1Recompiler;
+
     enum Pipeline : uint8_t
     {
         PipelineNone = 0,
@@ -222,7 +253,53 @@ private:
     std::array<PendingAccWrite, kMaxPendingAccWrites> m_accWritePipeline{};
     // Valid-slot bitmasks mirroring the `valid` flags above, so the per-cycle
     // commit only visits live entries.
-    uint32_t m_flagMask = 0, m_efuMask = 0, m_storeMask = 0, m_vfMask = 0, m_viMask = 0, m_accMask = 0;
+    uint32_t m_efuMask = 0, m_storeMask = 0, m_vfMask = 0, m_viMask = 0, m_accMask = 0;
+    // The flag pipeline is a FIFO: every entry has the same latency, so
+    // entries become ready in issue order.
+    uint32_t m_flagHead = 0, m_flagCount = 0;
+
+    FlagPipelineEntry *allocFlagEntry()
+    {
+        if (m_flagCount == kMaxFlagEntries)
+            return nullptr;
+        FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + m_flagCount++) & (kMaxFlagEntries - 1u)];
+        entry = {};
+        entry.valid = true;
+        entry.issueCycle = m_cycle;
+        entry.readyCycle = m_cycle + kFmacLatency;
+        if (entry.readyCycle < m_nextCommitCycle)
+            m_nextCommitCycle = entry.readyCycle;
+        return &entry;
+    }
+    FlagPipelineEntry &flagEntry(uint32_t i) { return m_flagPipeline[(m_flagHead + i) & (kMaxFlagEntries - 1u)]; }
+    // Commits ready flag entries; lowers `next` to the first pending one.
+    void commitFlags(uint64_t cycle, uint64_t &next)
+    {
+        while (m_flagCount != 0u)
+        {
+            FlagPipelineEntry &entry = m_flagPipeline[m_flagHead];
+            if (entry.readyCycle > cycle)
+            {
+                if (entry.readyCycle < next)
+                    next = entry.readyCycle;
+                return;
+            }
+            if (entry.writesMac)
+                m_state.mac = entry.mac;
+            if (entry.writesStatus)
+            {
+                const uint32_t current = entry.status & 0xFu;
+                m_state.status = (m_state.status & 0xFF0u) | current | ((current | entry.extraSticky) << 6);
+            }
+            if (entry.writesSticky)
+                m_state.status = (m_state.status & 0x03Fu) | (entry.status & 0xFC0u);
+            if (entry.writesClip)
+                m_state.clip = entry.clip;
+            entry.valid = false;
+            m_flagHead = (m_flagHead + 1u) & (kMaxFlagEntries - 1u);
+            --m_flagCount;
+        }
+    }
     XgkickPipeline m_xgkick{};
     std::array<std::array<uint64_t, 4>, 32> m_vfReady{};
     std::array<uint64_t, 32> m_vfRegReady{}; // upper bound of m_vfReady[reg][*]
@@ -231,6 +308,19 @@ private:
     std::array<std::array<uint64_t, 4>, 32> m_vfLatestWrite{};
     std::array<uint64_t, 16> m_viLatestWrite{};
     std::array<uint64_t, 4> m_accLatestWrite{};
+
+    // Compiled program for the next run() (set by execute()), and the
+    // (code generation, entry PC) -> program cache behind it.
+    VU1CompiledFn m_compiledEntry = nullptr;
+    uint64_t m_compiledGeneration = ~0ull;
+    const uint8_t *m_compiledCode = nullptr;
+    struct CompiledCacheEntry
+    {
+        uint32_t pc = ~0u;
+        VU1CompiledFn fn = nullptr;
+    };
+    std::array<CompiledCacheEntry, 64> m_compiledCache{};
+    VU1CompiledFn lookupCompiled(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t startPC);
 
     uint64_t m_cycle = 0;
     uint64_t m_nextWriteSequence = 0;

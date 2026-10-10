@@ -1,0 +1,991 @@
+// VU1 microprogram recompiler: translates the programs found in VU1 captures
+// (PS2X_VU1_CAPTURE, see tools/vu1_replay.cpp) to C++ functions that run on
+// VU1Interpreter's state (src/lib/vu/ps2_vu1_jit.h), plus a registry keyed by
+// ps2Vu1ProgramKey.
+//
+// usage: vu1_recomp <out.cpp> <capture.bin>...
+//
+// Every pair is decoded with the interpreter's own decoder, so stalls,
+// latencies and write tracking match it exactly. Programs using features the
+// generator doesn't model (D/T halt bits, branches or E-bits in delay slots,
+// reserved instructions) are skipped and stay interpreted.
+#define private public // markVU1CodeModified() is a private PS2Memory helper
+#include "runtime/ps2_memory.h"
+#undef private
+#include "runtime/gs/gs_frontend.h"
+#include "runtime/ps2_vu1.h"
+#include "../src/lib/vu/ps2_vu1_jit.h"
+#include "../src/lib/vu/ps2_vu1_detail.h"
+#include "ps2_runtime.h"
+
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+const uint32_t g_ps2RecompiledFunctionTableBase = 0;
+const uint32_t g_ps2RecompiledFunctionTableEnd = 0;
+const uint32_t g_ps2RecompiledFunctionTableSlotCount = 0;
+PS2Runtime::RecompiledFunction g_ps2RecompiledFunctionTable[1] = {};
+
+class VU1Recompiler
+{
+public:
+    using Decoded = VU1Interpreter::DecodedInstructionPair;
+
+    VU1Recompiler(const uint8_t *code, uint32_t startPC, const std::vector<uint32_t> &roots)
+        : m_code(code), m_start(startPC), m_roots(roots) {}
+
+    // Returns false (with a reason) when the program can't be compiled.
+    bool generate(uint64_t key, std::string &out, std::string &reason)
+    {
+        ps2Vu1ProgramPairs(m_code, kCodeSize, m_start, m_normal, m_delay, m_roots.data(),
+                           static_cast<uint32_t>(m_roots.size()));
+        m_normalSet.insert(m_normal.begin(), m_normal.end());
+        std::set<uint32_t> delaySet(m_delay.begin(), m_delay.end());
+        std::set<uint32_t> all = m_normalSet;
+        all.insert(delaySet.begin(), delaySet.end());
+        for (uint32_t pc : all)
+        {
+            const Decoded d = decode(pc);
+            if (d.upperUsage.reserved || d.lowerUsage.reserved)
+                return fail(reason, pc, "reserved instruction");
+            if (d.dBit || d.tBit)
+                return fail(reason, pc, "D/T halt bit");
+            const bool branch = isBranch(d);
+            if (d.eBit && branch)
+                return fail(reason, pc, "E-bit on a branch");
+        }
+        for (uint32_t pc : delaySet)
+        {
+            const Decoded d = decode(pc);
+            if (isBranch(d) || d.eBit)
+                return fail(reason, pc, "branch / E-bit in a delay slot");
+        }
+        for (uint32_t pc : all)
+        {
+            const Decoded d = decode(pc);
+            const uint32_t op = opHi(d);
+            if (op == 0x11u || op == 0x15u)
+                m_eagerFlags = true;
+        }
+
+        std::ostringstream o;
+        o << "static int vu1p_" << std::hex << key << std::dec << "(VU1Interpreter &vu, uint64_t budgetEnd)\n{\n"
+          << "    using J = VU1Jit;\n    VU1State &S = J::st(vu);\n    uint32_t jumpTarget = 0;\n"
+          << "    switch (S.pc)\n    {\n    case " << m_start << "u: goto L_" << m_start
+          << ";\n    default: return VU1CompiledContinue;\n    }\n";
+        // Entry points: reached by jumps (state before them unknown). JR/JALR
+        // can enter at the program start, the traced jump targets and call
+        // return points; anywhere else leaves compiled code.
+        std::set<uint32_t> jumpEntries = {m_start};
+        jumpEntries.insert(m_roots.begin(), m_roots.end());
+        std::set<uint32_t> entries = jumpEntries;
+        for (uint32_t pc : m_normal)
+        {
+            const Decoded d = decode(pc);
+            if (!isBranch(d))
+                continue;
+            const uint32_t op = opHi(d);
+            if (op == 0x21u || op == 0x25u)
+            {
+                jumpEntries.insert(nextPc(nextPc(pc)));
+                entries.insert(nextPc(nextPc(pc)));
+            }
+            if (op != 0x24u && op != 0x25u)
+                entries.insert((pc + 8u + static_cast<uint32_t>(IMM11(d.lower) * 8)) & 0x3FFFu);
+        }
+        auto predecessors = [&](uint32_t pc)
+        {
+            uint32_t count = 0;
+            if (pc >= 8u && m_normalSet.count(pc - 8u))
+            {
+                const Decoded d = decode(pc - 8u);
+                if (!isBranch(d) && !d.eBit)
+                    ++count;
+            }
+            if (pc >= 16u && m_normalSet.count(pc - 16u))
+            {
+                const Decoded d = decode(pc - 16u);
+                const uint32_t op = opHi(d);
+                if (isBranch(d) && op != 0x20u && op != 0x21u && op != 0x24u && op != 0x25u)
+                    ++count;
+            }
+            return count;
+        };
+
+        bool dispatch = false;
+        History history;
+        for (uint32_t pc : m_normal)
+        {
+            // Straight-line continuation keeps the static timing history.
+            if (entries.count(pc) || predecessors(pc) != 1u)
+                history.reset();
+            o << "L_" << pc << ":\n    {\n";
+            dispatch |= emitInstance(o, pc, history);
+            o << "    }\n";
+        }
+        if (dispatch)
+        {
+            o << "L_dispatch:\n    switch (jumpTarget)\n    {\n";
+            for (uint32_t label : jumpEntries)
+                if (m_normalSet.count(label))
+                    o << "    case " << label << "u: goto L_" << label << ";\n";
+            o << "    default: return J::leaveAt(vu, jumpTarget);\n    }\n";
+        }
+        else
+        {
+            o << "    (void)jumpTarget;\n";
+        }
+        o << "}\n\n";
+        out = o.str();
+        return true;
+    }
+
+private:
+    static constexpr uint32_t kCodeSize = 0x4000u;
+
+    enum class Context
+    {
+        Normal,
+        BranchDelay, // locals `taken`, `target` describe the pending branch
+        EbitDelay,
+    };
+
+    // Static lower bound on operand readiness along straight-line code. Each
+    // pair takes at least one cycle, so a VF/VI write by pair j with latency
+    // L can't stall pair k >= j + L. `ready` holds j + L per register lane;
+    // after a jump entry, unknown earlier writers (latency <= 4) are bounded
+    // by entry + 3. ACC forwards in one cycle and never stalls.
+    struct History
+    {
+        uint32_t index = 0;
+        uint32_t vf[32][4] = {};
+        uint32_t vi[16] = {};
+        void reset()
+        {
+            for (auto &reg : vf)
+                for (uint32_t &lane : reg)
+                    lane = index + 3u;
+            for (uint32_t &reg : vi)
+                reg = index + 3u;
+        }
+    };
+
+    const uint8_t *m_code;
+    uint32_t m_start;
+    std::vector<uint32_t> m_roots;
+    std::vector<uint32_t> m_normal, m_delay;
+    std::set<uint32_t> m_normalSet;
+    bool m_eagerFlags = false; // FSSET/FCSET present
+    VU1Interpreter m_decoder{VU1Interpreter::Unit::VU1};
+
+    static bool fail(std::string &reason, uint32_t pc, const char *what)
+    {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%s at 0x%x", what, pc);
+        reason = buf;
+        return false;
+    }
+
+    Decoded decode(uint32_t pc) const { return m_decoder.decodeInstructionPair(m_code, pc); }
+
+    static uint32_t opHi(const Decoded &d) { return d.iBit ? 0xFFu : (d.lower >> 25) & 0x7Fu; }
+    static bool isBranch(const Decoded &d)
+    {
+        const uint32_t op = opHi(d);
+        return op == 0x20u || op == 0x21u || op == 0x24u || op == 0x25u || op == 0x28u || op == 0x29u ||
+               (op >= 0x2Cu && op <= 0x2Fu);
+    }
+    static uint32_t nextPc(uint32_t pc) { return pc + 8u >= kCodeSize ? 0u : pc + 8u; }
+
+    // --------------------------------------------------------------- pairs
+
+    // Returns true when it jumps through the shared JR dispatch.
+    bool emitInstance(std::ostringstream &o, uint32_t pc, History &h)
+    {
+        const Decoded d = decode(pc);
+        const bool branch = isBranch(d);
+        if (branch)
+            o << "    bool taken = false;\n    uint32_t target = 0;\n";
+        emitPair(o, pc, d, Context::Normal, h);
+        const uint32_t next = nextPc(pc);
+        if (branch)
+        {
+            // Delay slot, then the branch.
+            const Decoded ds = decode(next);
+            emitPair(o, next, ds, Context::BranchDelay, h);
+            const uint32_t op = opHi(d);
+            if (op == 0x24u || op == 0x25u)
+            {
+                o << "    jumpTarget = target;\n    goto L_dispatch;\n";
+                return true;
+            }
+            else
+            {
+                const int32_t imm = IMM11(d.lower);
+                const uint32_t dest = (pc + 8u + static_cast<uint32_t>(imm * 8)) & 0x3FFFu;
+                if (op == 0x20u || op == 0x21u)
+                    o << "    goto L_" << dest << ";\n";
+                else
+                    o << "    if (taken) goto L_" << dest << ";\n    goto L_" << nextPc(next) << ";\n";
+            }
+        }
+        else if (d.eBit)
+        {
+            const Decoded ds = decode(next);
+            emitPair(o, next, ds, Context::EbitDelay, h);
+            o << "    return J::ended(vu);\n";
+        }
+        else
+        {
+            o << "    goto L_" << next << ";\n";
+        }
+        return false;
+    }
+
+    void emitPair(std::ostringstream &o, uint32_t pc, const Decoded &d, Context ctx, History &h)
+    {
+        const uint32_t k = h.index;
+        char comment[96];
+        std::snprintf(comment, sizeof(comment), "    // 0x%04x: %08x %08x\n", pc, d.upper, d.lower);
+        o << comment << "    {\n";
+        const std::string exitCode = ctx == Context::BranchDelay
+                                         ? "return J::exitInDelaySlot(vu, " + std::to_string(pc) + "u, taken, target);"
+                                         : "return J::exitAt(vu, " + std::to_string(pc) + "u);";
+        o << "        if (J::atBudget(vu, budgetEnd)) " << exitCode << "\n";
+        o << "        J::commit(vu);\n";
+
+        // Stall until operands are ready (calculatePairReadyCycle).
+        std::ostringstream ready;
+        for (const auto *usage : {&d.upperUsage, &d.lowerUsage})
+        {
+            for (uint32_t i = 0; i < usage->vfReadCount; ++i)
+            {
+                const uint32_t reg = usage->vfRead[i].reg, lanes = usage->vfRead[i].lanes;
+                if (reg == 0u || lanes == 0u)
+                    continue;
+                bool mayStall = false;
+                for (uint32_t c = 0; c < 4u; ++c)
+                    if ((lanes & VU1Jit::lane(c)) && h.vf[reg][c] > k)
+                        mayStall = true;
+                if (mayStall)
+                    ready << " r = J::vf<" << reg << ", " << lanes << ">(vu, r);";
+            }
+            for (uint32_t reg = 1; reg < 16u; ++reg)
+                if ((usage->viRead & (1u << reg)) && h.vi[reg] > k)
+                    ready << " r = J::vi<" << reg << ">(vu, r);";
+        }
+        const auto &lu = d.lowerUsage;
+        if (lu.pipeline == VU1Interpreter::PipelineFdiv || lu.waitQ)
+            ready << " r = J::fdiv(vu, r);";
+        if (lu.pipeline == VU1Interpreter::PipelineEfu)
+            ready << " r = J::efuResource(vu, r);";
+        if (lu.waitP)
+            ready << " r = J::waitP(vu, r);";
+        if (lu.pipeline == VU1Interpreter::PipelineXgkick)
+            ready << " r = J::xgkick(vu, r);";
+        if (!ready.str().empty())
+            o << "        if (!J::stall(vu, budgetEnd, [&]() { uint64_t r = J::now(vu);" << ready.str()
+              << " return r; })) " << exitCode << "\n";
+
+        uint32_t writtenVi = 0u;
+        if (const uint32_t mask = lu.viWrite & 0xFFFEu)
+        {
+            writtenVi = static_cast<uint32_t>(__builtin_ctz(mask));
+            o << "        const int32_t oldVi = S.vi[" << writtenVi << "];\n";
+        }
+
+        if (d.iBit)
+        {
+            emitUpper(o, d.upper);
+            o << "        S.i = J::N(J::f32(0x" << std::hex << d.lower << std::dec << "u));\n";
+        }
+        else if (d.upperVfShadowReg != 0u)
+        {
+            const unsigned reg = d.upperVfShadowReg;
+            o << "        {\n            float oldVf[4], upperVf[4];\n            std::memcpy(oldVf, S.vf[" << reg
+              << "], 16);\n";
+            emitUpper(o, d.upper);
+            o << "            std::memcpy(upperVf, S.vf[" << reg << "], 16);\n            std::memcpy(S.vf[" << reg
+              << "], oldVf, 16);\n";
+            emitLower(o, pc, d.lower, d.upper);
+            o << "            std::memcpy(S.vf[" << reg << "], upperVf, 16);\n        }\n";
+        }
+        else
+        {
+            emitUpper(o, d.upper);
+            emitLower(o, pc, d.lower, d.upper);
+        }
+        o << "        J::clearBranchBackup(vu);\n";
+        if (writtenVi)
+            o << "        S.vi[" << writtenVi << "] = static_cast<int16_t>(S.vi[" << writtenVi << "]);\n";
+
+        // markPairWrites.
+        const auto lw = lu.vfWrite;
+        if (lw.reg != 0u && d.suppressedLowerVf != lw.reg)
+            o << "        J::markVf<" << unsigned(lw.reg) << ", " << unsigned(lw.lanes) << ", "
+              << unsigned(lu.vfLatency ? lu.vfLatency : lu.latency) << ">(vu);\n";
+        const auto &uu = d.upperUsage;
+        if (uu.vfWrite.reg != 0u)
+            o << "        J::markVf<" << unsigned(uu.vfWrite.reg) << ", " << unsigned(uu.vfWrite.lanes) << ", "
+              << unsigned(uu.vfLatency ? uu.vfLatency : uu.latency) << ">(vu);\n";
+        for (uint32_t reg = 1; reg < 16u; ++reg)
+            if (lu.viWrite & (1u << reg))
+                o << "        J::markVi<" << reg << ", " << unsigned(lu.viLatency ? lu.viLatency : lu.latency) << ">(vu);\n";
+        if (uu.accWrite)
+            o << "        J::markAcc<" << unsigned(uu.accWrite) << ">(vu);\n";
+        if (lw.reg != 0u && d.suppressedLowerVf != lw.reg)
+            for (uint32_t c = 0; c < 4u; ++c)
+                if (lw.lanes & VU1Jit::lane(c))
+                    h.vf[lw.reg][c] = k + (lu.vfLatency ? lu.vfLatency : lu.latency);
+        if (uu.vfWrite.reg != 0u)
+            for (uint32_t c = 0; c < 4u; ++c)
+                if (uu.vfWrite.lanes & VU1Jit::lane(c))
+                    h.vf[uu.vfWrite.reg][c] = k + (uu.vfLatency ? uu.vfLatency : uu.latency);
+        for (uint32_t reg = 1; reg < 16u; ++reg)
+            if (lu.viWrite & (1u << reg))
+                h.vi[reg] = k + (lu.viLatency ? lu.viLatency : lu.latency);
+        ++h.index;
+        if (writtenVi && lu.delaysNextBranchRead)
+            o << "        J::recordBranchBackup<" << writtenVi << ">(vu, oldVi);\n";
+        if (mayWriteVf0(d))
+            o << "        S.vf[0][0] = 0.0f; S.vf[0][1] = 0.0f; S.vf[0][2] = 0.0f; S.vf[0][3] = 1.0f;\n";
+
+        // pc and program end (no D/T bits in compiled programs).
+        // state.pc is only observed when leaving compiled code; exits set it.
+        const uint32_t next = nextPc(pc);
+        if (ctx == Context::EbitDelay)
+            o << "        S.pc = " << next << "u;\n";
+        if (ctx == Context::Normal && d.eBit)
+            o << "        S.ebit = true;\n";
+        o << (m_eagerFlags ? "        J::endCycleEagerFlags(vu);\n    }\n" : "        J::endCycle(vu);\n    }\n");
+    }
+
+    static bool mayWriteVf0(const Decoded &d)
+    {
+        // Conservative: any VF destination field naming register 0.
+        if (FD(d.upper) == 0u || FT(d.upper) == 0u)
+            return true;
+        if (!d.iBit && d.lower != 0u && d.lower != 0x8000033Cu && FT(d.lower) == 0u)
+            return true;
+        return false;
+    }
+
+    // --------------------------------------------------------------- upper
+
+    static std::string vs(uint32_t fs, uint32_t c) { return "J::N(S.vf[" + std::to_string(fs) + "][" + std::to_string(c) + "])"; }
+    static std::string vt(uint32_t ft, uint32_t c) { return "J::N(S.vf[" + std::to_string(ft) + "][" + std::to_string(c) + "])"; }
+    static std::string accv(uint32_t c) { return "J::N(S.acc[" + std::to_string(c) + "])"; }
+
+    void emitUpper(std::ostringstream &o, uint32_t instr)
+    {
+        const uint32_t op = instr & 0x3Fu;
+        const uint32_t dest = DEST(instr), fs = FS(instr), ft = FT(instr), fd = FD(instr);
+        enum Kind
+        {
+            Add,
+            Sub,
+            Madd,
+            Msub,
+            Mul,
+            Max,
+            Mini,
+            OpMsub,
+            OpMula,
+            Itof,
+            Ftoi,
+            Abs,
+            Nop,
+            Fallback
+        };
+        Kind kind = Fallback;
+        std::string other;   // second operand per lane ("" -> vector vt)
+        bool bcOperand = false;
+        uint32_t bc = 0;
+        bool toAcc = false;
+        uint32_t scaleIndex = 0;
+
+        if (op < 0x3Cu)
+        {
+            if (op <= 0x1Bu && !(op >= 0x10u && op <= 0x17u))
+            {
+                bcOperand = true;
+                bc = op & 3u;
+                const uint32_t group = op >> 2;
+                kind = group == 0 ? Add : group == 1 ? Sub : group == 2 ? Madd : group == 3 ? Msub : Mul;
+            }
+            else if (op >= 0x10u && op <= 0x17u)
+            {
+                bcOperand = true;
+                bc = op & 3u;
+                kind = op <= 0x13u ? Max : Mini;
+            }
+            else
+            {
+                switch (op)
+                {
+                case 0x1Cu: kind = Mul; other = "q"; break;
+                case 0x1Du: kind = Max; other = "i"; break;
+                case 0x1Eu: kind = Mul; other = "i"; break;
+                case 0x1Fu: kind = Mini; other = "i"; break;
+                case 0x20u: kind = Add; other = "q"; break;
+                case 0x21u: kind = Madd; other = "q"; break;
+                case 0x22u: kind = Add; other = "i"; break;
+                case 0x23u: kind = Madd; other = "i"; break;
+                case 0x24u: kind = Sub; other = "q"; break;
+                case 0x25u: kind = Msub; other = "q"; break;
+                case 0x26u: kind = Sub; other = "i"; break;
+                case 0x27u: kind = Msub; other = "i"; break;
+                case 0x28u: kind = Add; break;
+                case 0x29u: kind = Madd; break;
+                case 0x2Au: kind = Mul; break;
+                case 0x2Bu: kind = Max; break;
+                case 0x2Cu: kind = Sub; break;
+                case 0x2Du: kind = Msub; break;
+                case 0x2Eu: kind = OpMsub; break;
+                case 0x2Fu: kind = Mini; break;
+                default: kind = Fallback; break;
+                }
+            }
+        }
+        else
+        {
+            const uint32_t sp = (instr & 3u) | ((instr >> 4) & 0x7Cu);
+            toAcc = true;
+            if (sp <= 0x0Fu || (sp >= 0x18u && sp <= 0x1Bu))
+            {
+                bcOperand = true;
+                bc = sp & 3u;
+                const uint32_t group = sp >> 2;
+                kind = group == 0 ? Add : group == 1 ? Sub : group == 2 ? Madd : group == 3 ? Msub : Mul;
+            }
+            else
+            {
+                switch (sp)
+                {
+                case 0x10u: case 0x11u: case 0x12u: case 0x13u: kind = Itof; scaleIndex = sp & 3u; toAcc = false; break;
+                case 0x14u: case 0x15u: case 0x16u: case 0x17u: kind = Ftoi; scaleIndex = sp & 3u; toAcc = false; break;
+                case 0x1Cu: kind = Mul; other = "q"; break;
+                case 0x1Du: kind = Abs; toAcc = false; break;
+                case 0x1Eu: kind = Mul; other = "i"; break;
+                case 0x20u: kind = Add; other = "q"; break;
+                case 0x21u: kind = Madd; other = "q"; break;
+                case 0x22u: kind = Add; other = "i"; break;
+                case 0x23u: kind = Madd; other = "i"; break;
+                case 0x24u: kind = Sub; other = "q"; break;
+                case 0x25u: kind = Msub; other = "q"; break;
+                case 0x26u: kind = Sub; other = "i"; break;
+                case 0x27u: kind = Msub; other = "i"; break;
+                case 0x28u: kind = Add; break;
+                case 0x29u: kind = Madd; break;
+                case 0x2Au: kind = Mul; break;
+                case 0x2Cu: kind = Sub; break;
+                case 0x2Du: kind = Msub; break;
+                case 0x2Eu: kind = OpMula; break;
+                case 0x2Fu: case 0x30u: kind = Nop; break;
+                case 0x1Fu:
+                    o << "        J::clip(vu, S.vf[" << fs << "], S.vf[" << ft << "]);\n";
+                    return;
+                default: kind = Fallback; break;
+                }
+            }
+        }
+
+        if (kind == Nop)
+            return;
+        if (kind == Fallback)
+        {
+            o << "        J::execUpper(vu, 0x" << std::hex << instr << std::dec << "u);\n";
+            return;
+        }
+
+        auto operand = [&](uint32_t c) -> std::string
+        {
+            if (bcOperand)
+                return "bc";
+            if (other == "q")
+                return "J::N(S.q)";
+            if (other == "i")
+                return "J::N(S.i)";
+            return vt(ft, c);
+        };
+
+        o << "        {\n";
+        if (bcOperand)
+            o << "            const float bc = " << vt(ft, bc) << ";\n";
+        o << "            float r[4];\n";
+        const bool productSum = kind == Madd || kind == Msub || kind == OpMsub;
+        if (productSum)
+            o << "            uint32_t xs = 0u;\n";
+        o << "            uint32_t ez = 0u;\n";
+        static constexpr uint32_t crossLeft[4] = {1u, 2u, 0u, 3u};
+        static constexpr uint32_t crossRight[4] = {2u, 0u, 1u, 3u};
+        static const char *itofScale[4] = {"", " / 16.0f", " / 4096.0f", " / 32768.0f"};
+        static const char *ftoiScale[4] = {"1.0f", "16.0f", "4096.0f", "32768.0f"};
+        for (uint32_t c = 0; c < 4u; ++c)
+        {
+            if (!(dest & VU1Jit::lane(c)))
+                continue;
+            const std::string rc = "r[" + std::to_string(c) + "]";
+            switch (kind)
+            {
+            case Add: o << "            " << rc << " = " << vs(fs, c) << " + " << operand(c) << "; ez |= " << (1u << c) << "u;\n"; break;
+            case Sub: o << "            " << rc << " = " << vs(fs, c) << " - " << operand(c) << "; ez |= " << (1u << c) << "u;\n"; break;
+            case Mul:
+                o << "            { const float a = " << vs(fs, c) << ", b = " << operand(c) << "; " << rc
+                  << " = a * b; if (a == 0.0f || b == 0.0f) ez |= " << (1u << c) << "u; }\n";
+                break;
+            case Madd:
+            case Msub:
+                o << "            { const float a = " << vs(fs, c) << ", b = " << operand(c) << "; " << rc << " = "
+                  << accv(c) << (kind == Madd ? " + " : " - ") << "a * b; xs |= J::productFlags(a, b); }\n";
+                break;
+            case Max:
+            case Mini:
+                o << "            { const float a = " << vs(fs, c) << ", b = " << operand(c) << "; " << rc << " = (a "
+                  << (kind == Max ? ">" : "<") << " b) ? a : b; }\n";
+                break;
+            case OpMsub:
+                if (c == 3u)
+                    o << "            r[3] = 0.0f; xs |= J::productFlags(" << vs(fs, 3) << ", " << vt(ft, 3) << ");\n";
+                else
+                    o << "            { const float a = " << vs(fs, crossLeft[c]) << ", b = " << vt(ft, crossRight[c])
+                      << "; " << rc << " = " << accv(c) << " - a * b; xs |= J::productFlags(a, b); }\n";
+                break;
+            case OpMula:
+                if (c == 3u)
+                    o << "            r[3] = 0.0f;\n";
+                else
+                    o << "            " << rc << " = " << vs(fs, crossLeft[c]) << " * " << vt(ft, crossRight[c]) << ";\n";
+                break;
+            case Itof:
+                o << "            { int32_t iv; std::memcpy(&iv, &S.vf[" << fs << "][" << c << "], 4); " << rc
+                  << " = static_cast<float>(iv)" << itofScale[scaleIndex] << "; }\n";
+                break;
+            case Ftoi:
+                o << "            { const int32_t iv = J::floatToInt(" << vs(fs, c) << ", " << ftoiScale[scaleIndex]
+                  << "); std::memcpy(&" << rc << ", &iv, 4); }\n";
+                break;
+            case Abs: o << "            " << rc << " = std::fabs(" << vs(fs, c) << ");\n"; break;
+            default: break;
+            }
+        }
+        const bool flags = kind == Add || kind == Sub || kind == Mul || kind == Madd || kind == Msub || kind == OpMsub ||
+                           kind == OpMula;
+        const std::string dst = toAcc ? "S.acc" : (kind == Itof || kind == Ftoi || kind == Abs) ? "S.vf[" + std::to_string(ft) + "]"
+                                                                                                  : "S.vf[" + std::to_string(fd) + "]";
+        if (flags)
+            o << "            J::fmacFinish<" << dest << ">(vu, 0x" << std::hex << instr << std::dec << "u, r, " << dst
+              << ", " << (productSum ? "xs" : "0u") << ", ez);\n";
+        else
+            o << "            J::applyDest<" << dest << ">(" << dst << ", r);\n";
+        o << "        }\n";
+    }
+
+    // --------------------------------------------------------------- lower
+
+    void fallbackLower(std::ostringstream &o, uint32_t instr, uint32_t upper)
+    {
+        o << "        J::execLower(vu, 0x" << std::hex << instr << "u, 0x" << upper << std::dec << "u);\n";
+    }
+
+    void emitLower(std::ostringstream &o, uint32_t pc, uint32_t instr, uint32_t upper)
+    {
+        if (instr == 0u || instr == 0x8000033Cu)
+            return;
+        const uint32_t op = (instr >> 25) & 0x7Fu;
+        const uint32_t dest = (instr >> 21) & 0xFu;
+        const int32_t imm = IMM11(instr);
+        const uint32_t vfT = FT(instr), vfS = FS(instr), viT = VIT(instr), viS = VIS(instr), viD = VID(instr);
+        const uint32_t branchTarget = (pc + 8u + static_cast<uint32_t>(imm * 8)) & 0x3FFFu;
+        auto addr = [&](const std::string &base) -> std::string
+        {
+            return "uint32_t a = (" + base + ") * 16u; a &= (J::dataSize(vu) - 1u);";
+        };
+        auto load = [&](const std::string &base, uint32_t reg)
+        {
+            o << "        { " << addr(base) << " if (a + 16u <= J::dataSize(vu)) { float t[4]; std::memcpy(t, J::data(vu) + a, 16); J::applyDest<"
+              << dest << ">(S.vf[" << reg << "], t); } }\n";
+        };
+        auto storeVf = [&](const std::string &base, uint32_t reg)
+        {
+            o << "        { " << addr(base) << " if (a + 16u <= J::dataSize(vu)) { uint32_t w[4]; std::memcpy(w, S.vf[" << reg
+              << "], 16); J::store(vu, a, w, " << dest << "u); } }\n";
+        };
+        const std::string imm11 = std::to_string(imm);
+        switch (op)
+        {
+        case 0x00u: // LQ
+            load("static_cast<uint32_t>(static_cast<int32_t>(S.vi[" + std::to_string(viS) + "] + (" + imm11 + ")))", vfT);
+            return;
+        case 0x01u: // SQ
+            storeVf("static_cast<uint32_t>(static_cast<int32_t>(S.vi[" + std::to_string(viT) + "] + (" + imm11 + ")))", vfS);
+            return;
+        case 0x04u: // ILW
+        {
+            const uint32_t comp = (dest & 8u) ? 0u : (dest & 4u) ? 1u : (dest & 2u) ? 2u : 3u;
+            o << "        { " << addr("static_cast<uint32_t>(static_cast<int32_t>(S.vi[" + std::to_string(viS) + "] + (" + imm11 + ")))")
+              << " if (a + 16u <= J::dataSize(vu)) { uint32_t v; std::memcpy(&v, J::data(vu) + a + " << comp * 4u << ", 4);";
+            if (viT != 0u)
+                o << " S.vi[" << viT << "] = static_cast<int32_t>(static_cast<int16_t>(v & 0xFFFFu));";
+            o << " (void)v; } }\n";
+            return;
+        }
+        case 0x05u: // ISW
+            o << "        { " << addr("static_cast<uint32_t>(static_cast<int32_t>(S.vi[" + std::to_string(viS) + "] + (" + imm11 + ")))")
+              << " if (a + 16u <= J::dataSize(vu)) { const uint32_t v = static_cast<uint16_t>(S.vi[" << viT
+              << "] & 0xFFFF); const uint32_t w[4] = {v, v, v, v}; J::store(vu, a, w, " << dest << "u); } }\n";
+            return;
+        case 0x08u: // IADDIU
+        case 0x09u: // ISUBIU
+        {
+            const int32_t imm15 = static_cast<int16_t>(static_cast<int16_t>(instr & 0x7FFu) | ((instr >> 10) & 0x7800u));
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = static_cast<int16_t>(S.vi[" << viS << "] " << (op == 0x08u ? "+" : "-")
+                  << " (" << imm15 << "));\n";
+            return;
+        }
+        case 0x10u:
+            o << "        J::syncFlags(vu);\n";
+            o << "        S.vi[1] = ((S.clip & 0xFFFFFFu) == " << (instr & 0xFFFFFFu) << "u) ? 1 : 0;\n";
+            return;
+        case 0x12u:
+            o << "        J::syncFlags(vu);\n";
+            o << "        S.vi[1] = ((S.clip & " << (instr & 0xFFFFFFu) << "u) != 0u) ? 1 : 0;\n";
+            return;
+        case 0x13u:
+            o << "        J::syncFlags(vu);\n";
+            o << "        S.vi[1] = ((S.clip | " << (instr & 0xFFFFFFu) << "u) == 0xFFFFFFu) ? 1 : 0;\n";
+            return;
+        case 0x14u:
+        case 0x16u:
+        case 0x17u:
+        {
+            const uint32_t imm12 = (((instr >> 21) & 1u) << 11) | (instr & 0x7FFu);
+            if (viT == 0u)
+                return;
+            o << "        J::syncFlags(vu);\n";
+            if (op == 0x14u)
+                o << "        S.vi[" << viT << "] = ((S.status & 0xFFFu) == " << imm12 << "u) ? 1 : 0;\n";
+            else
+                o << "        S.vi[" << viT << "] = static_cast<int32_t>((S.status & 0xFFFu) " << (op == 0x16u ? "&" : "|")
+                  << " " << imm12 << "u);\n";
+            return;
+        }
+        case 0x18u:
+            o << "        J::syncFlags(vu);\n";
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = ((S.mac & 0xFFFFu) == static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" << viS
+                  << "]))) ? 1 : 0;\n";
+            return;
+        case 0x1Au:
+        case 0x1Bu:
+            o << "        J::syncFlags(vu);\n";
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = static_cast<int32_t>(S.mac " << (op == 0x1Au ? "&" : "|")
+                  << " static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" << viS << "])));\n";
+            return;
+        case 0x1Cu:
+            o << "        J::syncFlags(vu);\n";
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = static_cast<int32_t>(S.clip & 0x0FFFu);\n";
+            return;
+        case 0x20u: // B
+            o << "        taken = true; target = " << branchTarget << "u;\n";
+            return;
+        case 0x21u: // BAL
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = " << (pc + 16u) / 8u << ";\n";
+            o << "        taken = true; target = " << branchTarget << "u;\n";
+            return;
+        case 0x24u: // JR
+        case 0x25u: // JALR
+            o << "        target = (static_cast<uint32_t>(static_cast<uint16_t>(J::branchVi<" << viS << ">(vu))) * 8u) & 0x3FFFu; taken = true;\n";
+            if (op == 0x25u && viT != 0u)
+                o << "        S.vi[" << viT << "] = " << (pc + 16u) / 8u << ";\n";
+            return;
+        case 0x28u:
+        case 0x29u:
+            o << "        if (static_cast<int16_t>(J::branchVi<" << viS << ">(vu)) " << (op == 0x28u ? "==" : "!=")
+              << " static_cast<int16_t>(J::branchVi<" << viT << ">(vu))) { taken = true; target = " << branchTarget << "u; }\n";
+            return;
+        case 0x2Cu:
+        case 0x2Du:
+        case 0x2Eu:
+        case 0x2Fu:
+        {
+            static const char *cmp[4] = {"< 0", "> 0", "<= 0", ">= 0"};
+            o << "        if (static_cast<int16_t>(J::branchVi<" << viS << ">(vu)) " << cmp[op - 0x2Cu]
+              << ") { taken = true; target = " << branchTarget << "u; }\n";
+            return;
+        }
+        case 0x40u:
+            break;
+        default:
+            fallbackLower(o, instr, upper);
+            return;
+        }
+
+        const uint32_t funct = instr & 0x3Fu;
+        switch (funct)
+        {
+        case 0x30u:
+        case 0x31u:
+            if (viD != 0u)
+                o << "        S.vi[" << viD << "] = static_cast<int16_t>(S.vi[" << viS << "] " << (funct == 0x30u ? "+" : "-")
+                  << " S.vi[" << viT << "]);\n";
+            return;
+        case 0x32u:
+        {
+            const int32_t imm5 = static_cast<int32_t>(((instr >> 6) & 0x1Fu) << 27) >> 27;
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = static_cast<int16_t>(S.vi[" << viS << "] + (" << imm5 << "));\n";
+            return;
+        }
+        case 0x34u:
+        case 0x35u:
+            if (viD != 0u)
+                o << "        S.vi[" << viD << "] = S.vi[" << viS << "] " << (funct == 0x34u ? "&" : "|") << " S.vi[" << viT << "];\n";
+            return;
+        case 0x3Cu:
+        case 0x3Du:
+        case 0x3Eu:
+        case 0x3Fu:
+            break;
+        default:
+            fallbackLower(o, instr, upper);
+            return;
+        }
+
+        const uint32_t funct2 = (instr & 3u) | ((instr >> 4) & 0x7Cu);
+        switch (funct2)
+        {
+        case 0x30u: // MOVE
+            o << "        { float t[4]; std::memcpy(t, S.vf[" << vfS << "], 16); J::applyDest<" << dest << ">(S.vf[" << vfT
+              << "], t); }\n";
+            return;
+        case 0x31u: // MR32
+            o << "        { const float t[4] = {S.vf[" << vfS << "][1], S.vf[" << vfS << "][2], S.vf[" << vfS << "][3], S.vf[" << vfS
+              << "][0]}; J::applyDest<" << dest << ">(S.vf[" << vfT << "], t); }\n";
+            return;
+        case 0x34u: // LQI
+            load("static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" + std::to_string(viS) + "]))", vfT);
+            if (viS != 0u)
+                o << "        S.vi[" << viS << "] = static_cast<int16_t>(S.vi[" << viS << "] + 1);\n";
+            return;
+        case 0x35u: // SQI
+            storeVf("static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" + std::to_string(viT) + "]))", vfS);
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = static_cast<int16_t>(S.vi[" << viT << "] + 1);\n";
+            return;
+        case 0x36u: // LQD
+            if (viS != 0u)
+                o << "        S.vi[" << viS << "] = static_cast<int16_t>(S.vi[" << viS << "] - 1);\n";
+            load("static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" + std::to_string(viS) + "]))", vfT);
+            return;
+        case 0x37u: // SQD
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = static_cast<int16_t>(S.vi[" << viT << "] - 1);\n";
+            storeVf("static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" + std::to_string(viT) + "]))", vfS);
+            return;
+        case 0x3Bu: // WAITQ
+        case 0x7Bu: // WAITP
+            return;
+        case 0x3Cu: // MTIR
+            if (viT != 0u)
+                o << "        { uint32_t v; std::memcpy(&v, &S.vf[" << vfS << "][" << ((instr >> 21) & 3u) << "], 4); S.vi[" << viT
+                  << "] = static_cast<int32_t>(static_cast<int16_t>(v & 0xFFFFu)); }\n";
+            return;
+        case 0x3Du: // MFIR
+            o << "        { const int32_t v = static_cast<int16_t>(S.vi[" << viS << "] & 0xFFFF); float t[4]; std::memcpy(&t[0], &v, 4); t[1] = t[0]; t[2] = t[0]; t[3] = t[0]; J::applyDest<"
+              << dest << ">(S.vf[" << vfT << "], t); }\n";
+            return;
+        case 0x64u: // MFP
+            o << "        { const float t[4] = {S.p, S.p, S.p, S.p}; J::applyDest<" << dest << ">(S.vf[" << vfT << "], t); }\n";
+            return;
+        case 0x68u: // XTOP
+        case 0x69u: // XITOP
+            if (viT != 0u)
+                o << "        S.vi[" << viT << "] = static_cast<int32_t>(S." << (funct2 == 0x68u ? "top" : "itop") << " & 0x3FFu);\n";
+            return;
+        default:
+            fallbackLower(o, instr, upper);
+            return;
+        }
+    }
+};
+
+namespace
+{
+    std::set<uint32_t> *g_jumpTargets = nullptr;
+    void recordJump(uint32_t target)
+    {
+        if (g_jumpTargets)
+            g_jumpTargets->insert(target);
+    }
+
+    struct Program
+    {
+        uint32_t startPC = 0;
+        std::vector<uint8_t> code;
+        std::set<uint32_t> jumps;
+    };
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 3)
+    {
+        std::fprintf(stderr, "usage: %s <out.cpp> <capture.bin>...\n", argv[0]);
+        return 2;
+    }
+    // Replay every captured MSCAL through the interpreter to learn the
+    // JR/JALR targets each program takes (jump tables in VU data memory).
+    PS2Memory memory;
+    if (!memory.initialize())
+        return 1;
+    GS gs;
+    memory.setGifPacketCallback([](const uint8_t *, uint32_t) {});
+    VU1Interpreter vu1(VU1Interpreter::Unit::VU1);
+    g_ps2Vu1JumpTraceHook = recordJump;
+
+    // One group per (program, whole code image): the code at a program's
+    // jump targets depends on what else is loaded.
+    std::map<std::pair<uint64_t, uint64_t>, Program> programs;
+    std::vector<uint8_t> dataAfter(PS2_VU1_DATA_SIZE);
+    for (int arg = 2; arg < argc; ++arg)
+    {
+        FILE *f = std::fopen(argv[arg], "rb");
+        if (!f)
+        {
+            std::fprintf(stderr, "can't open %s\n", argv[arg]);
+            return 1;
+        }
+        size_t records = 0;
+        for (;;)
+        {
+            uint32_t header[4];
+            VU1State before{}, after{};
+            if (std::fread(header, sizeof(header), 1, f) != 1 || header[0] != 0x31555643u)
+                break;
+            if (std::fread(&before, sizeof(before), 1, f) != 1 ||
+                std::fread(memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, f) != PS2_VU1_CODE_SIZE ||
+                std::fread(memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, f) != PS2_VU1_DATA_SIZE ||
+                std::fread(&after, sizeof(after), 1, f) != 1 ||
+                std::fread(dataAfter.data(), 1, dataAfter.size(), f) != dataAfter.size())
+                break;
+            ++records;
+            memory.markVU1CodeModified();
+            const uint32_t startPC = header[1] & 0x3FF8u;
+            const uint64_t key = ps2Vu1ProgramKey(memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC);
+            uint64_t imageHash = 1469598103934665603ull;
+            for (uint32_t i = 0; i < PS2_VU1_CODE_SIZE; ++i)
+                imageHash = (imageHash ^ memory.getVU1Code()[i]) * 1099511628211ull;
+            Program &program = programs[{key, imageHash}];
+            if (program.code.empty())
+            {
+                program.startPC = startPC;
+                program.code.assign(memory.getVU1Code(), memory.getVU1Code() + PS2_VU1_CODE_SIZE);
+            }
+            g_jumpTargets = &program.jumps;
+            vu1.state() = before;
+            vu1.execute(memory.getVU1Code(), PS2_VU1_CODE_SIZE, memory.getVU1Data(), PS2_VU1_DATA_SIZE, gs, &memory,
+                        header[1], header[2], header[3], 65536);
+            g_jumpTargets = nullptr;
+        }
+        std::fclose(f);
+        std::fprintf(stderr, "%s: %zu records\n", argv[arg], records);
+    }
+
+    struct Variant
+    {
+        uint64_t baseKey;
+        std::vector<uint32_t> roots;
+        std::string text;
+    };
+    std::map<uint64_t, Variant> generated; // by full key
+    size_t skipped = 0;
+    for (const auto &[ids, program] : programs)
+    {
+        const uint64_t baseKey = ids.first;
+        std::vector<uint32_t> roots(program.jumps.begin(), program.jumps.end());
+        const uint64_t fullKey = ps2Vu1ProgramKey(program.code.data(), PS2_VU1_CODE_SIZE, program.startPC, roots.data(),
+                                                  static_cast<uint32_t>(roots.size()));
+        if (generated.count(fullKey))
+            continue;
+        VU1Recompiler recompiler(program.code.data(), program.startPC, roots);
+        std::string text, reason;
+        if (!recompiler.generate(fullKey, text, reason))
+        {
+            std::fprintf(stderr, "skipped %016llx (pc 0x%x): %s\n", static_cast<unsigned long long>(fullKey), program.startPC,
+                         reason.c_str());
+            ++skipped;
+            continue;
+        }
+        generated.emplace(fullKey, Variant{baseKey, std::move(roots), std::move(text)});
+    }
+    std::fprintf(stderr, "%zu program variants compiled, %zu skipped\n", generated.size(), skipped);
+
+    // <outDir>/vu1p_<key>.cpp per program (compiled in parallel) plus the
+    // registry; files whose content is unchanged are left alone.
+    const std::string dir = argv[1];
+    auto writeIfChanged = [](const std::string &path, const std::string &content)
+    {
+        if (FILE *in = std::fopen(path.c_str(), "rb"))
+        {
+            std::string existing;
+            char buffer[65536];
+            size_t n;
+            while ((n = std::fread(buffer, 1, sizeof(buffer), in)) > 0)
+                existing.append(buffer, n);
+            std::fclose(in);
+            if (existing == content)
+                return true;
+        }
+        FILE *out = std::fopen(path.c_str(), "wb");
+        if (!out)
+            return false;
+        std::fwrite(content.data(), 1, content.size(), out);
+        std::fclose(out);
+        return true;
+    };
+    const char *prologue = "// Generated by tools/vu1_recomp.cpp; do not edit.\n"
+                           "#include \"ps2_vu1_jit.h\"\n\n"
+                           "#include <cmath>\n#include <cstring>\n\n"
+                           "#pragma GCC diagnostic ignored \"-Wunused-label\"\n\n";
+    std::string registry = prologue;
+    for (const auto &[key, variant] : generated)
+    {
+        char name[64];
+        std::snprintf(name, sizeof(name), "%llx", static_cast<unsigned long long>(key));
+        std::string text = prologue;
+        std::string function = variant.text;
+        function.replace(0, std::strlen("static int"), "int");
+        text += function;
+        text += "extern const uint32_t vu1r_" + std::string(name) + "[] = {";
+        for (uint32_t root : variant.roots)
+            text += std::to_string(root) + "u, ";
+        text += "0u};\n";
+        if (!writeIfChanged(dir + "/vu1p_" + name + ".cpp", text))
+            return 1;
+        registry += "int vu1p_" + std::string(name) + "(VU1Interpreter &, uint64_t);\nextern const uint32_t vu1r_" +
+                    std::string(name) + "[];\n";
+    }
+    registry += "\nextern const VU1CompiledProgram g_ps2Vu1CompiledPrograms[] = {\n";
+    for (const auto &[key, variant] : generated)
+    {
+        char line[256];
+        std::snprintf(line, sizeof(line), "    {0x%016llxull, vu1p_%llx, vu1r_%llx, %zuu, 0x%016llxull},\n",
+                      static_cast<unsigned long long>(variant.baseKey), static_cast<unsigned long long>(key),
+                      static_cast<unsigned long long>(key), variant.roots.size(), static_cast<unsigned long long>(key));
+        registry += line;
+    }
+    registry += "};\nextern const size_t g_ps2Vu1CompiledProgramCount = " + std::to_string(generated.size()) + ";\n";
+    if (!writeIfChanged(dir + "/vu1_programs.cpp", registry))
+        return 1;
+    return 0;
+}

@@ -1343,6 +1343,10 @@ namespace
         // PS2X_PC_SAMPLE_GS=1: sample GS rasterizer worker 0 instead.
         if (std::getenv("PS2X_PC_SAMPLE_GS") && g_ps2GsWorkerTid.load() != 0)
             event._sigev_un._tid = static_cast<pid_t>(g_ps2GsWorkerTid.load());
+        // PS2X_PC_SAMPLE_VIF1=1: the async VIF1/VU1 worker arms its own timer
+        // (ps2PcSampleCurrentThread) instead.
+        if (std::getenv("PS2X_PC_SAMPLE_VIF1"))
+            return;
         timer_t timer{};
         if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &timer) != 0)
             return;
@@ -1352,6 +1356,29 @@ namespace
         timer_settime(timer, 0, &spec, nullptr);
     }
 
+    void writePcSamples();
+}
+
+// Samples the calling thread's CPU time with the PS2X_PC_SAMPLE handler.
+void ps2PcSampleCurrentThread()
+{
+    if (!std::getenv("PS2X_PC_SAMPLE") || !std::getenv("PS2X_PC_SAMPLE_VIF1"))
+        return;
+    sigevent event{};
+    event.sigev_notify = SIGEV_THREAD_ID;
+    event.sigev_signo = SIGPROF;
+    event._sigev_un._tid = static_cast<pid_t>(syscall(SYS_gettid));
+    timer_t timer{};
+    if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &timer) != 0)
+        return;
+    itimerspec spec{};
+    spec.it_interval.tv_nsec = 100000;
+    spec.it_value.tv_nsec = 100000;
+    timer_settime(timer, 0, &spec, nullptr);
+}
+
+namespace
+{
     void writePcSamples()
     {
         const char *env = std::getenv("PS2X_PC_SAMPLE");
