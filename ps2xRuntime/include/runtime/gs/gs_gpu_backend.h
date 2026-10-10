@@ -68,11 +68,16 @@ private:
 
     void enqueue(Command &&command);
     // Runs `fn` on the render thread after everything queued before it.
-    void runSync(const std::function<void()> &fn) const;
+    void runSync(const std::function<void()> &fn, const char *why = "other") const;
     void renderLoop();
     void execute(Command &command);
 
     std::unique_ptr<gsgpu::Renderer> m_renderer; // render thread only
+
+    // Last frame the render thread presented (Present returns it without
+    // waiting; PS2X_GS_GPU_SYNC_PRESENT=1 presents synchronously).
+    std::mutex m_frameMutex;
+    PresentationFrame m_lastFrame;
 
     mutable std::mutex m_mutex;
     mutable std::condition_variable m_workAvailable;

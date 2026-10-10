@@ -1,3 +1,8 @@
+#include <chrono>
+#include <cstdlib>
+#include <map>
+#include <optional>
+#include <string>
 #include "runtime/gs/gs_gpu_backend.h"
 
 #include "runtime/gs/gpu/gs_gpu_renderer.h"
@@ -44,8 +49,36 @@ void GSGpuBackend::enqueue(Command &&command)
         m_workAvailable.notify_one();
 }
 
-void GSGpuBackend::runSync(const std::function<void()> &fn) const
+void GSGpuBackend::runSync(const std::function<void()> &fn, const char *why) const
 {
+    // PS2X_SYNC_STATS=1: time callers spend waiting for the render thread.
+    static const bool s_stats = std::getenv("PS2X_SYNC_STATS") != nullptr;
+    struct Timer
+    {
+        const char *why;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~Timer()
+        {
+            static std::mutex s_mutex;
+            static std::map<std::string, std::pair<uint64_t, double>> s_sites;
+            static uint64_t s_calls = 0;
+            std::lock_guard<std::mutex> lock(s_mutex);
+            auto &site = s_sites[why];
+            ++site.first;
+            site.second += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (++s_calls % 20000u == 0u)
+            {
+                std::cerr << "[sync:gs]";
+                for (auto &[name, entry] : s_sites)
+                    std::cerr << " " << name << "=" << entry.first << "/" << static_cast<int>(entry.second * 1000.0) << "ms";
+                std::cerr << std::endl;
+                s_sites.clear();
+            }
+        }
+    };
+    std::optional<Timer> timer;
+    if (s_stats)
+        timer.emplace(Timer{why});
     std::promise<void> done;
     Command command;
     command.type = CommandType::Call;
@@ -169,14 +202,31 @@ void GSGpuBackend::Sync(GSSyncReason reason)
     if (reason == GSSyncReason::Finish || reason == GSSyncReason::Presentation)
         return;
     runSync([&]()
-            { m_renderer->syncLocalMemory(); });
+            { m_renderer->syncLocalMemory(); }, "sync");
 }
 
 PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
 {
+    static const bool s_sync = std::getenv("PS2X_GS_GPU_SYNC_PRESENT") != nullptr;
+    if (!s_sync)
+    {
+        // The guest never waits for presentation: queue it and hand back the
+        // newest finished frame (at most one VBlank old).
+        Command command;
+        command.type = CommandType::Call;
+        command.call = [this, request]()
+        {
+            PresentationFrame frame = m_renderer->present(request);
+            std::lock_guard<std::mutex> lock(m_frameMutex);
+            m_lastFrame = std::move(frame);
+        };
+        enqueue(std::move(command));
+        std::lock_guard<std::mutex> lock(m_frameMutex);
+        return m_lastFrame;
+    }
     PresentationFrame frame;
     runSync([&]()
-            { frame = m_renderer->present(request); });
+            { frame = m_renderer->present(request); }, "present");
     return frame;
 }
 
@@ -184,7 +234,7 @@ bool GSGpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 {
     bool cleared = false;
     runSync([&]()
-            { cleared = m_renderer->clearFramebuffer(context, rgba); });
+            { cleared = m_renderer->clearFramebuffer(context, rgba); }, "clear");
     return cleared;
 }
 
@@ -192,7 +242,7 @@ uint32_t GSGpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
     uint32_t count = 0;
     runSync([&]()
-            { count = m_renderer->consumeLocalToHostBytes(dst, maxBytes); });
+            { count = m_renderer->consumeLocalToHostBytes(dst, maxBytes); }, "localToHost");
     return count;
 }
 
@@ -200,26 +250,26 @@ uint32_t GSGpuBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32
 {
     uint32_t value = 0;
     runSync([&]()
-            { value = m_renderer->readVram(psm, base, bw, x, y); });
+            { value = m_renderer->readVram(psm, base, bw, x, y); }, "readVram");
     return value;
 }
 
 void GSGpuBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
 {
     runSync([&]()
-            { m_renderer->writeVram(psm, base, bw, x, y, value); });
+            { m_renderer->writeVram(psm, base, bw, x, y, value); }, "writeVram");
 }
 
 void GSGpuBackend::SnapshotVram(std::vector<uint8_t> &out) const
 {
     runSync([&]()
-            { m_renderer->snapshotVram(out); });
+            { m_renderer->snapshotVram(out); }, "snapshot");
 }
 
 GSTransferSnapshot GSGpuBackend::GetTransferSnapshot() const
 {
     GSTransferSnapshot snapshot{};
     runSync([&]()
-            { snapshot = m_renderer->transferSnapshot(); });
+            { snapshot = m_renderer->transferSnapshot(); }, "transferSnapshot");
     return snapshot;
 }

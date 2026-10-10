@@ -1471,7 +1471,7 @@ namespace
         }
         // Blocking sync on an async VIF1 transfer must really wait for it.
         if (mode == 0 && channelBase == 0x10009000u)
-            runtime->memory().waitForAsyncVif1();
+            runtime->memory().waitForAsyncVif1("dmaSync");
 
         bool modelBusy = false;
         {
@@ -1915,7 +1915,7 @@ namespace
             return;
         for (size_t i = 0; i < pairCount; ++i)
         {
-            runtime->memory().waitForAsyncVif1(); // GS access must follow pending VIF1 output
+            runtime->memory().waitForAsyncVif1("gsStub"); // GS access must follow pending VIF1 output
             runtime->gs().writeRegister(static_cast<uint8_t>(pairs[i].reg & 0xFFu), pairs[i].value);
         }
     }

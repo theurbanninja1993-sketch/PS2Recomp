@@ -58,6 +58,8 @@ namespace
 
 int main(int argc, char **argv)
 {
+    // Frame dumps must line up with the presents that produced them.
+    setenv("PS2X_GS_GPU_SYNC_PRESENT", "1", 0);
     if (argc < 2)
     {
         std::fprintf(stderr, "usage: %s <capture.bin> [passes]\n", argv[0]);

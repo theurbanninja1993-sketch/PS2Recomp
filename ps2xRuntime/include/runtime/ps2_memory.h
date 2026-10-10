@@ -353,7 +353,8 @@ public:
     // GIF output) while the EE continues, as on real hardware. The channel
     // stays busy (CHCR.STR) until the EE applies the completion.
     // EE side: blocks until the worker is idle, then applies completions.
-    void waitForAsyncVif1();
+    // `why` labels the call site for PS2X_SYNC_STATS.
+    void waitForAsyncVif1(const char *why = "other");
     // EE side: applies finished batches (CHCR/D_STAT/DMAC cause); returns true
     // if any completed (the caller should dispatch DMAC handlers).
     bool pollAsyncVif1();

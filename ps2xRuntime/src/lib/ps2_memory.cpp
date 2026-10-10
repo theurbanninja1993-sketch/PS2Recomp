@@ -1,3 +1,6 @@
+#include <chrono>
+#include <map>
+#include <string>
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_address.h"
 #include "runtime/gs/gs_frontend.h"
@@ -613,7 +616,7 @@ const uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t
     // EE access to VU1 micro/data memory must see the finished VIF1 stream.
     if (m_asyncVif1 && physAddr >= PS2_VU1_CODE_BASE && physAddr < PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE &&
         !onAsyncVif1Worker())
-        const_cast<PS2Memory *>(this)->waitForAsyncVif1();
+        const_cast<PS2Memory *>(this)->waitForAsyncVif1("vuMem");
     auto mapRange = [&](uint32_t base, uint32_t rangeSize, const uint8_t *ptr) -> const uint8_t *
     {
         if (!ptr || physAddr < base)
@@ -1159,7 +1162,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
     }
     if (!scratch && physAddr == 0x10005000u) // VIF1_FIFO
     {
-        waitForAsyncVif1();
+        waitForAsyncVif1("fifo");
         alignas(16) uint8_t fifoData[16];
         _mm_storeu_si128(reinterpret_cast<__m128i *>(fifoData), value);
         processVIF1Data(fifoData, sizeof(fifoData));
@@ -1205,11 +1208,16 @@ void PS2Memory::write128(uint32_t address, __m128i value)
 
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
-    if (m_asyncVif1 && !t_onAsyncVif1Worker &&
-        ((address >= 0x10003C00u && address < 0x10004000u) || (address >= 0x10005000u && address < 0x10006000u) ||
-         (address >= 0x10009000u && address < 0x10009100u) || (address >= 0x1000A000u && address < 0x1000A100u) ||
-         address == 0x1000E010u))
-        waitForAsyncVif1(); // VIF1 / D1 / GIF DMA state, D_STAT acknowledge
+    if (m_asyncVif1 && !t_onAsyncVif1Worker)
+    {
+        if ((address >= 0x10003C00u && address < 0x10004000u) || (address >= 0x10005000u && address < 0x10006000u) ||
+            (address >= 0x10009000u && address < 0x10009100u) || (address >= 0x1000A000u && address < 0x1000A100u))
+            waitForAsyncVif1((address >= 0x10009000u && address < 0x10009100u) ? "d1Write"
+                             : (address >= 0x1000A000u && address < 0x1000A100u) ? "d2Write"
+                                                                                  : "vifWrite"); // VIF1 / D1 / GIF DMA state
+        else if (address == 0x1000E010u)
+            pollAsyncVif1(); // D_STAT acknowledge: apply finished completions; later ones set their bits after
+    }
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
@@ -1822,16 +1830,54 @@ void PS2Memory::asyncVif1WorkerLoop()
     }
 }
 
-void PS2Memory::waitForAsyncVif1()
+namespace
+{
+    // PS2X_SYNC_STATS=1: time the EE spends waiting for the VIF1/VU1 worker,
+    // per call site, printed every 1200 presented frames.
+    struct SyncStats
+    {
+        std::mutex mutex;
+        std::map<std::string, std::pair<uint64_t, double>> sites; // calls, seconds
+        uint64_t lastFrame = 0;
+    };
+    SyncStats &syncStats()
+    {
+        static SyncStats s_stats;
+        return s_stats;
+    }
+}
+
+void PS2Memory::waitForAsyncVif1(const char *why)
 {
     if (!m_asyncVif1 || t_onAsyncVif1Worker)
         return;
+    static const bool s_stats = std::getenv("PS2X_SYNC_STATS") != nullptr;
+    const auto start = s_stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     {
         std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
         m_vif1IdleCv.wait(lock, [this]()
                           { return m_vif1Batches.empty() && !m_vif1WorkerActive; });
     }
     pollAsyncVif1();
+    if (s_stats)
+    {
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        SyncStats &stats = syncStats();
+        std::lock_guard<std::mutex> lock(stats.mutex);
+        auto &site = stats.sites[why];
+        ++site.first;
+        site.second += seconds;
+        const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        if (frame >= stats.lastFrame + 1200u)
+        {
+            stats.lastFrame = frame;
+            std::cerr << "[sync] frame=" << frame;
+            for (auto &[name, entry] : stats.sites)
+                std::cerr << " " << name << "=" << entry.first << "/" << static_cast<int>(entry.second * 1000.0) << "ms";
+            std::cerr << std::endl;
+            stats.sites.clear();
+        }
+    }
 }
 
 bool PS2Memory::pollAsyncVif1()
@@ -1895,7 +1941,7 @@ void PS2Memory::processPendingTransfers()
                    (m_pendingVif0Transfers.empty() ? 0u : 1u)};
     // PATH3 must not overtake PATH1/PATH2 output still being produced.
     if (!m_pendingGifTransfers.empty())
-        waitForAsyncVif1();
+        waitForAsyncVif1("path3");
     std::unique_lock<std::recursive_mutex> gifLock(m_gifArbiterMutex);
     const bool hadGif = !m_pendingGifTransfers.empty();
     uint32_t observedGifQwc = 0u;
@@ -2572,7 +2618,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
     if (m_asyncVif1 && !t_onAsyncVif1Worker)
     {
         if ((address >= 0x10003C00u && address < 0x10004000u) || (address >= 0x10005000u && address < 0x10006000u))
-            waitForAsyncVif1(); // VIF1 registers / FIFO reflect the stream state
+            waitForAsyncVif1("vifRead"); // VIF1 registers / FIFO reflect the stream state
         else if (address >= 0x10008000u && address < 0x1000F000u)
             pollAsyncVif1(); // DMAC: let CHCR.STR / D_STAT observe completion
     }
