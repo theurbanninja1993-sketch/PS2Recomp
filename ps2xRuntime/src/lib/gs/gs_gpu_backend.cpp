@@ -31,13 +31,17 @@ GSGpuBackend::~GSGpuBackend()
 
 void GSGpuBackend::enqueue(Command &&command)
 {
+    bool wasEmpty = false;
     {
         std::unique_lock<std::mutex> lock(m_mutex);
         m_space.wait(lock, [this]()
                      { return m_queue.size() < kMaxQueuedCommands; });
+        wasEmpty = m_queue.empty();
         m_queue.push_back(std::move(command));
     }
-    m_workAvailable.notify_one();
+    // The render thread only sleeps on an empty queue.
+    if (wasEmpty)
+        m_workAvailable.notify_one();
 }
 
 void GSGpuBackend::runSync(const std::function<void()> &fn) const
@@ -68,7 +72,8 @@ void GSGpuBackend::renderLoop()
                 break;
             batch.swap(m_queue);
         }
-        m_space.notify_all();
+        if (batch.size() >= kMaxQueuedCommands)
+            m_space.notify_all(); // a producer may be waiting for room
         for (Command &command : batch)
             execute(command);
         batch.clear();

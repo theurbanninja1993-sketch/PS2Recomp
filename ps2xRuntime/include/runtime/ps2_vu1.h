@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 class GS;
 class PS2Memory;
@@ -317,7 +318,11 @@ private:
     struct CompiledCacheEntry
     {
         uint32_t pc = ~0u;
+        uint64_t generation = ~0ull;
         VU1CompiledFn fn = nullptr;
+        // Code the lookup depended on (pc, lower, upper), to revalidate the
+        // entry cheaply after the code generation changes.
+        std::vector<uint32_t> words;
     };
     std::array<CompiledCacheEntry, 64> m_compiledCache{};
     VU1CompiledFn lookupCompiled(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t startPC);

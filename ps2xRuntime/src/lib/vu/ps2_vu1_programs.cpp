@@ -141,37 +141,58 @@ VU1CompiledFn VU1Interpreter::lookupCompiled(const uint8_t *vuCode, uint32_t cod
     if (programs.empty() || m_unit != Unit::VU1 || memory == nullptr || vuCode != memory->getVU1Code())
         return nullptr;
     const uint64_t generation = memory->getVU1CodeGeneration();
-    if (generation != m_compiledGeneration || vuCode != m_compiledCode)
+    if (vuCode != m_compiledCode)
     {
-        m_compiledGeneration = generation;
         m_compiledCode = vuCode;
         m_compiledCache.fill({});
     }
     CompiledCacheEntry &entry = m_compiledCache[(startPC / 8u) % m_compiledCache.size()];
-    if (entry.pc != startPC)
+    if (entry.pc == startPC)
     {
-        entry.pc = startPC;
-        entry.fn = nullptr;
-        // The base key selects candidates; the code at their extra entry
-        // points must match too.
-        const auto range = programs.equal_range(ps2Vu1ProgramKey(vuCode, codeSize, startPC));
-        // Prefer the matching variant with the most compiled jump targets.
-        uint32_t bestRoots = 0;
-        for (auto it = range.first; it != range.second; ++it)
+        if (entry.generation == generation)
+            return entry.fn;
+        bool same = true;
+        for (size_t i = 0; i + 2 < entry.words.size() && same; i += 3)
+            same = loadWord(vuCode, entry.words[i]) == entry.words[i + 1] &&
+                   loadWord(vuCode, entry.words[i] + 4u) == entry.words[i + 2];
+        if (same)
         {
-            const VU1CompiledProgram &program = *it->second;
-            if (entry.fn && program.rootCount <= bestRoots)
-                continue;
-            if (ps2Vu1ProgramKey(vuCode, codeSize, startPC, program.roots, program.rootCount) == program.fullKey)
-            {
-                entry.fn = program.run;
-                bestRoots = program.rootCount;
-            }
+            entry.generation = generation;
+            return entry.fn;
         }
-        static const bool s_log = std::getenv("PS2X_VU1_COMPILED_LOG") != nullptr;
-        if (s_log)
-            std::cerr << "[vu1:compiled] pc=0x" << std::hex << startPC << " key=" << ps2Vu1ProgramKey(vuCode, codeSize, startPC)
-                      << std::dec << (entry.fn ? " compiled" : " interpreted") << std::endl;
     }
+
+    entry.pc = startPC;
+    entry.generation = generation;
+    entry.fn = nullptr;
+    // The base key selects candidates; the code at their extra entry points
+    // must match too. Prefer the matching variant with the most jump targets.
+    const auto range = programs.equal_range(ps2Vu1ProgramKey(vuCode, codeSize, startPC));
+    const VU1CompiledProgram *chosen = nullptr;
+    for (auto it = range.first; it != range.second; ++it)
+    {
+        const VU1CompiledProgram &program = *it->second;
+        if (chosen && program.rootCount <= chosen->rootCount)
+            continue;
+        if (ps2Vu1ProgramKey(vuCode, codeSize, startPC, program.roots, program.rootCount) == program.fullKey)
+            chosen = &program;
+    }
+    if (chosen)
+        entry.fn = chosen->run;
+    std::vector<uint32_t> normal, delay;
+    ps2Vu1ProgramPairs(vuCode, codeSize, startPC, normal, delay, chosen ? chosen->roots : nullptr,
+                       chosen ? chosen->rootCount : 0u);
+    normal.insert(normal.end(), delay.begin(), delay.end());
+    entry.words.clear();
+    for (uint32_t pc : normal)
+    {
+        entry.words.push_back(pc);
+        entry.words.push_back(loadWord(vuCode, pc));
+        entry.words.push_back(loadWord(vuCode, pc + 4u));
+    }
+    static const bool s_log = std::getenv("PS2X_VU1_COMPILED_LOG") != nullptr;
+    if (s_log)
+        std::cerr << "[vu1:compiled] pc=0x" << std::hex << startPC << std::dec << (entry.fn ? " compiled" : " interpreted")
+                  << std::endl;
     return entry.fn;
 }
