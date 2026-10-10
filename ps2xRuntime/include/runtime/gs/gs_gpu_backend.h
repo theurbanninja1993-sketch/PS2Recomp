@@ -47,6 +47,7 @@ public:
 private:
     enum class CommandType : uint8_t
     {
+        State, // draw state for the following Submits
         Submit,
         LoadClut,
         BeginTransfer,
@@ -55,21 +56,43 @@ private:
         Call,
     };
 
-    struct Command
+    // Primitives carry only their vertices (the draw state, which rarely
+    // changes, is a separate State command); rarer commands use a payload.
+    struct Payload
     {
-        CommandType type = CommandType::Call;
-        GSPrimitiveBatch batch{};
+        GSDrawState state{};
         GSTex0Reg tex0{};
         GSTexClutReg texclut{};
         GSTransferCommand transfer{};
         std::vector<uint8_t> data;
         std::function<void()> call;
     };
+    struct Command
+    {
+        CommandType type = CommandType::Call;
+        uint8_t vertexCount = 0;
+        std::array<GSVertex, 3> vertices{};
+        std::unique_ptr<Payload> payload;
+
+        static Command make(CommandType type)
+        {
+            Command command;
+            command.type = type;
+            command.payload = std::make_unique<Payload>();
+            return command;
+        }
+    };
+    // Producer side (under m_pendingMutex): state sent with the last State.
+    GSDrawState m_lastState{};
+    bool m_haveLastState = false;
+    // Render thread: state of the next Submit.
+    GSDrawState m_currentState{};
 
     // Commands collect in a producer-side batch that moves to the render
     // queue every kBatchCommands, or at once when `urgent` (anything that
     // waits for or must promptly reach the render thread).
     void enqueue(Command &&command, bool urgent = false);
+    void flushPendingLocked(); // m_pendingMutex held
     // Runs `fn` on the render thread after everything queued before it.
     void runSync(const std::function<void()> &fn, const char *why = "other") const;
     void renderLoop();

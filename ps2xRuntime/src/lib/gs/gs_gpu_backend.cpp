@@ -1,3 +1,4 @@
+#include <cstring>
 #include "ThreadNaming.h"
 #include <chrono>
 #include <cstdlib>
@@ -36,13 +37,22 @@ GSGpuBackend::~GSGpuBackend()
         m_thread.join();
 }
 
-void GSGpuBackend::enqueue(Command &&command, bool urgent)
+namespace
 {
     constexpr size_t kBatchCommands = 128u;
+}
+
+void GSGpuBackend::enqueue(Command &&command, bool urgent)
+{
     std::lock_guard<std::mutex> pendingLock(m_pendingMutex);
     m_pending.push_back(std::move(command));
     if (!urgent && m_pending.size() < kBatchCommands)
         return;
+    flushPendingLocked();
+}
+
+void GSGpuBackend::flushPendingLocked()
+{
     bool wasEmpty = false;
     {
         std::unique_lock<std::mutex> lock(m_mutex);
@@ -92,9 +102,8 @@ void GSGpuBackend::runSync(const std::function<void()> &fn, const char *why) con
     if (s_stats)
         timer.emplace(Timer{why});
     std::promise<void> done;
-    Command command;
-    command.type = CommandType::Call;
-    command.call = [&]()
+    Command command = Command::make(CommandType::Call);
+    command.payload->call = [&]()
     {
         fn();
         done.set_value();
@@ -131,23 +140,32 @@ void GSGpuBackend::execute(Command &command)
 {
     switch (command.type)
     {
-    case CommandType::Submit:
-        m_renderer->submit(command.batch);
+    case CommandType::State:
+        m_currentState = command.payload->state;
         break;
+    case CommandType::Submit:
+    {
+        GSPrimitiveBatch batch;
+        batch.vertices = command.vertices;
+        batch.vertexCount = command.vertexCount;
+        batch.state = m_currentState;
+        m_renderer->submit(batch);
+        break;
+    }
     case CommandType::LoadClut:
-        m_renderer->loadClut(command.tex0, command.texclut);
+        m_renderer->loadClut(command.payload->tex0, command.payload->texclut);
         break;
     case CommandType::BeginTransfer:
-        m_renderer->beginTransfer(command.transfer);
+        m_renderer->beginTransfer(command.payload->transfer);
         break;
     case CommandType::UploadImage:
-        m_renderer->uploadImage(command.data.data(), static_cast<uint32_t>(command.data.size()));
+        m_renderer->uploadImage(command.payload->data.data(), static_cast<uint32_t>(command.payload->data.size()));
         break;
     case CommandType::TextureFlush:
         m_renderer->textureFlush();
         break;
     case CommandType::Call:
-        command.call();
+        command.payload->call();
         break;
     }
 }
@@ -166,42 +184,49 @@ void GSGpuBackend::Reset()
 
 void GSGpuBackend::Submit(const GSPrimitiveBatch &batch)
 {
-    Command command;
+    std::lock_guard<std::mutex> lock(m_pendingMutex);
+    if (!m_haveLastState || std::memcmp(&m_lastState, &batch.state, sizeof(GSDrawState)) != 0)
+    {
+        Command state = Command::make(CommandType::State);
+        state.payload->state = batch.state;
+        m_pending.push_back(std::move(state));
+        m_lastState = batch.state;
+        m_haveLastState = true;
+    }
+    Command &command = m_pending.emplace_back();
     command.type = CommandType::Submit;
-    command.batch = batch;
-    enqueue(std::move(command));
+    command.vertexCount = batch.vertexCount;
+    command.vertices = batch.vertices;
+    if (m_pending.size() >= kBatchCommands)
+        flushPendingLocked();
 }
 
 void GSGpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
-    Command command;
-    command.type = CommandType::LoadClut;
-    command.tex0 = tex0;
-    command.texclut = texclut;
+    Command command = Command::make(CommandType::LoadClut);
+    command.payload->tex0 = tex0;
+    command.payload->texclut = texclut;
     enqueue(std::move(command));
 }
 
 void GSGpuBackend::BeginTransfer(const GSTransferCommand &transfer)
 {
-    Command command;
-    command.type = CommandType::BeginTransfer;
-    command.transfer = transfer;
+    Command command = Command::make(CommandType::BeginTransfer);
+    command.payload->transfer = transfer;
     enqueue(std::move(command));
 }
 
 void GSGpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
 {
-    Command command;
-    command.type = CommandType::UploadImage;
-    command.data.assign(data, data + sizeBytes);
+    Command command = Command::make(CommandType::UploadImage);
+    command.payload->data.assign(data, data + sizeBytes);
     enqueue(std::move(command));
 }
 
 void GSGpuBackend::Flush()
 {
-    Command command;
-    command.type = CommandType::Call;
-    command.call = []() {};
+    Command command = Command::make(CommandType::Call);
+    command.payload->call = []() {};
     enqueue(std::move(command), true);
 }
 
@@ -229,9 +254,8 @@ PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
     {
         // The guest never waits for presentation: queue it and hand back the
         // newest finished frame (at most one VBlank old).
-        Command command;
-        command.type = CommandType::Call;
-        command.call = [this, request]()
+        Command command = Command::make(CommandType::Call);
+        command.payload->call = [this, request]()
         {
             PresentationFrame frame = m_renderer->present(request);
             std::lock_guard<std::mutex> lock(m_frameMutex);
