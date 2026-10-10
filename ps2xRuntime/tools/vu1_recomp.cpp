@@ -1106,6 +1106,14 @@ int main(int argc, char **argv)
         std::vector<uint32_t> roots(program.jumps.begin(), program.jumps.end());
         const uint64_t fullKey = ps2Vu1ProgramKey(program.code.data(), PS2_VU1_CODE_SIZE, program.startPC, roots.data(),
                                                   static_cast<uint32_t>(roots.size()));
+        if (std::getenv("VU1_RECOMP_VERBOSE"))
+        {
+            std::fprintf(stderr, "group base=%016llx pc=0x%x image=%016llx full=%016llx roots:", static_cast<unsigned long long>(baseKey),
+                         program.startPC, static_cast<unsigned long long>(ids.second), static_cast<unsigned long long>(fullKey));
+            for (uint32_t root : roots)
+                std::fprintf(stderr, " %x", root);
+            std::fprintf(stderr, "\n");
+        }
         if (generated.count(fullKey))
             continue;
         VU1Recompiler recompiler(program.code.data(), program.startPC, roots);

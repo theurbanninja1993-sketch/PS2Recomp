@@ -180,12 +180,23 @@ VU1CompiledFn VU1Interpreter::lookupCompiled(const uint8_t *vuCode, uint32_t cod
     }
     if (chosen)
         entry.fn = chosen->run;
-    std::vector<uint32_t> normal, delay;
-    ps2Vu1ProgramPairs(vuCode, codeSize, startPC, normal, delay, chosen ? chosen->roots : nullptr,
-                       chosen ? chosen->rootCount : 0u);
-    normal.insert(normal.end(), delay.begin(), delay.end());
+    // Revalidation covers the code every candidate depends on, so a change
+    // that could select a different variant forces a new lookup.
+    std::vector<uint32_t> covered, normal, delay;
+    ps2Vu1ProgramPairs(vuCode, codeSize, startPC, normal, delay);
+    covered.insert(covered.end(), normal.begin(), normal.end());
+    covered.insert(covered.end(), delay.begin(), delay.end());
+    for (auto it = range.first; it != range.second; ++it)
+    {
+        const VU1CompiledProgram &program = *it->second;
+        ps2Vu1ProgramPairs(vuCode, codeSize, startPC, normal, delay, program.roots, program.rootCount);
+        covered.insert(covered.end(), normal.begin(), normal.end());
+        covered.insert(covered.end(), delay.begin(), delay.end());
+    }
+    std::sort(covered.begin(), covered.end());
+    covered.erase(std::unique(covered.begin(), covered.end()), covered.end());
     entry.words.clear();
-    for (uint32_t pc : normal)
+    for (uint32_t pc : covered)
     {
         entry.words.push_back(pc);
         entry.words.push_back(loadWord(vuCode, pc));

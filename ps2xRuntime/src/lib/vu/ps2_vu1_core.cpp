@@ -1701,6 +1701,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         const VU1CompiledFn compiled = m_compiledEntry;
         m_compiledEntry = nullptr;
         const uint64_t before = m_cycle;
+        const uint32_t entryPcForStats = m_state.pc;
         static const bool s_timeStats = std::getenv("PS2X_VU1_COMPILED_STATS") != nullptr;
         const uint64_t tscStart = s_timeStats ? __builtin_ia32_rdtsc() : 0u;
         const int exit = compiled(*this, budgetEnd);
@@ -1716,6 +1717,9 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             ++s_calls;
             s_cycles += m_cycle - before;
             ++s_exits[exit & 3];
+            static int s_logged = 0;
+            if (exit == VU1CompiledContinue && s_logged++ < 12)
+                std::cerr << "[vu1:continue] entry=0x" << std::hex << entryPcForStats << " exitPc=0x" << m_state.pc << std::dec << std::endl;
             if ((s_calls & 1023u) == 0u)
                 std::cerr << "[vu1:compiled] calls=" << s_calls << " tsc/call=" << s_tsc / s_calls << " cycles/call=" << s_cycles / s_calls << " ended=" << s_exits[0]
                           << " budget=" << s_exits[1] << " continue=" << s_exits[2] << " lastExitPc=0x" << std::hex << m_state.pc

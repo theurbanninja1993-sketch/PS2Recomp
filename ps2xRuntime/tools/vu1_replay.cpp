@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 // The runtime library references the generated function table; the replay
@@ -161,6 +162,19 @@ int main(int argc, char **argv)
         if (FILE *f = std::fopen(profilePath, "wb"))
         {
             std::fwrite(g_samples.data(), sizeof(uint32_t), g_samples.size(), f);
+            std::fclose(f);
+        }
+        // <file>.maps for tools/prof_analyze.py (samples in shared libraries).
+        if (FILE *f = std::fopen((std::string(profilePath) + ".maps").c_str(), "w"))
+        {
+            std::fprintf(f, "handler %llx\n", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&profileHandler)));
+            if (FILE *maps = std::fopen("/proc/self/maps", "r"))
+            {
+                char line[512];
+                while (std::fgets(line, sizeof(line), maps))
+                    std::fputs(line, f);
+                std::fclose(maps);
+            }
             std::fclose(f);
         }
     }
