@@ -371,8 +371,35 @@ namespace
         }
     }
 
+    // Whether the player is driving: the player ped (found through one of a
+    // few static pointers, validated by the back-pointer) points to its vehicle
+    // at +0x480, and the vehicle points back to its driver at +0x384.
+    bool vcsPlayerInVehicle(const uint8_t *rdram)
+    {
+        auto read32 = [rdram](uint32_t address) -> uint32_t
+        {
+            uint32_t value = 0;
+            if (address >= 0x00100000u && address + 4u <= PS2_RAM_SIZE)
+                std::memcpy(&value, rdram + address, 4);
+            return value;
+        };
+        static constexpr uint32_t kPlayerPedPointers[] = {0x004E4910u, 0x00517834u, 0x006F4820u, 0x00744AC8u};
+        for (const uint32_t pointer : kPlayerPedPointers)
+        {
+            const uint32_t ped = read32(pointer);
+            if (ped == 0u)
+                continue;
+            const uint32_t vehicle = read32(ped + 0x480u);
+            if (vehicle != 0u && read32(vehicle + 0x384u) == ped)
+                return true;
+        }
+        return false;
+    }
+
     void applyGtaVcsUs(PS2Runtime &runtime)
     {
+        runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
+
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);
 

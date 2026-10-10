@@ -292,6 +292,7 @@ namespace ps2_stubs
                     return steps;
                 static const std::pair<const char *, uint32_t> kNames[] = {
                     {"sleft", 0x10000}, {"sright", 0x20000}, {"sup", 0x40000}, {"sdown", 0x80000},
+                    {"rleft", 0x100000}, {"rright", 0x200000}, {"rup", 0x400000}, {"rdown", 0x800000},
                     {"select", 0x0001}, {"l3", 0x0002}, {"r3", 0x0004}, {"start", 0x0008},
                     {"up", 0x0010}, {"right", 0x0020}, {"down", 0x0040}, {"left", 0x0080},
                     {"l2", 0x0100}, {"r2", 0x0200}, {"l1", 0x0400}, {"r1", 0x0800},
@@ -384,6 +385,10 @@ namespace ps2_stubs
                 if (scripted & 0x20000u) state.lx = 0xFF;
                 if (scripted & 0x40000u) state.ly = 0x00;
                 if (scripted & 0x80000u) state.ly = 0xFF;
+                if (scripted & 0x100000u) state.rx = 0x00;
+                if (scripted & 0x200000u) state.rx = 0xFF;
+                if (scripted & 0x400000u) state.ry = 0x00;
+                if (scripted & 0x800000u) state.ry = 0xFF;
             }
 
             fillPadStatus(outData, state, portState);

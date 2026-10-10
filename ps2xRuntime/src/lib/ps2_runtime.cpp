@@ -893,6 +893,7 @@ bool PS2Runtime::initialize(const char *title)
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
         SetTargetFPS(60);
+        SetExitKey(KEY_NULL); // Esc is the pause button, not "close window"
         if (m_debugUiInitCallback)
         {
             m_debugUiInitCallback(*this, m_debugUiUserData);
@@ -2931,6 +2932,7 @@ void PS2Runtime::run()
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         UploadFrame(frameTex, this, presentWidth, presentHeight);
 
+        m_padBackend.updateHostInput();
         BeginDrawing();
         ClearBackground(BLACK);
         const float srcWidth = static_cast<float>(std::max<uint32_t>(1u, presentWidth));
@@ -3035,12 +3037,22 @@ void PS2Runtime::run()
             }
             // PS2X_DUMP_RAM_FRAME=<frame>: write EE RAM + scratchpad to ram_<frame>.bin / spr_<frame>.bin.
             {
-                static const uint64_t s_dumpFrame = []() -> uint64_t
+                // (a comma-separated list dumps at each frame)
+                static const std::vector<uint64_t> s_dumpFrames = []()
                 {
-                    const char *env = std::getenv("PS2X_DUMP_RAM_FRAME");
-                    return env ? std::strtoull(env, nullptr, 10) : 0u;
+                    std::vector<uint64_t> frames;
+                    if (const char *env = std::getenv("PS2X_DUMP_RAM_FRAME"))
+                        for (const char *p = env; *p;)
+                        {
+                            char *end = nullptr;
+                            frames.push_back(std::strtoull(p, &end, 10));
+                            p = (*end == ',') ? end + 1 : end;
+                            if (end == p && *p != 0)
+                                break;
+                        }
+                    return frames;
                 }();
-                if (s_dumpFrame != 0u && s_presentedFrames == s_dumpFrame)
+                if (std::find(s_dumpFrames.begin(), s_dumpFrames.end(), static_cast<uint64_t>(s_presentedFrames)) != s_dumpFrames.end())
                 {
                     const std::string ramPath = "ram_" + std::to_string(s_presentedFrames) + ".bin";
                     if (FILE *f = std::fopen(ramPath.c_str(), "wb"))

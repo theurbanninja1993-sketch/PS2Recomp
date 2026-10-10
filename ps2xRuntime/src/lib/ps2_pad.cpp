@@ -1,5 +1,8 @@
 #include "runtime/ps2_pad.h"
 #include "ps2_host_backend.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -88,41 +91,154 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         data[5] = static_cast<uint8_t>(128 + ry * 127);
     }
 
-    // The keyboard is always read and merged with the gamepad: raylib reports
-    // any joystick device as "gamepad available" (e.g. gaming-mouse dongles
-    // that expose /dev/input/js*), which used to silence the keyboard.
+    // Optional modern driving on a gamepad (PS2X_MODERN_DRIVING=1): right
+    // trigger accelerates, left trigger brakes/reverses.
+    static const bool s_modernDriving = std::getenv("PS2X_MODERN_DRIVING") != nullptr;
+    const bool driving = m_vehicleProbe && m_rdram && m_vehicleProbe(m_rdram);
+    static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
+    static bool s_lastDriving = false;
+    if (s_debug && driving != s_lastDriving)
     {
-        if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
-            clearBit(PAD_UP);
-        if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S))
-            clearBit(PAD_DOWN);
-        if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A))
-            clearBit(PAD_LEFT);
-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D))
-            clearBit(PAD_RIGHT);
-        if (IsKeyDown(KEY_X) || IsKeyDown(KEY_SPACE))
+        s_lastDriving = driving;
+        std::fprintf(stderr, "[pad] driving=%d\n", driving ? 1 : 0);
+    }
+    if (useGamepad && driving && s_modernDriving)
+    {
+        btns |= PAD_R2 | PAD_L2; // the triggers act as pedals, not look left/right
+        if (GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_TRIGGER) > -0.5f &&
+            IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2))
             clearBit(PAD_CROSS);
-        if (IsKeyDown(KEY_C) || IsKeyDown(KEY_ESCAPE))
-            clearBit(PAD_CIRCLE);
-        if (IsKeyDown(KEY_Z) || IsKeyDown(KEY_KP_0))
+        if (GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_TRIGGER) > -0.5f &&
+            IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_2))
             clearBit(PAD_SQUARE);
-        if (IsKeyDown(KEY_V) || IsKeyDown(KEY_KP_1))
-            clearBit(PAD_TRIANGLE);
-        if (IsKeyDown(KEY_Q))
-            clearBit(PAD_L1);
-        if (IsKeyDown(KEY_E))
-            clearBit(PAD_R1);
-        if (IsKeyDown(KEY_LEFT_SHIFT))
-            clearBit(PAD_L2);
-        if (IsKeyDown(KEY_RIGHT_SHIFT))
-            clearBit(PAD_R2);
-        if (IsKeyDown(KEY_ENTER))
+    }
+
+    // Keyboard + mouse, modern GTA (IV/V PC) style, merged with the gamepad:
+    // raylib reports any joystick device as "gamepad available" (e.g. gaming
+    // mouse dongles exposing /dev/input/js*), so the keyboard is always read.
+    {
+        // Menus and common actions.
+        if (IsKeyDown(KEY_UP))
+            clearBit(PAD_UP);
+        if (IsKeyDown(KEY_DOWN))
+            clearBit(PAD_DOWN);
+        if (IsKeyDown(KEY_LEFT))
+            clearBit(PAD_LEFT);
+        if (IsKeyDown(KEY_RIGHT))
+            clearBit(PAD_RIGHT);
+        if (IsKeyDown(KEY_ENTER) || IsKeyDown(KEY_KP_ENTER))
+            clearBit(PAD_CROSS); // accept
+        if (IsKeyDown(KEY_BACKSPACE))
+            clearBit(PAD_TRIANGLE); // back
+        if (IsKeyDown(KEY_ESCAPE) || IsKeyDown(KEY_P))
             clearBit(PAD_START);
-        if (IsKeyDown(KEY_TAB))
-            clearBit(PAD_SELECT);
+        if (IsKeyDown(KEY_E) || IsKeyDown(KEY_F))
+            clearBit(PAD_TRIANGLE); // enter / exit vehicle
+        if (IsKeyDown(KEY_V))
+            clearBit(PAD_SELECT); // camera mode
+        if (IsKeyDown(KEY_C))
+            clearBit(PAD_R3); // look behind
+        const bool captured = m_mouseCaptured.load(std::memory_order_relaxed);
+        if (captured && IsMouseButtonDown(MOUSE_BUTTON_LEFT))
+            clearBit(PAD_CIRCLE); // attack / fire
+
+        // Left stick: WASD.
+        float moveX = 0.0f, moveY = 0.0f;
+        if (driving)
+        {
+            if (IsKeyDown(KEY_W))
+                clearBit(PAD_CROSS); // accelerate
+            if (IsKeyDown(KEY_S))
+                clearBit(PAD_SQUARE); // brake / reverse
+            if (IsKeyDown(KEY_SPACE))
+                clearBit(PAD_R1); // handbrake
+            if (IsKeyDown(KEY_H))
+                clearBit(PAD_L1); // horn
+            if (IsKeyDown(KEY_A))
+                moveX -= 1.0f;
+            if (IsKeyDown(KEY_D))
+                moveX += 1.0f;
+        }
+        else
+        {
+            if (IsKeyDown(KEY_LEFT_SHIFT))
+                clearBit(PAD_CROSS); // sprint
+            if (IsKeyDown(KEY_SPACE))
+                clearBit(PAD_SQUARE); // jump
+            if (IsKeyDown(KEY_Q))
+                clearBit(PAD_L1); // action
+            if (captured && IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
+                clearBit(PAD_R1); // target / aim
+            if (IsKeyDown(KEY_W))
+                moveY -= 1.0f;
+            if (IsKeyDown(KEY_S))
+                moveY += 1.0f;
+            if (IsKeyDown(KEY_A))
+                moveX -= 1.0f;
+            if (IsKeyDown(KEY_D))
+                moveX += 1.0f;
+        }
+        if (moveX != 0.0f)
+            data[6] = static_cast<uint8_t>(128 + moveX * 127);
+        if (moveY != 0.0f)
+            data[7] = static_cast<uint8_t>(128 + moveY * 127);
+
+        // Weapon cycling: mouse wheel / Tab, as short R2 (next) / L2 (previous) presses.
+        const int steps = m_wheelSteps.exchange(0, std::memory_order_relaxed);
+        if (m_weaponPulse == 0 && steps != 0)
+            m_weaponPulse = steps < 0 ? 4 : -4;
+        if (m_weaponPulse == 0 && IsKeyPressed(KEY_TAB))
+            m_weaponPulse = 4;
+        if (!driving && m_weaponPulse > 0)
+            clearBit(PAD_R2);
+        if (!driving && m_weaponPulse < 0)
+            clearBit(PAD_L2);
+        m_weaponPulse += m_weaponPulse > 0 ? -1 : (m_weaponPulse < 0 ? 1 : 0);
+
+        // Mouse look: mouse motion since the last read deflects the right stick.
+        static const float s_sensitivity = []()
+        {
+            const char *env = std::getenv("PS2X_MOUSE_SENS");
+            return env ? std::strtof(env, nullptr) : 1.0f;
+        }();
+        const float dx = m_mouseDx.exchange(0.0f, std::memory_order_relaxed);
+        const float dy = m_mouseDy.exchange(0.0f, std::memory_order_relaxed);
+        if (captured && (dx != 0.0f || dy != 0.0f))
+        {
+            const float sx = std::clamp(dx * s_sensitivity / 10.0f, -1.0f, 1.0f);
+            const float sy = std::clamp(dy * s_sensitivity / 10.0f, -1.0f, 1.0f);
+            data[4] = static_cast<uint8_t>(128 + sx * 127);
+            data[5] = static_cast<uint8_t>(128 + sy * 127);
+        }
     }
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
     return true;
+}
+
+void PSPadBackend::updateHostInput()
+{
+    // Click in the window to capture the mouse for mouse look; Left Alt (or
+    // losing focus) releases it.
+    bool captured = m_mouseCaptured.load(std::memory_order_relaxed);
+    if (!captured && IsWindowFocused() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+    {
+        DisableCursor();
+        captured = true;
+    }
+    else if (captured && (IsKeyPressed(KEY_LEFT_ALT) || !IsWindowFocused()))
+    {
+        EnableCursor();
+        captured = false;
+    }
+    m_mouseCaptured.store(captured, std::memory_order_relaxed);
+    if (!captured)
+        return;
+    const Vector2 delta = GetMouseDelta();
+    m_mouseDx.store(m_mouseDx.load(std::memory_order_relaxed) + delta.x, std::memory_order_relaxed);
+    m_mouseDy.store(m_mouseDy.load(std::memory_order_relaxed) + delta.y, std::memory_order_relaxed);
+    const float wheel = GetMouseWheelMove();
+    if (wheel != 0.0f)
+        m_wheelSteps.fetch_add(wheel > 0.0f ? 1 : -1, std::memory_order_relaxed);
 }
