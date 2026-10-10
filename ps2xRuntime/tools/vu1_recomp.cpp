@@ -165,8 +165,19 @@ private:
         uint32_t index = 0;
         uint32_t vf[32][4] = {};
         uint32_t vi[16] = {};
+        // Lanes known to hold PS2-normalized values (FMAC results etc.), whose
+        // operand normalization can be skipped.
+        bool norm[32][4] = {};
+        bool accNorm[4] = {};
         void reset()
         {
+            for (auto &reg : norm)
+                for (bool &lane : reg)
+                    lane = false;
+            for (bool &lane : accNorm)
+                lane = false;
+            for (bool &lane : norm[0])
+                lane = true; // VF0 = (0, 0, 0, 1)
             for (auto &reg : vf)
                 for (uint32_t &lane : reg)
                     lane = index + 3u;
@@ -181,6 +192,16 @@ private:
     std::vector<uint32_t> m_normal, m_delay;
     std::set<uint32_t> m_normalSet;
     bool m_eagerFlags = false; // FSSET/FCSET present
+    // Normalization tracking for the pair being emitted.
+    const History *m_hist = nullptr;
+    struct NormWrite
+    {
+        uint32_t reg = 0;   // 32 = ACC
+        uint32_t lanes = 0;
+        int kind = 0;       // 0 none, 1 normalized, 2 unknown, 3 copy, 4 rotate-copy
+        uint32_t source = 0;
+    };
+    NormWrite m_upperNorm, m_lowerNorm;
     VU1Interpreter m_decoder{VU1Interpreter::Unit::VU1};
 
     static bool fail(std::string &reason, uint32_t pc, const char *what)
@@ -299,6 +320,9 @@ private:
             o << "        const int32_t oldVi = S.vi[" << writtenVi << "];\n";
         }
 
+        m_hist = &h;
+        m_upperNorm = {};
+        m_lowerNorm = {};
         if (d.iBit)
         {
             emitUpper(o, d.upper);
@@ -350,9 +374,45 @@ private:
             if (lu.viWrite & (1u << reg))
                 h.vi[reg] = k + (lu.viLatency ? lu.viLatency : lu.latency);
         ++h.index;
-        if (writtenVi && lu.delaysNextBranchRead)
+        // Normalization state after the pair: lower write, then upper (which
+        // wins on the same register).
+        {
+            bool before[32][4];
+            std::memcpy(before, h.norm, sizeof(before));
+            if (lw.reg != 0u && d.suppressedLowerVf != lw.reg)
+            {
+                for (uint32_t c = 0; c < 4u; ++c)
+                {
+                    if (!(lw.lanes & VU1Jit::lane(c)))
+                        continue;
+                    if (m_lowerNorm.kind == 3 && m_lowerNorm.reg == lw.reg)
+                        h.norm[lw.reg][c] = before[m_lowerNorm.source][c];
+                    else if (m_lowerNorm.kind == 4 && m_lowerNorm.reg == lw.reg)
+                        h.norm[lw.reg][c] = before[m_lowerNorm.source][(c + 1u) & 3u];
+                    else
+                        h.norm[lw.reg][c] = false;
+                }
+            }
+            if (m_upperNorm.kind != 0)
+            {
+                for (uint32_t c = 0; c < 4u; ++c)
+                {
+                    if (!(m_upperNorm.lanes & VU1Jit::lane(c)))
+                        continue;
+                    if (m_upperNorm.reg == 32u)
+                        h.accNorm[c] = m_upperNorm.kind == 1;
+                    else if (m_upperNorm.reg != 0u)
+                        h.norm[m_upperNorm.reg][c] = m_upperNorm.kind == 1;
+                }
+            }
+            for (bool &lane : h.norm[0])
+                lane = true;
+            m_hist = nullptr;
+        }
+        // The backup is only read by a branch executing right after this pair.
+        if (writtenVi && lu.delaysNextBranchRead && nextMayBeBranch(pc, d, ctx))
             o << "        J::recordBranchBackup<" << writtenVi << ">(vu, oldVi);\n";
-        if (mayWriteVf0(d))
+        if (writesVf0(d))
             o << "        S.vf[0][0] = 0.0f; S.vf[0][1] = 0.0f; S.vf[0][2] = 0.0f; S.vf[0][3] = 1.0f;\n";
 
         // pc and program end (no D/T bits in compiled programs).
@@ -365,21 +425,48 @@ private:
         o << (m_eagerFlags ? "        J::endCycleEagerFlags(vu);\n    }\n" : "        J::endCycle(vu);\n    }\n");
     }
 
-    static bool mayWriteVf0(const Decoded &d)
+    // Whether the pair writes VF0 (which then has to be restored).
+    bool writesVf0(const Decoded &d) const
     {
-        // Conservative: any VF destination field naming register 0.
-        if (FD(d.upper) == 0u || FT(d.upper) == 0u)
+        if (m_upperNorm.kind != 0 && m_upperNorm.reg == 0u)
             return true;
-        if (!d.iBit && d.lower != 0u && d.lower != 0x8000033Cu && FT(d.lower) == 0u)
+        if (d.iBit || d.lower == 0u || d.lower == 0x8000033Cu || FT(d.lower) != 0u)
+            return false;
+        const uint32_t op = (d.lower >> 25) & 0x7Fu;
+        if (op == 0x00u) // LQ
             return true;
-        return false;
+        if (op != 0x40u || (d.lower & 0x3Cu) != 0x3Cu)
+            return false;
+        const uint32_t funct2 = (d.lower & 3u) | ((d.lower >> 4) & 0x7Cu);
+        // MOVE MR32 LQI LQD MFIR RNEXT RGET MFP
+        return funct2 == 0x30u || funct2 == 0x31u || funct2 == 0x34u || funct2 == 0x36u || funct2 == 0x3Du ||
+               funct2 == 0x40u || funct2 == 0x41u || funct2 == 0x64u;
+    }
+
+    // Whether a branch can execute right after this pair.
+    bool nextMayBeBranch(uint32_t pc, const Decoded &d, Context ctx) const
+    {
+        if (ctx == Context::BranchDelay)
+            return true; // jump targets are unknown here; stay conservative
+        if (d.eBit || ctx == Context::EbitDelay)
+            return false;
+        return isBranch(decode(nextPc(pc)));
     }
 
     // --------------------------------------------------------------- upper
 
-    static std::string vs(uint32_t fs, uint32_t c) { return "J::N(S.vf[" + std::to_string(fs) + "][" + std::to_string(c) + "])"; }
-    static std::string vt(uint32_t ft, uint32_t c) { return "J::N(S.vf[" + std::to_string(ft) + "][" + std::to_string(c) + "])"; }
-    static std::string accv(uint32_t c) { return "J::N(S.acc[" + std::to_string(c) + "])"; }
+    std::string vfOperand(uint32_t reg, uint32_t c) const
+    {
+        const std::string raw = "S.vf[" + std::to_string(reg) + "][" + std::to_string(c) + "]";
+        return (m_hist && m_hist->norm[reg][c]) ? raw : "J::N(" + raw + ")";
+    }
+    std::string vs(uint32_t fs, uint32_t c) const { return vfOperand(fs, c); }
+    std::string vt(uint32_t ft, uint32_t c) const { return vfOperand(ft, c); }
+    std::string accv(uint32_t c) const
+    {
+        const std::string raw = "S.acc[" + std::to_string(c) + "]";
+        return (m_hist && m_hist->accNorm[c]) ? raw : "J::N(" + raw + ")";
+    }
 
     void emitUpper(std::ostringstream &o, uint32_t instr)
     {
@@ -500,8 +587,11 @@ private:
         if (kind == Fallback)
         {
             o << "        J::execUpper(vu, 0x" << std::hex << instr << std::dec << "u);\n";
+            m_upperNorm = {fd, 0xFu, 2, 0}; // (reserved ops are refused; be conservative)
             return;
         }
+        m_upperNorm = {toAcc ? 32u : ((kind == Itof || kind == Ftoi || kind == Abs) ? ft : fd), dest,
+                       kind == Ftoi ? 2 : 1, 0};
 
         auto operand = [&](uint32_t c) -> std::string
         {
@@ -541,8 +631,10 @@ private:
                 break;
             case Madd:
             case Msub:
+                // A zero product leaves acc unchanged exactly, so a zero result is exact.
                 o << "            { const float a = " << vs(fs, c) << ", b = " << operand(c) << "; " << rc << " = "
-                  << accv(c) << (kind == Madd ? " + " : " - ") << "a * b; xs |= J::productFlags(a, b); }\n";
+                  << accv(c) << (kind == Madd ? " + " : " - ") << "a * b; xs |= J::productFlags(a, b); if (a == 0.0f || b == 0.0f) ez |= "
+                  << (1u << c) << "u; }\n";
                 break;
             case Max:
             case Mini:
@@ -551,16 +643,18 @@ private:
                 break;
             case OpMsub:
                 if (c == 3u)
-                    o << "            r[3] = 0.0f; xs |= J::productFlags(" << vs(fs, 3) << ", " << vt(ft, 3) << ");\n";
+                    o << "            r[3] = 0.0f; ez |= 8u; xs |= J::productFlags(" << vs(fs, 3) << ", " << vt(ft, 3) << ");\n";
                 else
                     o << "            { const float a = " << vs(fs, crossLeft[c]) << ", b = " << vt(ft, crossRight[c])
-                      << "; " << rc << " = " << accv(c) << " - a * b; xs |= J::productFlags(a, b); }\n";
+                      << "; " << rc << " = " << accv(c) << " - a * b; xs |= J::productFlags(a, b); if (a == 0.0f || b == 0.0f) ez |= "
+                      << (1u << c) << "u; }\n";
                 break;
             case OpMula:
                 if (c == 3u)
-                    o << "            r[3] = 0.0f;\n";
+                    o << "            r[3] = 0.0f; ez |= 8u;\n";
                 else
-                    o << "            " << rc << " = " << vs(fs, crossLeft[c]) << " * " << vt(ft, crossRight[c]) << ";\n";
+                    o << "            { const float a = " << vs(fs, crossLeft[c]) << ", b = " << vt(ft, crossRight[c]) << "; " << rc
+                      << " = a * b; if (a == 0.0f || b == 0.0f) ez |= " << (1u << c) << "u; }\n";
                 break;
             case Itof:
                 o << "            { int32_t iv; std::memcpy(&iv, &S.vf[" << fs << "][" << c << "], 4); " << rc
@@ -765,10 +859,12 @@ private:
         switch (funct2)
         {
         case 0x30u: // MOVE
+            m_lowerNorm = {vfT, dest, 3, vfS};
             o << "        { float t[4]; std::memcpy(t, S.vf[" << vfS << "], 16); J::applyDest<" << dest << ">(S.vf[" << vfT
               << "], t); }\n";
             return;
         case 0x31u: // MR32
+            m_lowerNorm = {vfT, dest, 4, vfS};
             o << "        { const float t[4] = {S.vf[" << vfS << "][1], S.vf[" << vfS << "][2], S.vf[" << vfS << "][3], S.vf[" << vfS
               << "][0]}; J::applyDest<" << dest << ">(S.vf[" << vfT << "], t); }\n";
             return;

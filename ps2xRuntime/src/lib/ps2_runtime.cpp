@@ -1823,6 +1823,11 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     {
         return false;
     }
+    // The callee switched threads: unwind to the dispatcher (ctx->pc resumes).
+    if (m_eeScheduler && m_eeScheduler->unwindByReturnPending())
+    {
+        return false;
+    }
 
     // Handlers bound straight into the function table may return without touching
     // pc; treat that as a completed call. Only when $sp is unchanged, though: in

@@ -1212,7 +1212,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
     {
         if ((address >= 0x10003C00u && address < 0x10004000u) || (address >= 0x10005000u && address < 0x10006000u) ||
             (address >= 0x10009000u && address < 0x10009100u) || (address >= 0x1000A000u && address < 0x1000A100u))
-            waitForAsyncVif1((address >= 0x10009000u && address < 0x10009100u) ? "d1Write"
+            waitForAsyncVif1(address == 0x10009000u ? "d1Chcr" : address == 0x10009010u ? "d1Madr" : address == 0x10009020u ? "d1Qwc" : address == 0x10009030u ? "d1Tadr" : (address >= 0x10009000u && address < 0x10009100u) ? "d1Other"
                              : (address >= 0x1000A000u && address < 0x1000A100u) ? "d2Write"
                                                                                   : "vifWrite"); // VIF1 / D1 / GIF DMA state
         else if (address == 0x1000E010u)

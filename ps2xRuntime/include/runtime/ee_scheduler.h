@@ -299,6 +299,10 @@ public:
     int rotateReadyQueue(int priority, bool interruptSafe);
     int releaseWait(int id, bool interruptSafe);
     void transferIfRequested(bool interruptSafe);
+    // A thread switch requested from a syscall wrapper (`syscall; jr $ra`)
+    // unwinds by plain returns instead of an exception: recompiled callers
+    // see this through dispatchGuestBranch and return to the dispatcher.
+    [[nodiscard]] bool unwindByReturnPending() const { return m_unwindByReturn; }
 
     int createSemaphore(int initCount, int maxCount, uint32_t attr, uint32_t option);
     int deleteSemaphore(int id, bool interruptSafe);
@@ -422,6 +426,8 @@ private:
     uint32_t m_enabledDmacMask = 0xFFFFFFFFu;
     int m_currentThreadId = 0;
     bool m_rescheduleRequested = false;
+    bool m_unwindByReturn = false;
+    int m_yieldedThreadId = 0; // thread that just rotated itself out (for transferIfRequested)
     bool m_timeSliceExpired = false;
     bool m_insideInterrupt = false;
     uint32_t m_pendingEeTimerInterrupts = 0;

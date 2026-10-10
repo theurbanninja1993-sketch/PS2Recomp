@@ -66,7 +66,10 @@ private:
         std::function<void()> call;
     };
 
-    void enqueue(Command &&command);
+    // Commands collect in a producer-side batch that moves to the render
+    // queue every kBatchCommands, or at once when `urgent` (anything that
+    // waits for or must promptly reach the render thread).
+    void enqueue(Command &&command, bool urgent = false);
     // Runs `fn` on the render thread after everything queued before it.
     void runSync(const std::function<void()> &fn, const char *why = "other") const;
     void renderLoop();
@@ -83,6 +86,8 @@ private:
     mutable std::condition_variable m_workAvailable;
     mutable std::condition_variable m_space;
     mutable std::vector<Command> m_queue;
+    std::mutex m_pendingMutex;
+    std::vector<Command> m_pending;
     bool m_stop = false;
     std::thread m_thread;
 };

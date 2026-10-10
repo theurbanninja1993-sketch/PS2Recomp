@@ -1,3 +1,8 @@
+#include <iostream>
+#include <chrono>
+#include <string>
+#include <map>
+#include <cstdlib>
 #include "runtime/ee_scheduler.h"
 
 #include "ps2_log.h"
@@ -8,6 +13,11 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+
+namespace
+{
+    const char *g_rescheduleReason = "?";
+}
 
 namespace
 {
@@ -33,6 +43,7 @@ namespace
     constexpr uint32_t WEF_CLEAR_ALL = 0x20u;
     constexpr auto kVBlankPeriod = std::chrono::microseconds(16667);
     constexpr auto kVBlankDuration = std::chrono::microseconds(500);
+    constexpr auto kVBlankCatchUpLimit = std::chrono::microseconds(4000);
     constexpr uint64_t kAlarmTickMicroseconds = 64u;
     constexpr uint32_t kDebugPublishDispatchInterval = 4096u;
 
@@ -209,6 +220,7 @@ void EeScheduler::run()
             catch (const EeDispatcherTransfer &)
             {
             }
+            m_unwindByReturn = false;
             if (m_currentThreadId == 0)
             {
                 continue;
@@ -243,6 +255,7 @@ void EeScheduler::run()
                     catch (const EeDispatcherTransfer &)
                     {
                     }
+                    m_unwindByReturn = false;
                 }
                 continue;
             }
@@ -296,12 +309,16 @@ void EeScheduler::run()
         {
             m_insideInterrupt = !running->invocations.empty() && running->invocations.back().kind == GuestInvocationKind::Interrupt;
             m_guestExecuting.store(true, std::memory_order_release);
+            m_unwindByReturn = false;
+            m_yieldedThreadId = 0;
             function(m_rdram, &context, &m_runtime);
+            m_unwindByReturn = false;
             m_guestExecuting.store(false, std::memory_order_release);
             m_insideInterrupt = false;
         }
         catch (const EeDispatcherTransfer &)
         {
+            m_unwindByReturn = false;
             m_guestExecuting.store(false, std::memory_order_release);
             m_insideInterrupt = false;
         }
@@ -380,6 +397,7 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
     if (running != nullptr && hasReadyAtOrAbovePriority(running->currentPriority))
     {
         m_rescheduleRequested = true;
+        g_rescheduleReason = "checkpointDue@387";
         m_timeSliceExpired = true;
         return true;
     }
@@ -520,6 +538,32 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
     return KE_OK;
 }
 
+
+
+namespace
+{
+    // PS2X_SYNC_STATS=1: dispatcher transfers (C++ exceptions) per site per second.
+    void countDispatcherTransfer(const char *why)
+    {
+        static const bool s_stats = std::getenv("PS2X_SYNC_STATS") != nullptr;
+        if (!s_stats)
+            return;
+        static std::map<std::string, uint64_t> s_counts;
+        static auto s_last = std::chrono::steady_clock::now();
+        ++s_counts[why];
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_last >= std::chrono::seconds(5))
+        {
+            std::cerr << "[transfers/5s]";
+            for (auto &[name, count] : s_counts)
+                std::cerr << " " << name << "=" << count;
+            std::cerr << std::endl;
+            s_counts.clear();
+            s_last = now;
+        }
+    }
+}
+
 [[noreturn]] void EeScheduler::exitCurrent(bool deleteThreadRecord)
 {
     assertExecutor();
@@ -538,6 +582,7 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
         m_runtime.guestFree(ownedStack);
     }
     publishSnapshot();
+    countDispatcherTransfer("exit");
     throw EeDispatcherTransfer{};
 }
 
@@ -593,6 +638,7 @@ int EeScheduler::suspendThread(int id, bool interruptSafe)
         target->status = EeThreadStatus::Suspended;
         m_currentThreadId = 0;
         m_rescheduleRequested = true;
+        g_rescheduleReason = "suspendThread@626";
         break;
     case EeThreadStatus::Ready:
         removeReady(*target);
@@ -610,6 +656,7 @@ int EeScheduler::suspendThread(int id, bool interruptSafe)
     if (interruptSafe && m_insideInterrupt)
     {
         m_rescheduleRequested = true;
+        g_rescheduleReason = "suspendThread@643";
     }
     publishSnapshot();
     return KE_OK;
@@ -744,6 +791,7 @@ int EeScheduler::changePriority(int id, int priority, bool interruptSafe, int &o
                 if (!m_readyQueues[p].empty())
                 {
                     m_rescheduleRequested = true;
+                    g_rescheduleReason = "changePriority@777";
                     break;
                 }
             }
@@ -767,11 +815,20 @@ int EeScheduler::rotateReadyQueue(int priority, bool interruptSafe)
     }
 
     GuestThread *self = currentThread();
-    if (self && self->currentPriority == priority)
+    if (self && self->currentPriority == priority && !hasReadyAtOrAbovePriority(priority))
+    {
+        // Nothing else could run: rotating would reschedule straight back to
+        // this thread. (Games spin on this; each reschedule unwinds the host
+        // stack with an exception.)
+        return KE_OK;
+    }
+    else if (self && self->currentPriority == priority)
     {
         enqueueReady(*self);
+        m_yieldedThreadId = self->id;
         m_currentThreadId = 0;
         m_rescheduleRequested = true;
+        g_rescheduleReason = "rotateReadyQueue@812";
     }
     else
     {
@@ -817,16 +874,47 @@ void EeScheduler::transferIfRequested(bool interruptSafe)
     {
         return;
     }
+    const R5900Context *context = nullptr;
+    if (m_currentThreadId == 0 && m_yieldedThreadId != 0)
+    {
+        auto it = m_threads.find(m_yieldedThreadId);
+        if (it != m_threads.end())
+            context = &it->second.activeContext();
+    }
+    m_yieldedThreadId = 0;
     if (m_currentThreadId != 0)
     {
         GuestThread *self = currentThread();
         assert(self != nullptr);
+        context = &self->activeContext();
         enqueueReady(*self, true);
         m_currentThreadId = 0;
     }
     m_rescheduleRequested = false;
     m_timeSliceExpired = false;
     publishSnapshot();
+
+    // The common case is a libkernel wrapper: the syscall is followed by
+    // `jr $ra` with an empty delay slot, so nothing would run before the
+    // switch anyway. Unwinding with returns there is far cheaper than an
+    // exception (games spin on RotateThreadReadyQueue).
+    if (context && m_rdram)
+    {
+        const uint32_t pc = context->pc & 0x01FFFFFCu;
+        if (pc + 8u <= PS2_RAM_SIZE)
+        {
+            uint32_t next = 0, delay = 0;
+            std::memcpy(&next, m_rdram + pc, 4);
+            std::memcpy(&delay, m_rdram + pc + 4u, 4);
+            if (next == 0x03E00008u && delay == 0u)
+            {
+                countDispatcherTransfer("byReturn");
+                m_unwindByReturn = true;
+                return;
+            }
+        }
+    }
+    countDispatcherTransfer(g_rescheduleReason);
     throw EeDispatcherTransfer{};
 }
 
@@ -1130,6 +1218,7 @@ void EeScheduler::queueInvocation(GuestInvocation invocation)
     invocation.sequence = ++m_invocationSequence;
     owner->invocations.push_back(std::move(invocation));
     publishSnapshot();
+    countDispatcherTransfer("invoke");
     throw EeDispatcherTransfer{};
 }
 
@@ -1149,6 +1238,7 @@ void EeScheduler::queueInvocation(GuestInvocation invocation)
         owner->invocations.push_back(std::move(*it));
     }
     publishSnapshot();
+    countDispatcherTransfer("invokeSeq");
     throw EeDispatcherTransfer{};
 }
 
@@ -1700,6 +1790,7 @@ void EeScheduler::blockCurrent(EeWaitState wait)
     self->status = self->suspendCount == 0 ? EeThreadStatus::Waiting : EeThreadStatus::WaitingSuspended;
     m_currentThreadId = 0;
     publishSnapshot();
+    countDispatcherTransfer("block");
     throw EeDispatcherTransfer{};
 }
 
@@ -1726,6 +1817,7 @@ void EeScheduler::requestPreemptionIfHigher(const GuestThread &readyThread, bool
         return;
     }
     m_rescheduleRequested = true;
+    g_rescheduleReason = "requestPreemptionIfHigher@1770";
     if (interruptSafe || m_insideInterrupt)
     {
         m_checkpointPending.store(true, std::memory_order_release);
@@ -1862,8 +1954,36 @@ void EeScheduler::processDueDeadlines()
                 scheduleEvent(scheduled.deadlineCycle + kVBlankDurationCycles,
                               scheduled.hostDeadline + kVBlankDuration,
                               EeEvent{EeEventType::VBlankEnd, 0, m_vsyncTick + 1u});
+                // Frame cap: a VBlank that fired late doesn't build up a
+                // backlog to be caught up later (that ran game logic and
+                // music faster than real time after slow stretches). Small
+                // wake-up jitter is still made up so the average stays 60 Hz.
+                auto anchor = scheduled.hostDeadline;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - anchor > kVBlankCatchUpLimit)
+                    anchor = now;
+                static const bool s_stats = std::getenv("PS2X_SYNC_STATS") != nullptr;
+                if (s_stats)
+                {
+                    static uint64_t s_vblanks = 0, s_late = 0;
+                    static double s_lateMs = 0.0;
+                    ++s_vblanks;
+                    const double lateMs = std::chrono::duration<double, std::milli>(now - scheduled.hostDeadline).count();
+                    if (lateMs > 4.0)
+                    {
+                        ++s_late;
+                        s_lateMs += lateMs;
+                    }
+                    if (s_vblanks % 600u == 0u)
+                    {
+                        std::cerr << "[vblank] n=" << s_vblanks << " late=" << s_late << "/600 lostMs=" << static_cast<int>(s_lateMs)
+                                  << std::endl;
+                        s_late = 0;
+                        s_lateMs = 0.0;
+                    }
+                }
                 scheduleEvent(scheduled.deadlineCycle + kVBlankPeriodCycles,
-                              scheduled.hostDeadline + kVBlankPeriod,
+                              anchor + kVBlankPeriod,
                               EeEvent{EeEventType::VBlankStart, 0, 0});
             }
             processEvent(scheduled.event);

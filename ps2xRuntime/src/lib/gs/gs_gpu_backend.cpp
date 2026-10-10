@@ -25,6 +25,7 @@ GSGpuBackend::GSGpuBackend()
 
 GSGpuBackend::~GSGpuBackend()
 {
+    Flush();
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_stop = true;
@@ -34,15 +35,25 @@ GSGpuBackend::~GSGpuBackend()
         m_thread.join();
 }
 
-void GSGpuBackend::enqueue(Command &&command)
+void GSGpuBackend::enqueue(Command &&command, bool urgent)
 {
+    constexpr size_t kBatchCommands = 128u;
+    std::lock_guard<std::mutex> pendingLock(m_pendingMutex);
+    m_pending.push_back(std::move(command));
+    if (!urgent && m_pending.size() < kBatchCommands)
+        return;
     bool wasEmpty = false;
     {
         std::unique_lock<std::mutex> lock(m_mutex);
         m_space.wait(lock, [this]()
                      { return m_queue.size() < kMaxQueuedCommands; });
         wasEmpty = m_queue.empty();
-        m_queue.push_back(std::move(command));
+        if (wasEmpty)
+            m_queue.swap(m_pending);
+        else
+            for (Command &pending : m_pending)
+                m_queue.push_back(std::move(pending));
+        m_pending.clear();
     }
     // The render thread only sleeps on an empty queue.
     if (wasEmpty)
@@ -87,7 +98,7 @@ void GSGpuBackend::runSync(const std::function<void()> &fn, const char *why) con
         fn();
         done.set_value();
     };
-    const_cast<GSGpuBackend *>(this)->enqueue(std::move(command));
+    const_cast<GSGpuBackend *>(this)->enqueue(std::move(command), true);
     done.get_future().wait();
 }
 
@@ -186,6 +197,10 @@ void GSGpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
 
 void GSGpuBackend::Flush()
 {
+    Command command;
+    command.type = CommandType::Call;
+    command.call = []() {};
+    enqueue(std::move(command), true);
 }
 
 void GSGpuBackend::TextureFlush()
@@ -220,7 +235,7 @@ PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
             std::lock_guard<std::mutex> lock(m_frameMutex);
             m_lastFrame = std::move(frame);
         };
-        enqueue(std::move(command));
+        enqueue(std::move(command), true);
         std::lock_guard<std::mutex> lock(m_frameMutex);
         return m_lastFrame;
     }
