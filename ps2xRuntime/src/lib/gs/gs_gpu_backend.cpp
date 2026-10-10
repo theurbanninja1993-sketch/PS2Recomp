@@ -1,3 +1,4 @@
+#include "ThreadNaming.h"
 #include <chrono>
 #include <cstdlib>
 #include <map>
@@ -104,6 +105,7 @@ void GSGpuBackend::runSync(const std::function<void()> &fn, const char *why) con
 
 void GSGpuBackend::renderLoop()
 {
+    ThreadNaming::SetCurrentThreadName("GsGpu");
     m_renderer = std::make_unique<gsgpu::Renderer>();
     std::vector<Command> batch;
     for (;;)

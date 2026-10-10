@@ -1,3 +1,4 @@
+#include "ThreadNaming.h"
 #include <chrono>
 #include <map>
 #include <string>
@@ -1797,6 +1798,7 @@ void ps2PcSampleCurrentThread();
 void PS2Memory::asyncVif1WorkerLoop()
 {
     t_onAsyncVif1Worker = true;
+    ThreadNaming::SetCurrentThreadName("Vu1Worker");
     ps2PcSampleCurrentThread();
     for (;;)
     {

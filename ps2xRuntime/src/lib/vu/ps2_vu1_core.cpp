@@ -900,10 +900,18 @@ void VU1Interpreter::progressXgkick()
         }
 
         const uint32_t qwordOffset = m_xgkick.copiedBytes;
-        for (uint32_t i = 0; i < 16u; ++i)
+        const uint32_t first = (m_xgkick.sourceAddress + m_xgkick.copiedBytes) % m_activeVuDataSize;
+        if (first + 16u <= m_activeVuDataSize)
         {
-            const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
-            m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
+            std::memcpy(m_xgkick.packet.data() + m_xgkick.copiedBytes, m_activeVuData + first, 16u);
+        }
+        else
+        {
+            for (uint32_t i = 0; i < 16u; ++i)
+            {
+                const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
+                m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
+            }
         }
         m_xgkick.copiedBytes += 16u;
 
@@ -1655,6 +1663,8 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
     m_state.vf[0][3] = 1.0f;
     // Recompiled programs assume the default (fast-commit) pipeline model.
     m_compiledEntry = fastCommitEnabled() ? lookupCompiled(vuCode, codeSize, memory, m_state.pc) : nullptr;
+    if (m_unit == Unit::VU1)
+        (m_compiledEntry ? g_ps2Vu1CompiledCalls : g_ps2Vu1InterpretedCalls).fetch_add(1, std::memory_order_relaxed);
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
@@ -1691,7 +1701,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         const VU1CompiledFn compiled = m_compiledEntry;
         m_compiledEntry = nullptr;
         const uint64_t before = m_cycle;
+        static const bool s_timeStats = std::getenv("PS2X_VU1_COMPILED_STATS") != nullptr;
+        const uint64_t tscStart = s_timeStats ? __builtin_ia32_rdtsc() : 0u;
         const int exit = compiled(*this, budgetEnd);
+        static uint64_t s_tsc = 0;
+        if (s_timeStats)
+            s_tsc += __builtin_ia32_rdtsc() - tscStart;
         if (exit == VU1CompiledEnded)
             programEnded = true;
         static const bool s_stats = std::getenv("PS2X_VU1_COMPILED_STATS") != nullptr;
@@ -1702,7 +1717,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             s_cycles += m_cycle - before;
             ++s_exits[exit & 3];
             if ((s_calls & 1023u) == 0u)
-                std::cerr << "[vu1:compiled] calls=" << s_calls << " cycles/call=" << s_cycles / s_calls << " ended=" << s_exits[0]
+                std::cerr << "[vu1:compiled] calls=" << s_calls << " tsc/call=" << s_tsc / s_calls << " cycles/call=" << s_cycles / s_calls << " ended=" << s_exits[0]
                           << " budget=" << s_exits[1] << " continue=" << s_exits[2] << " lastExitPc=0x" << std::hex << m_state.pc
                           << std::dec << std::endl;
         }

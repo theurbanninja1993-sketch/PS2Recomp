@@ -2,6 +2,7 @@
 #define PS2_VU1_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -33,6 +34,9 @@ struct VU1CompiledProgram
 // every pair reachable from it (and from `roots`) without following JR/JALR.
 uint64_t ps2Vu1ProgramKey(const uint8_t *code, uint32_t codeSize, uint32_t startPC,
                           const uint32_t *roots = nullptr, uint32_t rootCount = 0);
+
+// VU1 microprogram calls run compiled / interpreted (performance logging).
+extern std::atomic<uint64_t> g_ps2Vu1CompiledCalls, g_ps2Vu1InterpretedCalls;
 
 // Debug/tooling hook called with every JR/JALR target the interpreter takes.
 extern void (*g_ps2Vu1JumpTraceHook)(uint32_t target);

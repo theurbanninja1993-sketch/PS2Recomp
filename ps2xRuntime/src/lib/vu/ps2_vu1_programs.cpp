@@ -39,6 +39,7 @@ namespace
 }
 
 void (*g_ps2Vu1JumpTraceHook)(uint32_t target) = nullptr;
+std::atomic<uint64_t> g_ps2Vu1CompiledCalls{0}, g_ps2Vu1InterpretedCalls{0};
 
 void ps2Vu1ProgramPairs(const uint8_t *code, uint32_t codeSize, uint32_t startPC, std::vector<uint32_t> &normal,
                         std::vector<uint32_t> &delay, const uint32_t *roots, uint32_t rootCount)

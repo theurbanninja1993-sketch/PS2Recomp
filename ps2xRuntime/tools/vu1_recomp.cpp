@@ -593,6 +593,33 @@ private:
         m_upperNorm = {toAcc ? 32u : ((kind == Itof || kind == Ftoi || kind == Abs) ? ft : fd), dest,
                        kind == Ftoi ? 2 : 1, 0};
 
+        if (kind == Itof || kind == Ftoi || kind == Abs)
+        {
+            // Four-lane conversions; ITOF reads raw integer bits.
+            static const char *itofDiv[4] = {"1.0f", "16.0f", "4096.0f", "32768.0f"};
+            static const char *ftoiScale4[4] = {"1.0f", "16.0f", "4096.0f", "32768.0f"};
+            const std::string raw = "J::load4(S.vf[" + std::to_string(fs) + "])";
+            bool norm = m_hist != nullptr;
+            for (uint32_t c = 0; c < 4u && norm; ++c)
+                if ((dest & VU1Jit::lane(c)) && !m_hist->norm[fs][c])
+                    norm = false;
+            const std::string value = norm ? raw : "J::N4(" + raw + ")";
+            std::string expr = kind == Itof   ? "J::itof4(" + raw + ", " + itofDiv[scaleIndex] + ")"
+                               : kind == Ftoi ? "J::ftoi4(" + value + ", " + ftoiScale4[scaleIndex] + ")"
+                                              : "J::abs4(" + value + ")";
+            o << "        J::store4<" << dest << ">(S.vf[" << ft << "], " << expr << ");\n";
+            m_upperNorm = {ft, dest, kind == Ftoi ? 2 : 1, 0};
+            return;
+        }
+        if (kind == Add || kind == Sub || kind == Mul || kind == Madd || kind == Msub || kind == Max || kind == Mini ||
+            kind == OpMsub || kind == OpMula)
+        {
+            emitUpperSimd(o, instr, kind == Add ? 0 : kind == Sub ? 1 : kind == Mul ? 2 : kind == Madd ? 3 : kind == Msub ? 4
+                                                    : kind == Max ? 5 : kind == Mini ? 6 : kind == OpMsub ? 7 : 8,
+                          bcOperand, bc, other, toAcc);
+            return;
+        }
+
         auto operand = [&](uint32_t c) -> std::string
         {
             if (bcOperand)
@@ -678,6 +705,74 @@ private:
         else
             o << "            J::applyDest<" << dest << ">(" << dst << ", r);\n";
         o << "        }\n";
+    }
+
+    // Four-lane SSE2 form of the FMAC arithmetic. op: 0 add, 1 sub, 2 mul,
+    // 3 madd, 4 msub, 5 max, 6 mini, 7 opmsub, 8 opmula.
+    void emitUpperSimd(std::ostringstream &o, uint32_t instr, int op, bool bcOperand, uint32_t bc, const std::string &other,
+                       bool toAcc)
+    {
+        const uint32_t dest = DEST(instr), fs = FS(instr), ft = FT(instr), fd = FD(instr);
+        const bool cross = op == 7 || op == 8;
+        auto allNorm = [&](uint32_t reg, uint32_t lanes) -> bool
+        {
+            if (!m_hist)
+                return false;
+            for (uint32_t c = 0; c < 4u; ++c)
+                if ((lanes & VU1Jit::lane(c)) && !m_hist->norm[reg][c])
+                    return false;
+            return true;
+        };
+        auto vector = [&](uint32_t reg) -> std::string
+        {
+            const std::string load = "J::load4(S.vf[" + std::to_string(reg) + "])";
+            return allNorm(reg, cross ? 0xFu : dest) ? load : "J::N4(" + load + ")";
+        };
+        std::string b;
+        if (bcOperand)
+            b = "_mm_set1_ps(" + vt(ft, bc) + ")";
+        else if (other == "q")
+            b = "_mm_set1_ps(J::N(S.q))";
+        else if (other == "i")
+            b = "_mm_set1_ps(J::N(S.i))";
+        else
+            b = vector(ft);
+        o << "        {\n            const __m128 a0 = " << vector(fs) << ";\n            const __m128 b0 = " << b << ";\n";
+        if (cross)
+            o << "            const __m128 a = _mm_shuffle_ps(a0, a0, _MM_SHUFFLE(3, 0, 2, 1));\n"
+                 "            const __m128 b = _mm_shuffle_ps(b0, b0, _MM_SHUFFLE(3, 1, 0, 2));\n";
+        else
+            o << "            const __m128 a = a0, b = b0;\n";
+        if (op == 3 || op == 4 || op == 7)
+        {
+            bool accNorm = m_hist != nullptr;
+            for (uint32_t c = 0; c < 4u && accNorm; ++c)
+                if ((dest & VU1Jit::lane(c)) && !m_hist->accNorm[c])
+                    accNorm = false;
+            o << "            const __m128 acc = " << (accNorm ? "J::load4(S.acc)" : "J::N4(J::load4(S.acc))") << ";\n";
+        }
+        static const char *exprs[9] = {"_mm_add_ps(a, b)", "_mm_sub_ps(a, b)", "_mm_mul_ps(a, b)",
+                                       "_mm_add_ps(acc, _mm_mul_ps(a, b))", "_mm_sub_ps(acc, _mm_mul_ps(a, b))",
+                                       "_mm_max_ps(a, b)", "_mm_min_ps(a, b)", "_mm_sub_ps(acc, _mm_mul_ps(a, b))",
+                                       "_mm_mul_ps(a, b)"};
+        o << "            __m128 r = " << exprs[op] << ";\n";
+        if (cross) // w is 0
+            o << "            r = _mm_and_ps(r, _mm_castsi128_ps(_mm_set_epi32(0, -1, -1, -1)));\n";
+        const std::string dst = toAcc ? "S.acc" : "S.vf[" + std::to_string(fd) + "]";
+        if (op == 5 || op == 6)
+        {
+            o << "            J::store4<" << dest << ">(" << dst << ", r);\n        }\n";
+            m_upperNorm = {toAcc ? 32u : fd, dest, 1, 0};
+            return;
+        }
+        // Exactly-known zeros: sums always, products when an operand is zero.
+        std::string ez = op <= 1 ? "15" : "J::zeroOperands(a, b)";
+        if (cross)
+            ez += " | 8";
+        const bool productSum = op == 3 || op == 4 || op == 7;
+        o << "            J::fmac4<" << dest << ">(vu, 0x" << std::hex << instr << std::dec << "u, r, " << dst << ", "
+          << (productSum ? "J::productFlags4<" + std::to_string(dest) + ">(a, b)" : std::string("0u")) << ", " << ez << ");\n        }\n";
+        m_upperNorm = {toAcc ? 32u : fd, dest, 1, 0};
     }
 
     // --------------------------------------------------------------- lower

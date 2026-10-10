@@ -1,3 +1,6 @@
+#include "runtime/ps2_vu1.h"
+#include <cstdio>
+#include <dirent.h>
 #include <iostream>
 #include <chrono>
 #include <string>
@@ -539,6 +542,86 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
 }
 
 
+
+
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
+// PS2X_PERF_LOG=<file>: every 600 VBlanks (~10 s) appends late VBlanks, real
+// time lost, per-thread CPU and VU1 compiled/interpreted calls, so slow spots
+// found while playing can be analysed afterwards.
+void ps2PerfLogVBlank(double lateMs)
+{
+    static const char *s_path = std::getenv("PS2X_PERF_LOG");
+    if (!s_path)
+        return;
+    static FILE *s_file = std::fopen(s_path, "a");
+    if (!s_file)
+        return;
+    static uint64_t s_count = 0, s_late = 0;
+    static double s_lostMs = 0.0;
+    static std::map<std::string, uint64_t> s_lastTicks;
+    static uint64_t s_lastCompiled = 0, s_lastInterpreted = 0;
+    static auto s_lastTime = std::chrono::steady_clock::now();
+    ++s_count;
+    if (lateMs > 4.0)
+    {
+        ++s_late;
+        s_lostMs += lateMs;
+    }
+    if (s_count % 600u != 0u)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - s_lastTime).count();
+    s_lastTime = now;
+    std::fprintf(s_file, "frame=%llu late=%llu/600 lostMs=%d", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()),
+                 static_cast<unsigned long long>(s_late), static_cast<int>(s_lostMs));
+    // Thread CPU from /proc (ticks are 1/100 s), summed per thread name.
+    std::map<std::string, uint64_t> ticks;
+    if (DIR *dir = opendir("/proc/self/task"))
+    {
+        while (dirent *entry = readdir(dir))
+        {
+            if (entry->d_name[0] == '.')
+                continue;
+            const std::string base = std::string("/proc/self/task/") + entry->d_name;
+            char name[64] = {};
+            if (FILE *f = std::fopen((base + "/comm").c_str(), "r"))
+            {
+                if (std::fgets(name, sizeof(name), f))
+                    name[std::strcspn(name, "\n")] = 0;
+                std::fclose(f);
+            }
+            if (FILE *f = std::fopen((base + "/stat").c_str(), "r"))
+            {
+                char buffer[1024] = {};
+                const size_t n = std::fread(buffer, 1, sizeof(buffer) - 1, f);
+                std::fclose(f);
+                buffer[n] = 0;
+                const char *p = std::strrchr(buffer, ')');
+                unsigned long long utime = 0, stime = 0;
+                if (p && std::sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime, &stime) == 2)
+                    ticks[name] += utime + stime;
+            }
+        }
+        closedir(dir);
+    }
+    for (const auto &[name, total] : ticks)
+    {
+        const uint64_t delta = total - std::min(total, s_lastTicks[name]);
+        const int percent = static_cast<int>(static_cast<double>(delta) / std::max(seconds, 0.001));
+        if (percent >= 3)
+            std::fprintf(s_file, " %s=%d%%", name.c_str(), percent);
+    }
+    s_lastTicks = ticks;
+    const uint64_t compiled = g_ps2Vu1CompiledCalls.load(), interpreted = g_ps2Vu1InterpretedCalls.load();
+    std::fprintf(s_file, " vu1Compiled=%llu vu1Interpreted=%llu\n", static_cast<unsigned long long>(compiled - s_lastCompiled),
+                 static_cast<unsigned long long>(interpreted - s_lastInterpreted));
+    s_lastCompiled = compiled;
+    s_lastInterpreted = interpreted;
+    s_late = 0;
+    s_lostMs = 0.0;
+    std::fflush(s_file);
+}
 
 namespace
 {
@@ -1962,6 +2045,7 @@ void EeScheduler::processDueDeadlines()
                 const auto now = std::chrono::steady_clock::now();
                 if (now - anchor > kVBlankCatchUpLimit)
                     anchor = now;
+                ps2PerfLogVBlank(std::chrono::duration<double, std::milli>(now - scheduled.hostDeadline).count());
                 static const bool s_stats = std::getenv("PS2X_SYNC_STATS") != nullptr;
                 if (s_stats)
                 {

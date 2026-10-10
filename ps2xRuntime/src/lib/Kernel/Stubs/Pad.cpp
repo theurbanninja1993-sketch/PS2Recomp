@@ -274,14 +274,15 @@ namespace ps2_stubs
 
         // PS2X_PAD_SCRIPT="<frame>:<button>[+<button>...]:<frames>;..." presses buttons on
         // port 0 for <frames> presented frames starting at <frame> (headless testing).
-        // Buttons: up down left right start select l1 l2 l3 r1 r2 r3 cross circle square triangle.
-        uint16_t scriptedPadButtonsDown()
+        // Buttons: up down left right start select l1 l2 l3 r1 r2 r3 cross circle square triangle,
+        // plus the left stick pushed fully: sleft sright sup sdown (bits 16-19).
+        uint32_t scriptedPadButtonsDown()
         {
             struct Step
             {
                 uint64_t start = 0;
                 uint64_t frames = 0;
-                uint16_t mask = 0;
+                uint32_t mask = 0;
             };
             static const std::vector<Step> s_steps = []()
             {
@@ -289,7 +290,8 @@ namespace ps2_stubs
                 const char *env = std::getenv("PS2X_PAD_SCRIPT");
                 if (!env)
                     return steps;
-                static const std::pair<const char *, uint16_t> kNames[] = {
+                static const std::pair<const char *, uint32_t> kNames[] = {
+                    {"sleft", 0x10000}, {"sright", 0x20000}, {"sup", 0x40000}, {"sdown", 0x80000},
                     {"select", 0x0001}, {"l3", 0x0002}, {"r3", 0x0004}, {"start", 0x0008},
                     {"up", 0x0010}, {"right", 0x0020}, {"down", 0x0040}, {"left", 0x0080},
                     {"l2", 0x0100}, {"r2", 0x0200}, {"l1", 0x0400}, {"r1", 0x0800},
@@ -318,7 +320,7 @@ namespace ps2_stubs
             if (s_steps.empty())
                 return 0u;
             const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
-            uint16_t mask = 0u;
+            uint32_t mask = 0u;
             for (const Step &step : s_steps)
                 if (frame >= step.start && frame < step.start + step.frames)
                     mask |= step.mask;
@@ -376,8 +378,12 @@ namespace ps2_stubs
 
             if (port == 0)
             {
-                const uint16_t scripted = scriptedPadButtonsDown();
+                const uint32_t scripted = scriptedPadButtonsDown();
                 state.buttons = static_cast<uint16_t>(state.buttons & ~scripted);
+                if (scripted & 0x10000u) state.lx = 0x00;
+                if (scripted & 0x20000u) state.lx = 0xFF;
+                if (scripted & 0x40000u) state.ly = 0x00;
+                if (scripted & 0x80000u) state.ly = 0xFF;
             }
 
             fillPadStatus(outData, state, portState);
