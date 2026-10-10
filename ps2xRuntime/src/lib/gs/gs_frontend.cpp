@@ -181,13 +181,37 @@ namespace
     }
 }
 
+namespace
+{
+    std::atomic<uint32_t> g_gsCaptureRequest{0}; // frames to capture, from the host hotkey
+}
+
+// Host thread (F9): capture the next `frames` presented frames to
+// gs_capture_<frame>.bin in the working directory.
+void ps2GsRequestCapture(uint32_t frames)
+{
+    g_gsCaptureRequest.store(frames, std::memory_order_relaxed);
+}
+
 // Called with the GS state mutex held. Returns true while recording.
 static bool gsCaptureActive(GSRasterBackend *backend, bool hasLocalMemory)
 {
     GsCapture &c = gsCapture();
+    const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+    if (const uint32_t requested = g_gsCaptureRequest.load(std::memory_order_relaxed);
+        requested != 0u && (!c.configured || c.finished))
+    {
+        g_gsCaptureRequest.store(0u, std::memory_order_relaxed);
+        const std::string path = "gs_capture_" + std::to_string(frame) + ".bin";
+        c = GsCapture{};
+        c.file = std::fopen(path.c_str(), "wb");
+        c.startFrame = frame;
+        c.endFrame = frame + requested;
+        c.configured = c.file != nullptr;
+        std::cerr << "[gs:capture] requested: " << path << std::endl;
+    }
     if (!c.configured || c.finished)
         return false;
-    const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
     if (!c.started)
     {
         if (frame < c.startFrame || !backend || !hasLocalMemory)

@@ -868,6 +868,8 @@ bool PS2Runtime::syncCoreSubsystems()
     return true;
 }
 
+void ps2GsRequestCapture(uint32_t frames);
+
 bool PS2Runtime::initialize(const char *title)
 {
     try
@@ -2933,6 +2935,8 @@ void PS2Runtime::run()
         UploadFrame(frameTex, this, presentWidth, presentHeight);
 
         m_padBackend.updateHostInput();
+        if (IsKeyPressed(KEY_F9))
+            ps2GsRequestCapture(180u); // ~3 s of GS input for tools/gs_replay
         BeginDrawing();
         ClearBackground(BLACK);
         const float srcWidth = static_cast<float>(std::max<uint32_t>(1u, presentWidth));
