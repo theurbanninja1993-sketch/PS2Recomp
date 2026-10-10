@@ -30,7 +30,7 @@ private:
     VehicleProbe m_vehicleProbe = nullptr;
     const uint8_t *m_rdram = nullptr;
     std::atomic<bool> m_mouseCaptured{false};
-    std::atomic<float> m_mouseDx{0.0f}, m_mouseDy{0.0f};
+    std::atomic<float> m_lookX{0.0f}, m_lookY{0.0f}; // right-stick deflection from mouse motion, -1..1
     std::atomic<int> m_wheelSteps{0};
     int m_weaponPulse = 0; // pad reads left on a scripted weapon-cycle press (+ next, - previous)
 };

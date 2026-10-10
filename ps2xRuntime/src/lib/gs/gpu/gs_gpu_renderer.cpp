@@ -902,6 +902,7 @@ void main()
         ++m_statResolves;
         ++m_statResolveReasons[m_syncReason];
         GL &gl = m_context.gl;
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT); // VRAM readers and the target's draws
         const uint32_t y0 = target.dirtyY0;
         const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
         gl.glUseProgram(m_resolve.id);
@@ -1318,8 +1319,11 @@ void main()
             m_haveKey = true;
         }
 
-        const float ofx = static_cast<float>(ctx.xyoffset.ofx >> 4);
-        const float ofy = static_cast<float>(ctx.xyoffset.ofy >> 4);
+        // GS pixel centres are at integer coordinates, GL's at +0.5: shifting
+        // vertices by half a pixel makes GL sample where the GS does (off by
+        // half a pixel, every render-to-texture pass drifts the image).
+        const float ofx = static_cast<float>(ctx.xyoffset.ofx) / 16.0f - 0.5f;
+        const float ofy = static_cast<float>(ctx.xyoffset.ofy) / 16.0f - 0.5f;
         const float texW = static_cast<float>(state.textureWidth);
         const float texH = static_cast<float>(state.textureHeight);
         auto makeVertex = [&](const GSVertex &v, const GSVertex &colorSource) -> Vertex
@@ -1356,10 +1360,10 @@ void main()
             // Sprite corners: texel coordinates per corner (STQ divided per vertex).
             if (state.prim.fst)
             {
-                a.s = static_cast<float>(v0.u >> 4) / texW;
-                a.t = static_cast<float>(v0.v >> 4) / texH;
-                b.s = static_cast<float>(v1.u >> 4) / texW;
-                b.t = static_cast<float>(v1.v >> 4) / texH;
+                a.s = (static_cast<float>(v0.u) / 16.0f) / texW;
+                a.t = (static_cast<float>(v0.v) / 16.0f) / texH;
+                b.s = (static_cast<float>(v1.u) / 16.0f) / texW;
+                b.t = (static_cast<float>(v1.v) / 16.0f) / texH;
             }
             else
             {
@@ -1497,6 +1501,9 @@ void main()
         ++m_statClutLoads;
         ++m_clutVersion;
         GL &gl = m_context.gl;
+        // Draws already submitted still read the old CLUT/VRAM: without this
+        // the compute write can overtake their fragment shaders (write after read).
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         gl.glUseProgram(m_clutLoad.id);
         gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut"), tex0.cpsm, tex0.cbp, tex0.csm, tex0.csa);
         gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut2"), texclut.cbw, texclut.cou, texclut.cov,
@@ -1530,6 +1537,7 @@ void main()
             gl.glNamedBufferSubData(m_stagingBuffer, 0, static_cast<GLsizeiptr>(bytes), data);
         }
         const auto &buf = m_transfer.bitbltbuf;
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); // earlier draws finish reading VRAM first
         gl.glUseProgram(m_hostToLocal.id);
         gl.glProgramUniform4ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_dest"), buf.dbp,
                                std::max<uint32_t>(buf.dbw, 1u), buf.dpsm, m_transfer.trxreg.rrw);
@@ -1551,6 +1559,7 @@ void main()
         bufferRange(buf.dbp, buf.dbw, command.trxpos.dsay + rrh, buf.dpsm, dstBegin, dstEnd);
         const bool overlap = srcBegin < dstEnd && dstBegin < srcEnd;
         GL &gl = m_context.gl;
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); // earlier draws finish reading VRAM first
         gl.glUseProgram(m_localToLocal.id);
         gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_source"), buf.sbp,
                                std::max<uint32_t>(buf.sbw, 1u), buf.spsm, command.trxpos.ssax);

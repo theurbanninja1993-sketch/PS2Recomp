@@ -56,6 +56,8 @@ namespace
     }
 }
 
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
 int main(int argc, char **argv)
 {
     // Frame dumps must line up with the presents that produced them.
@@ -128,6 +130,9 @@ int main(int argc, char **argv)
         {
             if (replayed++ >= s_limit)
                 break;
+            static const bool s_mark = std::getenv("GS_REPLAY_MARK") != nullptr;
+            if (s_mark)
+                std::fprintf(stderr, "[rec %zu] type=%u size=%zu\n", replayed, (unsigned)r.type, r.data.size());
             switch (r.type)
             {
             case 1u:
@@ -145,6 +150,7 @@ int main(int argc, char **argv)
                 if (r.data.size() == sizeof(GSRegisters))
                     std::memcpy(static_cast<void *>(&regs), r.data.data(), sizeof(GSRegisters));
                 gs->latchHostPresentationFrame();
+                g_ps2PresentedFrameCounter.fetch_add(1, std::memory_order_relaxed);
                 // GS_REPLAY_FRAMES=<dir>: save every presented frame as raw RGBA
                 // (<dir>/frame_<n>_<w>x<h>.rgba) for backend comparisons.
                 if (const char *dir = std::getenv("GS_REPLAY_FRAMES"))

@@ -775,6 +775,24 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
 {
     const GSDrawState &state = batch.state;
     const auto &ctx = state.context;
+    // PS2X_GS_DRAWLOG=<frame>: one line per primitive drawn in that presented frame.
+    static const long long s_drawLogFrame = std::getenv("PS2X_GS_DRAWLOG") ? std::atoll(std::getenv("PS2X_GS_DRAWLOG")) : -1;
+    if (s_drawLogFrame >= 0 && static_cast<long long>(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed)) == s_drawLogFrame)
+    {
+        std::fprintf(stderr, "[draw] f=%llu type=%u tme=%u abe=%u fst=%u fbp=%u fbw=%u fpsm=%x fbmsk=%08x tbp=%u tbw=%u tpsm=%x tw=%u th=%u tfx=%u tcc=%u tex1=%llx clamp=%llx alpha=%llx test=%llx xyoff=(%u,%u) zbp=%u zpsm=%x zmsk=%u",
+                     (unsigned long long)g_ps2PresentedFrameCounter.load(), (unsigned)state.prim.type, (unsigned)state.prim.tme, (unsigned)state.prim.abe, (unsigned)state.prim.fst,
+                     (unsigned)ctx.frame.fbp, (unsigned)ctx.frame.fbw, (unsigned)ctx.frame.psm, (unsigned)ctx.frame.fbmsk,
+                     (unsigned)ctx.tex0.tbp0, (unsigned)ctx.tex0.tbw, (unsigned)ctx.tex0.psm, (unsigned)ctx.tex0.tw, (unsigned)ctx.tex0.th,
+                     (unsigned)ctx.tex0.tfx, (unsigned)ctx.tex0.tcc, (unsigned long long)ctx.tex1, (unsigned long long)ctx.clamp,
+                     (unsigned long long)ctx.alpha, (unsigned long long)ctx.test, (unsigned)ctx.xyoffset.ofx, (unsigned)ctx.xyoffset.ofy,
+                     (unsigned)ctx.zbuf.zbp, (unsigned)ctx.zbuf.psm, (unsigned)ctx.zbuf.zmask);
+        for (uint32_t i = 0; i < batch.vertexCount; ++i)
+        {
+            const GSVertex &v = batch.vertices[i];
+            std::fprintf(stderr, " v%u=(%.2f,%.2f z=%.0f uv=%u,%u st=%.4f,%.4f q=%.3f rgba=%u,%u,%u,%u)", i, v.x, v.y, v.z, v.u, v.v, v.s, v.t, v.q, v.r, v.g, v.b, v.a);
+        }
+        std::fprintf(stderr, "\n");
+    }
     // Per-primitive debug logging only when asked for: the shared counters
     // below otherwise bounce one cache line between every rasterizer worker.
     static const bool s_primitiveLogs = std::getenv("PS2X_GS_PRIM_LOG") || std::getenv("PS2X_GS_TRACE_FRAME") ||
@@ -1218,26 +1236,20 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
     const GSVertex &v1 = batch.vertices[1];
     const auto &ctx = state.context;
 
-    int ofx = ctx.xyoffset.ofx >> 4;
-    int ofy = ctx.xyoffset.ofy >> 4;
-
-    int x0 = static_cast<int>(v0.x) - ofx;
-    int y0 = static_cast<int>(v0.y) - ofy;
-    int x1 = static_cast<int>(v1.x) - ofx;
-    int y1 = static_cast<int>(v1.y) - ofy;
+    // GS sprites cover the pixels (integer centres) in [X0, X1) x [Y0, Y1);
+    // attributes are interpolated from the exact vertex positions.
+    const float fx0 = v0.x - static_cast<float>(ctx.xyoffset.ofx) / 16.0f;
+    const float fy0 = v0.y - static_cast<float>(ctx.xyoffset.ofy) / 16.0f;
+    const float fx1 = v1.x - static_cast<float>(ctx.xyoffset.ofx) / 16.0f;
+    const float fy1 = v1.y - static_cast<float>(ctx.xyoffset.ofy) / 16.0f;
     u32 z1 = static_cast<u32>(v1.z);
 
-    if (x0 > x1)
-        std::swap(x0, x1);
-    if (y0 > y1)
-        std::swap(y0, y1);
-
-    const int unclippedX0 = x0;
-    const int unclippedY0 = y0;
-    const int spanX = std::max(1, x1 - x0);
-    const int spanY = std::max(1, y1 - y0);
-    const int unclippedX1 = unclippedX0 + spanX - 1;
-    const int unclippedY1 = unclippedY0 + spanY - 1;
+    const int unclippedX0 = static_cast<int>(std::ceil(std::min(fx0, fx1)));
+    const int unclippedY0 = static_cast<int>(std::ceil(std::min(fy0, fy1)));
+    const int unclippedX1 = static_cast<int>(std::ceil(std::max(fx0, fx1))) - 1;
+    const int unclippedY1 = static_cast<int>(std::ceil(std::max(fy0, fy1))) - 1;
+    if (unclippedX1 < unclippedX0 || unclippedY1 < unclippedY0)
+        return;
 
     // If the sprite rectangle is fully outside scissor, nothing should render.
     if (unclippedX1 < ctx.scissor.x0 || unclippedX0 > ctx.scissor.x1 ||
@@ -1264,10 +1276,10 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
         float u0f, v0f, u1f, v1f;
         if (state.prim.fst)
         {
-            u0f = static_cast<float>(v0.u >> 4);
-            v0f = static_cast<float>(v0.v >> 4);
-            u1f = static_cast<float>(v1.u >> 4);
-            v1f = static_cast<float>(v1.v >> 4);
+            u0f = static_cast<float>(v0.u) / 16.0f;
+            v0f = static_cast<float>(v0.v) / 16.0f;
+            u1f = static_cast<float>(v1.u) / 16.0f;
+            v1f = static_cast<float>(v1.v) / 16.0f;
         }
         else
         {
@@ -1279,24 +1291,18 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
             v1f = (v1.t / q1) * static_cast<float>(texH);
         }
 
-        float spriteW = static_cast<float>(spanX);
-        float spriteH = static_cast<float>(spanY);
-        if (spriteW < 1.0f)
-            spriteW = 1.0f;
-        if (spriteH < 1.0f)
-            spriteH = 1.0f;
+        const float dudx = (u1f - u0f) / (fx1 - fx0);
+        const float dvdy = (v1f - v0f) / (fy1 - fy0);
 
         for (int y = drawY0; y <= drawY1; ++y)
         {
             if (!ownsRow(y))
                 continue;
-            float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
-            float texVf = v0f + (v1f - v0f) * ty;
+            float texVf = v0f + (static_cast<float>(y) - fy0) * dvdy;
 
             for (int x = drawX0; x <= drawX1; ++x)
             {
-                float tx = (static_cast<float>(x - unclippedX0) + 0.5f) / spriteW;
-                float texUf = u0f + (u1f - u0f) * tx;
+                float texUf = u0f + (static_cast<float>(x) - fx0) * dudx;
                 uint32_t texel = 0xFFFF00FFu;
                 if (state.prim.fst)
                 {
@@ -1341,15 +1347,15 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
     const GSVertex &v2 = batch.vertices[2];
     const auto &ctx = state.context;
 
-    int ofx = ctx.xyoffset.ofx >> 4;
-    int ofy = ctx.xyoffset.ofy >> 4;
+    const float ofx = static_cast<float>(ctx.xyoffset.ofx) / 16.0f;
+    const float ofy = static_cast<float>(ctx.xyoffset.ofy) / 16.0f;
 
-    float fx0 = v0.x - static_cast<float>(ofx);
-    float fy0 = v0.y - static_cast<float>(ofy);
-    float fx1 = v1.x - static_cast<float>(ofx);
-    float fy1 = v1.y - static_cast<float>(ofy);
-    float fx2 = v2.x - static_cast<float>(ofx);
-    float fy2 = v2.y - static_cast<float>(ofy);
+    float fx0 = v0.x - ofx;
+    float fy0 = v0.y - ofy;
+    float fx1 = v1.x - ofx;
+    float fy1 = v1.y - ofy;
+    float fx2 = v2.x - ofx;
+    float fy2 = v2.y - ofy;
 
     int minX = static_cast<int>(std::floor(std::min({fx0, fx1, fx2})));
     int maxX = static_cast<int>(std::ceil(std::max({fx0, fx1, fx2})));
@@ -1391,11 +1397,24 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
     const double edgeA2 = -(edgeA[0] + edgeA[1]);
     const double edgeBy2 = -(edgeBy[0] + edgeBy[1]);
 
+    // GS pixel centres are at integer coordinates; a pixel exactly on an edge
+    // belongs to the triangle only for top/left edges, so strips sharing an
+    // edge cover each pixel once. Edge functions are evaluated unnormalized in
+    // double (exact for GS 1/16 coordinates).
+    const double dfx0 = fx0, dfy0 = fy0, dfx1 = fx1, dfy1 = fy1, dfx2 = fx2, dfy2 = fy2;
+    const double ddenom = ((dfy1 - dfy2) * (dfx0 - dfx2) + (dfx2 - dfx1) * (dfy0 - dfy2)) * winding;
+    const double eA[3] = {(dfy1 - dfy2) * winding, (dfy2 - dfy0) * winding, -((dfy1 - dfy2) + (dfy2 - dfy0)) * winding};
+    const double eB[3] = {(dfx2 - dfx1) * winding, (dfx0 - dfx2) * winding, -((dfx2 - dfx1) + (dfx0 - dfx2)) * winding};
+    const bool topLeft[3] = {eA[0] > 0.0 || (eA[0] == 0.0 && eB[0] > 0.0), eA[1] > 0.0 || (eA[1] == 0.0 && eB[1] > 0.0),
+                             eA[2] > 0.0 || (eA[2] == 0.0 && eB[2] > 0.0)};
+    auto inside = [&](double e, int i)
+    { return e > 0.0 || (e == 0.0 && topLeft[i]); };
+
     for (int y = minY; y <= maxY; ++y)
     {
         if (!ownsRow(y))
             continue;
-        float py = static_cast<float>(y) + 0.5f;
+        float py = static_cast<float>(y);
 
         int spanX0 = minX;
         int spanX1 = maxX;
@@ -1404,10 +1423,10 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
             double lo = -1.0e30, hi = 1.0e30;
             auto limit = [&](double a, double c)
             {
-                // a * (px - fx2) + c >= -eps  (px = x + 0.5)
+                // a * (px - fx2) + c >= -eps  (px = x)
                 if (std::fabs(a) < 1.0e-3 * std::max(std::fabs(edgeA[0]) + std::fabs(edgeA[1]), 1.0e-12))
                     return;
-                const double bound = (-static_cast<double>(kEdgeEpsilon) - c) / a + static_cast<double>(fx2) - 0.5;
+                const double bound = (-static_cast<double>(kEdgeEpsilon) - c) / a + static_cast<double>(fx2);
                 if (a > 0.0)
                     lo = std::max(lo, bound);
                 else
@@ -1426,14 +1445,15 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
         const int loopX1 = s_spanCheck ? maxX : spanX1;
         for (int x = loopX0; x <= loopX1; ++x)
         {
-            float px = static_cast<float>(x) + 0.5f;
-
-            float w0 = (((fy1 - fy2) * (px - fx2) + (fx2 - fx1) * (py - fy2)) * winding) * invAbsDenom;
-            float w1 = (((fy2 - fy0) * (px - fx2) + (fx0 - fx2) * (py - fy2)) * winding) * invAbsDenom;
-            float w2 = 1.0f - w0 - w1;
-
-            if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
+            const double dpx = static_cast<double>(x) - dfx2, dpy = static_cast<double>(y) - dfy2;
+            const double e0 = eA[0] * dpx + eB[0] * dpy;
+            const double e1 = eA[1] * dpx + eB[1] * dpy;
+            const double e2 = ddenom - e0 - e1;
+            if (!inside(e0, 0) || !inside(e1, 1) || !inside(e2, 2))
                 continue;
+            float w0 = static_cast<float>(e0) * invAbsDenom;
+            float w1 = static_cast<float>(e1) * invAbsDenom;
+            float w2 = 1.0f - w0 - w1;
             if (s_spanCheck && (x < spanX0 || x > spanX1))
             {
                 static std::atomic<uint32_t> s_misses{0};
@@ -1454,10 +1474,13 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
             uint8_t r, g, b, a;
             if (state.prim.iip)
             {
-                r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2));
-                g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2));
-                b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2));
-                a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2));
+                // Truncating like the GS; the bias absorbs float error so equal
+                // vertex colours (alpha 128 marking DATE masks) stay exact.
+                constexpr float kBias = 1.0f / 256.0f;
+                r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2 + kBias));
+                g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2 + kBias));
+                b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2 + kBias));
+                a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2 + kBias));
             }
             else
             {
