@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 class GS;
@@ -37,6 +38,8 @@ uint64_t ps2Vu1ProgramKey(const uint8_t *code, uint32_t codeSize, uint32_t start
 
 // VU1 microprogram calls run compiled / interpreted (performance logging).
 extern std::atomic<uint64_t> g_ps2Vu1CompiledCalls, g_ps2Vu1InterpretedCalls;
+// Compiled-program lookups after a code upload: cheap revalidations / full key recomputations.
+extern std::atomic<uint64_t> g_ps2Vu1LookupRevalidations, g_ps2Vu1LookupRecomputes;
 
 // Debug/tooling hook called with every JR/JALR target the interpreter takes.
 extern void (*g_ps2Vu1JumpTraceHook)(uint32_t target);
@@ -319,16 +322,21 @@ private:
     VU1CompiledFn m_compiledEntry = nullptr;
     uint64_t m_compiledGeneration = ~0ull;
     const uint8_t *m_compiledCode = nullptr;
+    // Lookups per entry PC: the result for the current code generation, and
+    // the code layouts seen before (games cycle through a few), each with the
+    // words (pc, lower, upper) its lookup depended on.
+    struct CompiledLayout
+    {
+        std::vector<uint32_t> words;
+        VU1CompiledFn fn = nullptr;
+    };
     struct CompiledCacheEntry
     {
-        uint32_t pc = ~0u;
         uint64_t generation = ~0ull;
         VU1CompiledFn fn = nullptr;
-        // Code the lookup depended on (pc, lower, upper), to revalidate the
-        // entry cheaply after the code generation changes.
-        std::vector<uint32_t> words;
+        std::vector<CompiledLayout> layouts; // most recently used first
     };
-    std::array<CompiledCacheEntry, 64> m_compiledCache{};
+    std::unordered_map<uint32_t, CompiledCacheEntry> m_compiledCache;
     VU1CompiledFn lookupCompiled(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t startPC);
 
     uint64_t m_cycle = 0;

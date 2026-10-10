@@ -40,6 +40,7 @@ namespace
 
 void (*g_ps2Vu1JumpTraceHook)(uint32_t target) = nullptr;
 std::atomic<uint64_t> g_ps2Vu1CompiledCalls{0}, g_ps2Vu1InterpretedCalls{0};
+std::atomic<uint64_t> g_ps2Vu1LookupRevalidations{0}, g_ps2Vu1LookupRecomputes{0};
 
 void ps2Vu1ProgramPairs(const uint8_t *code, uint32_t codeSize, uint32_t startPC, std::vector<uint32_t> &normal,
                         std::vector<uint32_t> &delay, const uint32_t *roots, uint32_t rootCount)
@@ -145,27 +146,31 @@ VU1CompiledFn VU1Interpreter::lookupCompiled(const uint8_t *vuCode, uint32_t cod
     if (vuCode != m_compiledCode)
     {
         m_compiledCode = vuCode;
-        m_compiledCache.fill({});
+        m_compiledCache.clear();
     }
-    CompiledCacheEntry &entry = m_compiledCache[(startPC / 8u) % m_compiledCache.size()];
-    if (entry.pc == startPC)
+    CompiledCacheEntry &entry = m_compiledCache[startPC];
+    if (entry.generation == generation)
+        return entry.fn;
+    entry.generation = generation;
+    for (size_t i = 0; i < entry.layouts.size(); ++i)
     {
-        if (entry.generation == generation)
-            return entry.fn;
+        g_ps2Vu1LookupRevalidations.fetch_add(1, std::memory_order_relaxed);
+        const std::vector<uint32_t> &words = entry.layouts[i].words;
         bool same = true;
-        for (size_t i = 0; i + 2 < entry.words.size() && same; i += 3)
-            same = loadWord(vuCode, entry.words[i]) == entry.words[i + 1] &&
-                   loadWord(vuCode, entry.words[i] + 4u) == entry.words[i + 2];
+        for (size_t w = 0; w + 2 < words.size() && same; w += 3)
+            same = loadWord(vuCode, words[w]) == words[w + 1] && loadWord(vuCode, words[w] + 4u) == words[w + 2];
         if (same)
         {
-            entry.generation = generation;
+            if (i != 0)
+                std::rotate(entry.layouts.begin(), entry.layouts.begin() + static_cast<std::ptrdiff_t>(i),
+                            entry.layouts.begin() + static_cast<std::ptrdiff_t>(i) + 1);
+            entry.fn = entry.layouts[0].fn;
             return entry.fn;
         }
     }
 
-    entry.pc = startPC;
-    entry.generation = generation;
-    entry.fn = nullptr;
+    g_ps2Vu1LookupRecomputes.fetch_add(1, std::memory_order_relaxed);
+    CompiledLayout layout;
     // The base key selects candidates; the code at their extra entry points
     // must match too. Prefer the matching variant with the most jump targets.
     const auto range = programs.equal_range(ps2Vu1ProgramKey(vuCode, codeSize, startPC));
@@ -179,9 +184,9 @@ VU1CompiledFn VU1Interpreter::lookupCompiled(const uint8_t *vuCode, uint32_t cod
             chosen = &program;
     }
     if (chosen)
-        entry.fn = chosen->run;
-    // Revalidation covers the code every candidate depends on, so a change
-    // that could select a different variant forces a new lookup.
+        layout.fn = chosen->run;
+    // The layout matches only while the code every candidate depends on is
+    // unchanged (a change could select a different variant).
     std::vector<uint32_t> covered, normal, delay;
     ps2Vu1ProgramPairs(vuCode, codeSize, startPC, normal, delay);
     covered.insert(covered.end(), normal.begin(), normal.end());
@@ -195,13 +200,17 @@ VU1CompiledFn VU1Interpreter::lookupCompiled(const uint8_t *vuCode, uint32_t cod
     }
     std::sort(covered.begin(), covered.end());
     covered.erase(std::unique(covered.begin(), covered.end()), covered.end());
-    entry.words.clear();
     for (uint32_t pc : covered)
     {
-        entry.words.push_back(pc);
-        entry.words.push_back(loadWord(vuCode, pc));
-        entry.words.push_back(loadWord(vuCode, pc + 4u));
+        layout.words.push_back(pc);
+        layout.words.push_back(loadWord(vuCode, pc));
+        layout.words.push_back(loadWord(vuCode, pc + 4u));
     }
+    constexpr size_t kMaxLayouts = 16u;
+    entry.layouts.insert(entry.layouts.begin(), std::move(layout));
+    if (entry.layouts.size() > kMaxLayouts)
+        entry.layouts.pop_back();
+    entry.fn = entry.layouts[0].fn;
     static const bool s_log = std::getenv("PS2X_VU1_COMPILED_LOG") != nullptr;
     if (s_log)
         std::cerr << "[vu1:compiled] pc=0x" << std::hex << startPC << std::dec << (entry.fn ? " compiled" : " interpreted")

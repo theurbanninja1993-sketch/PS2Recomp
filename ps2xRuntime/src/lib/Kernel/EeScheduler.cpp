@@ -614,8 +614,13 @@ void ps2PerfLogVBlank(double lateMs)
     }
     s_lastTicks = ticks;
     const uint64_t compiled = g_ps2Vu1CompiledCalls.load(), interpreted = g_ps2Vu1InterpretedCalls.load();
-    std::fprintf(s_file, " vu1Compiled=%llu vu1Interpreted=%llu\n", static_cast<unsigned long long>(compiled - s_lastCompiled),
-                 static_cast<unsigned long long>(interpreted - s_lastInterpreted));
+    static uint64_t s_lastRevalidations = 0, s_lastRecomputes = 0;
+    const uint64_t revalidations = g_ps2Vu1LookupRevalidations.load(), recomputes = g_ps2Vu1LookupRecomputes.load();
+    std::fprintf(s_file, " vu1Compiled=%llu vu1Interpreted=%llu lookups=%llu/%llu\n", static_cast<unsigned long long>(compiled - s_lastCompiled),
+                 static_cast<unsigned long long>(interpreted - s_lastInterpreted),
+                 static_cast<unsigned long long>(revalidations - s_lastRevalidations), static_cast<unsigned long long>(recomputes - s_lastRecomputes));
+    s_lastRevalidations = revalidations;
+    s_lastRecomputes = recomputes;
     s_lastCompiled = compiled;
     s_lastInterpreted = interpreted;
     s_late = 0;
