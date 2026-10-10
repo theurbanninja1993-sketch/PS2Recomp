@@ -87,10 +87,38 @@ struct VU1Jit
         return VU1CompiledContinue;
     }
     // Before reading MAC/status/clip: commit the flag entries ready now.
+    // VU1Interpreter::commitFlags, inlined into compiled code.
     __attribute__((always_inline)) static inline void syncFlags(V &vu, uint64_t cyc)
     {
-        uint64_t ignored = UINT64_MAX;
-        vu.commitFlags(cyc, ignored);
+        uint32_t count = vu.m_flagCount, head = vu.m_flagHead;
+        if (count == 0u)
+            return;
+        uint32_t mac = vu.m_state.mac, status = vu.m_state.status, clip = vu.m_state.clip;
+        while (count != 0u)
+        {
+            auto &entry = vu.m_flagPipeline[head];
+            if (entry.readyCycle > cyc)
+                break;
+            if (entry.writesMac)
+                mac = entry.mac;
+            if (entry.writesStatus)
+            {
+                const uint32_t current = entry.status & 0xFu;
+                status = (status & 0xFF0u) | current | ((current | entry.extraSticky) << 6);
+            }
+            if (entry.writesSticky)
+                status = (status & 0x03Fu) | (entry.status & 0xFC0u);
+            if (entry.writesClip)
+                clip = entry.clip;
+            entry.valid = false;
+            head = (head + 1u) & (VU1Interpreter::kMaxFlagEntries - 1u);
+            --count;
+        }
+        vu.m_state.mac = mac;
+        vu.m_state.status = status;
+        vu.m_state.clip = clip;
+        vu.m_flagHead = head;
+        vu.m_flagCount = count;
     }
     __attribute__((always_inline)) static inline VU1Interpreter::FlagPipelineEntry *allocFlags(V &vu, uint64_t cyc)
     {

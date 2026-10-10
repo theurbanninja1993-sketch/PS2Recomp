@@ -99,34 +99,58 @@ public:
             if (op != 0x24u && op != 0x25u)
                 entries.insert((pc + 8u + static_cast<uint32_t>(IMM11(d.lower) * 8)) & 0x3FFFu);
         }
-        auto predecessors = [&](uint32_t pc)
+        // Forward dataflow over the program's labels: the timing / normalization
+        // state at a label is the pessimistic merge of every static
+        // predecessor's exit state (jump entries are unknown), iterated to a
+        // fixed point.
+        std::map<uint32_t, Rel> labelState;
+        std::vector<uint32_t> work;
+        for (uint32_t pc : jumpEntries)
+            if (m_normalSet.count(pc))
+            {
+                labelState[pc] = Rel::unknown();
+                work.push_back(pc);
+            }
+        std::vector<std::pair<uint32_t, History>> successors;
+        while (!work.empty())
         {
-            uint32_t count = 0;
-            if (pc >= 8u && m_normalSet.count(pc - 8u))
+            const uint32_t pc = work.back();
+            work.pop_back();
+            History h = labelState[pc].toHistory();
+            std::ostringstream scratch;
+            successors.clear();
+            (void)emitInstance(scratch, pc, h, &successors);
+            for (auto &[next, exitHistory] : successors)
             {
-                const Decoded d = decode(pc - 8u);
-                if (!isBranch(d) && !d.eBit)
-                    ++count;
+                if (!m_normalSet.count(next))
+                    continue;
+                const Rel incoming = Rel::fromHistory(exitHistory);
+                auto it = labelState.find(next);
+                if (it == labelState.end())
+                {
+                    labelState[next] = incoming;
+                    work.push_back(next);
+                }
+                else
+                {
+                    Rel merged = it->second;
+                    merged.merge(incoming);
+                    if (!(merged == it->second))
+                    {
+                        it->second = merged;
+                        work.push_back(next);
+                    }
+                }
             }
-            if (pc >= 16u && m_normalSet.count(pc - 16u))
-            {
-                const Decoded d = decode(pc - 16u);
-                const uint32_t op = opHi(d);
-                if (isBranch(d) && op != 0x20u && op != 0x21u && op != 0x24u && op != 0x25u)
-                    ++count;
-            }
-            return count;
-        };
+        }
 
         bool dispatch = false;
-        History history;
         for (uint32_t pc : m_normal)
         {
-            // Straight-line continuation keeps the static timing history.
-            if (entries.count(pc) || predecessors(pc) != 1u)
-                history.reset();
+            const auto it = labelState.find(pc);
+            History history = (it != labelState.end() ? it->second : Rel::unknown()).toHistory();
             o << "L_" << pc << ":\n    {\n";
-            dispatch |= emitInstance(o, pc, history);
+            dispatch |= emitInstance(o, pc, history, nullptr);
             o << "    }\n";
         }
         if (dispatch)
@@ -187,6 +211,74 @@ private:
         }
     };
 
+    // History relative to a label (what the dataflow merges): pairs until a
+    // lane may still be in flight (<= 3), and known-normalized lanes.
+    struct Rel
+    {
+        uint8_t vf[32][4] = {};
+        uint8_t vi[16] = {};
+        bool norm[32][4] = {};
+        bool accNorm[4] = {};
+
+        static Rel unknown()
+        {
+            Rel r;
+            for (auto &reg : r.vf)
+                for (uint8_t &lane : reg)
+                    lane = 3;
+            for (uint8_t &reg : r.vi)
+                reg = 3;
+            for (bool &lane : r.norm[0])
+                lane = true;
+            return r;
+        }
+        static Rel fromHistory(const History &h)
+        {
+            Rel r;
+            for (uint32_t reg = 0; reg < 32u; ++reg)
+                for (uint32_t c = 0; c < 4u; ++c)
+                {
+                    r.vf[reg][c] = static_cast<uint8_t>(h.vf[reg][c] > h.index ? std::min<uint32_t>(h.vf[reg][c] - h.index, 3u) : 0u);
+                    r.norm[reg][c] = h.norm[reg][c];
+                }
+            for (uint32_t reg = 0; reg < 16u; ++reg)
+                r.vi[reg] = static_cast<uint8_t>(h.vi[reg] > h.index ? std::min<uint32_t>(h.vi[reg] - h.index, 3u) : 0u);
+            for (uint32_t c = 0; c < 4u; ++c)
+                r.accNorm[c] = h.accNorm[c];
+            return r;
+        }
+        History toHistory() const
+        {
+            History h;
+            h.index = 0;
+            for (uint32_t reg = 0; reg < 32u; ++reg)
+                for (uint32_t c = 0; c < 4u; ++c)
+                {
+                    h.vf[reg][c] = vf[reg][c];
+                    h.norm[reg][c] = norm[reg][c];
+                }
+            for (uint32_t reg = 0; reg < 16u; ++reg)
+                h.vi[reg] = vi[reg];
+            for (uint32_t c = 0; c < 4u; ++c)
+                h.accNorm[c] = accNorm[c];
+            return h;
+        }
+        void merge(const Rel &other)
+        {
+            for (uint32_t reg = 0; reg < 32u; ++reg)
+                for (uint32_t c = 0; c < 4u; ++c)
+                {
+                    vf[reg][c] = std::max(vf[reg][c], other.vf[reg][c]);
+                    norm[reg][c] = norm[reg][c] && other.norm[reg][c];
+                }
+            for (uint32_t reg = 0; reg < 16u; ++reg)
+                vi[reg] = std::max(vi[reg], other.vi[reg]);
+            for (uint32_t c = 0; c < 4u; ++c)
+                accNorm[c] = accNorm[c] && other.accNorm[c];
+        }
+        bool operator==(const Rel &other) const { return std::memcmp(this, &other, sizeof(Rel)) == 0; }
+    };
+
     const uint8_t *m_code;
     uint32_t m_start;
     std::vector<uint32_t> m_roots;
@@ -227,7 +319,8 @@ private:
     // --------------------------------------------------------------- pairs
 
     // Returns true when it jumps through the shared JR dispatch.
-    bool emitInstance(std::ostringstream &o, uint32_t pc, History &h)
+    // `successors` (analysis): static successor labels with the exit state.
+    bool emitInstance(std::ostringstream &o, uint32_t pc, History &h, std::vector<std::pair<uint32_t, History>> *successors)
     {
         const Decoded d = decode(pc);
         const bool branch = isBranch(d);
@@ -250,6 +343,12 @@ private:
             {
                 const int32_t imm = IMM11(d.lower);
                 const uint32_t dest = (pc + 8u + static_cast<uint32_t>(imm * 8)) & 0x3FFFu;
+                if (successors)
+                {
+                    successors->emplace_back(dest, h);
+                    if (op != 0x20u && op != 0x21u)
+                        successors->emplace_back(nextPc(next), h);
+                }
                 if (op == 0x20u || op == 0x21u)
                     o << "    goto L_" << dest << ";\n";
                 else
@@ -264,6 +363,8 @@ private:
         }
         else
         {
+            if (successors)
+                successors->emplace_back(next, h);
             o << "    goto L_" << next << ";\n";
         }
         return false;

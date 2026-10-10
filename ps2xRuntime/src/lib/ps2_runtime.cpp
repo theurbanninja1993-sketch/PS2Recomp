@@ -1311,6 +1311,9 @@ namespace
     {
         if (!g_pcSampleRuntime || g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) < g_pcSampleStartFrame)
             return;
+        static const bool s_vif1Only = std::getenv("PS2X_PC_SAMPLE_VIF1") != nullptr;
+        if (s_vif1Only && !PS2Memory::onAsyncVif1Worker())
+            return;
         const auto *context = static_cast<const ucontext_t *>(contextPtr);
         const uint64_t rip = static_cast<uint64_t>(context->uc_mcontext.gregs[REG_RIP]);
         const uint32_t index = g_pcSampleCount.load(std::memory_order_relaxed);
