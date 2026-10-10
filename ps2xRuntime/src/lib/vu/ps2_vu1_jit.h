@@ -63,58 +63,61 @@ struct VU1Jit
 
     __attribute__((always_inline)) static inline uint64_t now(const V &vu) { return vu.m_cycle; }
 
-    __attribute__((always_inline)) static inline bool atBudget(V &vu, uint64_t budgetEnd) { return vu.m_cycle >= budgetEnd || vu.m_stopRequested; }
+    __attribute__((always_inline)) static inline bool atBudget(V &vu, uint64_t cyc, uint64_t budgetEnd) { return cyc >= budgetEnd || vu.m_stopRequested; }
 
     // Compiled code commits flag entries lazily (syncFlags); before handing
     // back to the interpreter its commit schedule must include them again.
-    __attribute__((always_inline)) static inline void leave(V &vu)
+    __attribute__((always_inline)) static inline void leave(V &vu, uint64_t cyc)
     {
+        // Generated code keeps the cycle count in a local (`cyc`); it is written
+        // back before anything that reads vu.m_cycle and on every exit.
+        vu.m_cycle = cyc;
         if (vu.m_flagCount != 0u)
             vu.m_nextCommitCycle = std::min(vu.m_nextCommitCycle, vu.m_flagPipeline[vu.m_flagHead].readyCycle);
     }
-    static inline int ended(V &vu)
+    static inline int ended(V &vu, uint64_t cyc)
     {
-        leave(vu);
+        leave(vu, cyc);
         return VU1CompiledEnded;
     }
-    static inline int leaveAt(V &vu, uint32_t pc)
+    static inline int leaveAt(V &vu, uint64_t cyc, uint32_t pc)
     {
-        leave(vu);
+        leave(vu, cyc);
         vu.m_state.pc = pc;
         return VU1CompiledContinue;
     }
     // Before reading MAC/status/clip: commit the flag entries ready now.
-    __attribute__((always_inline)) static inline void syncFlags(V &vu)
+    __attribute__((always_inline)) static inline void syncFlags(V &vu, uint64_t cyc)
     {
         uint64_t ignored = UINT64_MAX;
-        vu.commitFlags(vu.m_cycle, ignored);
+        vu.commitFlags(cyc, ignored);
     }
-    __attribute__((always_inline)) static inline VU1Interpreter::FlagPipelineEntry *allocFlags(V &vu)
+    __attribute__((always_inline)) static inline VU1Interpreter::FlagPipelineEntry *allocFlags(V &vu, uint64_t cyc)
     {
         if (vu.m_flagCount == VU1Interpreter::kMaxFlagEntries)
-            syncFlags(vu); // the interpreter would have committed the ready ones already
+            syncFlags(vu, cyc); // the interpreter would have committed the ready ones already
         if (vu.m_flagCount == VU1Interpreter::kMaxFlagEntries)
             return nullptr;
         auto &entry = vu.m_flagPipeline[(vu.m_flagHead + vu.m_flagCount++) & (VU1Interpreter::kMaxFlagEntries - 1u)];
-        entry.readyCycle = vu.m_cycle + VU1Interpreter::kFmacLatency;
-        entry.issueCycle = vu.m_cycle;
+        entry.readyCycle = cyc + VU1Interpreter::kFmacLatency;
+        entry.issueCycle = cyc;
         entry.mac = entry.status = entry.extraSticky = entry.clip = 0u;
         entry.valid = true;
         entry.writesMac = entry.writesStatus = entry.writesSticky = entry.writesClip = false;
         return &entry;
     }
 
-    static inline int exitAt(V &vu, uint32_t pc)
+    static inline int exitAt(V &vu, uint64_t cyc, uint32_t pc)
     {
-        leave(vu);
+        leave(vu, cyc);
         vu.m_state.pc = pc;
         return VU1CompiledBudget;
     }
 
     // Leaving in a branch delay slot: the interpreter finishes the branch.
-    static inline int exitInDelaySlot(V &vu, uint32_t pc, bool taken, uint32_t target)
+    static inline int exitInDelaySlot(V &vu, uint64_t cyc, uint32_t pc, bool taken, uint32_t target)
     {
-        leave(vu);
+        leave(vu, cyc);
         vu.m_state.pc = pc;
         if (taken)
         {
@@ -184,32 +187,41 @@ struct VU1Jit
     }
 
     // Q/P/store commits (flag entries are committed lazily, see syncFlags).
-    __attribute__((always_inline)) static inline void commit(V &vu)
+    __attribute__((always_inline)) static inline void commit(V &vu, uint64_t cyc)
     {
-        if (vu.m_cycle >= vu.m_nextCommitCycle)
+        if (__builtin_expect(cyc >= vu.m_nextCommitCycle, 0))
+        {
+            vu.m_cycle = cyc;
             commitSlow(vu);
+        }
     }
 
-    __attribute__((always_inline)) static inline void endCycle(V &vu)
+    __attribute__((always_inline)) static inline void endCycle(V &vu, uint64_t &cyc)
     {
-        ++vu.m_cycle; // state.cycles is refreshed when run() returns
-        commit(vu);
+        ++cyc; // state.cycles is refreshed when run() returns
+        commit(vu, cyc);
         if (vu.m_xgkick.active)
+        {
+            vu.m_cycle = cyc;
             vu.progressXgkick();
+        }
     }
     // Programs with FSSET/FCSET keep the interpreter's per-cycle flag commits
     // (FSSET replaces sticky bits, so its order against Q commits matters).
-    __attribute__((always_inline)) static inline void endCycleEagerFlags(V &vu)
+    __attribute__((always_inline)) static inline void endCycleEagerFlags(V &vu, uint64_t &cyc)
     {
-        endCycle(vu);
-        syncFlags(vu);
+        endCycle(vu, cyc);
+        syncFlags(vu, cyc);
     }
 
     // The interpreter's stall loop; false when the budget ran out.
     template <typename Ready>
-    __attribute__((always_inline)) static inline bool stall(V &vu, uint64_t budgetEnd, Ready ready)
+    __attribute__((always_inline)) static inline bool stall(V &vu, uint64_t &cyc, uint64_t budgetEnd, Ready ready)
     {
         uint64_t r = ready();
+        if (__builtin_expect(r <= cyc, 1))
+            return cyc < budgetEnd;
+        vu.m_cycle = cyc;
         while (r > vu.m_cycle)
         {
             if (r >= budgetEnd)
@@ -218,9 +230,11 @@ struct VU1Jit
                 break;
             }
             vu.advanceTo(r);
+            cyc = vu.m_cycle;
             r = ready();
         }
-        return vu.m_cycle < budgetEnd;
+        cyc = vu.m_cycle;
+        return cyc < budgetEnd;
     }
 
     template <uint8_t reg, uint8_t lanes>
@@ -252,25 +266,25 @@ struct VU1Jit
                 r = std::max(r, entry.readyCycle);
         return r;
     }
-    __attribute__((always_inline)) static inline uint64_t xgkick(const V &vu, uint64_t r) { return vu.m_xgkick.active ? std::max(r, vu.m_cycle + 1u) : r; }
+    __attribute__((always_inline)) static inline uint64_t xgkick(const V &vu, uint64_t cyc, uint64_t r) { return vu.m_xgkick.active ? std::max(r, cyc + 1u) : r; }
 
     template <uint8_t reg, uint8_t lanes, uint32_t latency>
-    __attribute__((always_inline)) static inline void markVf(V &vu)
+    __attribute__((always_inline)) static inline void markVf(V &vu, uint64_t cyc)
     {
-        const uint64_t ready = vu.m_cycle + latency;
+        const uint64_t ready = cyc + latency;
         for (uint32_t c = 0; c < 4u; ++c)
             if (lanes & lane(c))
                 vu.m_vfReady[reg][c] = ready;
         vu.m_vfRegReady[reg] = std::max(vu.m_vfRegReady[reg], ready);
     }
     template <uint8_t reg, uint32_t latency>
-    __attribute__((always_inline)) static inline void markVi(V &vu) { vu.m_viReady[reg] = vu.m_cycle + latency; }
+    __attribute__((always_inline)) static inline void markVi(V &vu, uint64_t cyc) { vu.m_viReady[reg] = cyc + latency; }
     template <uint8_t lanes>
-    __attribute__((always_inline)) static inline void markAcc(V &vu)
+    __attribute__((always_inline)) static inline void markAcc(V &vu, uint64_t cyc)
     {
         for (uint32_t c = 0; c < 4u; ++c)
             if (lanes & lane(c))
-                vu.m_accReady[c] = vu.m_cycle + 1u; // kAccForwardLatency
+                vu.m_accReady[c] = cyc + 1u; // kAccForwardLatency
     }
 
     // ------------------------------------------------------- VI branches
@@ -341,7 +355,7 @@ struct VU1Jit
     // zero there is a true zero (ADD/SUB, or MUL by a zero operand) and
     // needs no exact recomputation.
     template <uint8_t dest>
-    __attribute__((always_inline)) static inline void fmacFinish(V &vu, uint32_t instr, float *result, float *dst,
+    __attribute__((always_inline)) static inline void fmacFinish(V &vu, uint64_t cyc, uint32_t instr, float *result, float *dst,
                                                                  uint32_t extraSticky, uint32_t exactZero = 0u)
     {
         uint32_t mac = 0u, status = 0u;
@@ -379,7 +393,7 @@ struct VU1Jit
         }
         if (dest != 0u)
         {
-            if (auto *entry = allocFlags(vu))
+            if (auto *entry = allocFlags(vu, cyc))
             {
                 entry->mac = mac;
                 entry->status = status;
@@ -407,9 +421,10 @@ struct VU1Jit
         return ((dest >> 3) & 1) | (((dest >> 2) & 1) << 1) | (((dest >> 1) & 1) << 2) | ((dest & 1) << 3);
     }
     // Component-order bits -> MAC lane order (x = bit 3).
-    static constexpr uint32_t laneBits(int bits)
+    static inline uint32_t laneBits(int bits)
     {
-        return static_cast<uint32_t>(((bits & 1) << 3) | ((bits & 2) << 1) | ((bits & 4) >> 1) | ((bits & 8) >> 3));
+        static constexpr uint8_t kReverse[16] = {0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
+        return kReverse[bits & 15];
     }
 
     __attribute__((always_inline)) static inline __m128 load4(const float *p) { return _mm_loadu_ps(p); }
@@ -501,7 +516,7 @@ struct VU1Jit
 
     // fmacFinish for a four-lane result (exactZero in component bits).
     template <uint8_t dest>
-    __attribute__((always_inline)) static inline void fmac4(V &vu, uint32_t instr, __m128 r, float *dst, uint32_t extraSticky,
+    __attribute__((always_inline)) static inline void fmac4(V &vu, uint64_t cyc, uint32_t instr, __m128 r, float *dst, uint32_t extraSticky,
                                                             int exactZero)
     {
         constexpr int dm = destBits(dest);
@@ -516,13 +531,13 @@ struct VU1Jit
         {
             alignas(16) float tmp[4];
             _mm_store_ps(tmp, r);
-            fmacFinish<dest>(vu, instr, tmp, dst, extraSticky, static_cast<uint32_t>(exactZero));
+            fmacFinish<dest>(vu, cyc, instr, tmp, dst, extraSticky, static_cast<uint32_t>(exactZero));
             return;
         }
         const int signBits = _mm_movemask_ps(r) & dm;
         if constexpr (dest != 0u)
         {
-            if (auto *entry = allocFlags(vu))
+            if (auto *entry = allocFlags(vu, cyc))
             {
                 entry->mac = laneBits(zeroBits) | (laneBits(signBits) << 4);
                 entry->status = (zeroBits ? 0x1u : 0u) | (signBits ? 0x2u : 0u);
@@ -543,34 +558,32 @@ struct VU1Jit
     __attribute__((always_inline)) static inline uint8_t *data(V &vu) { return vu.m_activeVuData; }
     __attribute__((always_inline)) static inline uint32_t dataSize(const V &vu) { return vu.m_activeVuDataSize; }
 
-    __attribute__((always_inline)) static inline void store(V &vu, uint32_t address, const uint32_t words[4], uint8_t laneMask)
+    // SQ/ISW: the interpreter commits stores at the next cycle boundary, before
+    // anything can observe them (loads of later pairs, XGKICK progress after
+    // the commit), so writing them now is equivalent.
+    __attribute__((always_inline)) static inline void store(V &vu, uint64_t cyc, uint32_t address, const uint32_t words[4], uint8_t laneMask)
     {
-        const uint32_t free = ~vu.m_storeMask & ((1u << VU1Interpreter::kMaxPendingStores) - 1u);
-        if (free == 0u)
-        {
-            vu.reportReservedInstruction(false, 0xFFFFFFFCu);
-            return;
-        }
-        const uint32_t index = static_cast<uint32_t>(__builtin_ctz(free));
-        auto &entry = vu.m_storePipeline[index];
-        entry.valid = true;
-        vu.m_storeMask |= 1u << index;
-        entry.readyCycle = vu.m_cycle + 1u;
-        vu.m_nextCommitCycle = std::min(vu.m_nextCommitCycle, entry.readyCycle);
-        entry.address = address;
-        entry.laneMask = laneMask;
-        std::copy(words, words + 4, entry.words.begin());
+        (void)cyc;
+        uint32_t *memory = reinterpret_cast<uint32_t *>(vu.m_activeVuData + address);
+        for (uint32_t c = 0; c < 4u; ++c)
+            if (laneMask & lane(c))
+                std::memcpy(&memory[c], &words[c], 4);
     }
 
     // Uncommon instructions run through the interpreter's own implementation.
-    static inline void execUpper(V &vu, uint32_t instr) { vu.execUpper(instr); }
-    static inline void execLower(V &vu, uint32_t instr, uint32_t upper)
+    static inline void execUpper(V &vu, uint64_t cyc, uint32_t instr)
     {
+        vu.m_cycle = cyc;
+        vu.execUpper(instr);
+    }
+    static inline void execLower(V &vu, uint64_t cyc, uint32_t instr, uint32_t upper)
+    {
+        vu.m_cycle = cyc;
         vu.execLower(instr, vu.m_activeVuData, vu.m_activeVuDataSize, *vu.m_activeGs, vu.m_activeMemory, upper);
     }
     // CLIP: judgement of vf[fs].xyz against |vf[ft].w| (raw bits), queued
     // through the flag pipeline like queueClip.
-    static inline void clip(V &vu, const float *xyz, const float *w)
+    static inline void clip(V &vu, uint64_t cyc, const float *xyz, const float *w)
     {
         uint32_t wBits;
         std::memcpy(&wBits, &w[3], 4);
@@ -592,7 +605,7 @@ struct VU1Jit
         if (exceeds(xyz[2], 0u)) flags |= 0x10u;
         if (exceeds(xyz[2], 0x80000000u)) flags |= 0x20u;
         vu.m_workingClip = ((vu.m_workingClip << 6) | (flags & 0x3Fu)) & 0xFFFFFFu;
-        if (auto *entry = allocFlags(vu))
+        if (auto *entry = allocFlags(vu, cyc))
         {
             entry->clip = vu.m_workingClip;
             entry->writesClip = true;

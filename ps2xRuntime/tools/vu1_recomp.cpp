@@ -19,6 +19,7 @@
 #include "ps2_runtime.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <cstring>
 #include <map>
 #include <set>
@@ -75,7 +76,7 @@ public:
 
         std::ostringstream o;
         o << "static int vu1p_" << std::hex << key << std::dec << "(VU1Interpreter &vu, uint64_t budgetEnd)\n{\n"
-          << "    using J = VU1Jit;\n    VU1State &S = J::st(vu);\n    uint32_t jumpTarget = 0;\n"
+          << "    using J = VU1Jit;\n    VU1State &S = J::st(vu);\n    uint32_t jumpTarget = 0;\n    uint64_t cyc = J::now(vu);\n"
           << "    switch (S.pc)\n    {\n    case " << m_start << "u: goto L_" << m_start
           << ";\n    default: return VU1CompiledContinue;\n    }\n";
         // Entry points: reached by jumps (state before them unknown). JR/JALR
@@ -134,7 +135,7 @@ public:
             for (uint32_t label : jumpEntries)
                 if (m_normalSet.count(label))
                     o << "    case " << label << "u: goto L_" << label << ";\n";
-            o << "    default: return J::leaveAt(vu, jumpTarget);\n    }\n";
+            o << "    default: return J::leaveAt(vu, cyc, jumpTarget);\n    }\n";
         }
         else
         {
@@ -259,7 +260,7 @@ private:
         {
             const Decoded ds = decode(next);
             emitPair(o, next, ds, Context::EbitDelay, h);
-            o << "    return J::ended(vu);\n";
+            o << "    return J::ended(vu, cyc);\n";
         }
         else
         {
@@ -275,10 +276,9 @@ private:
         std::snprintf(comment, sizeof(comment), "    // 0x%04x: %08x %08x\n", pc, d.upper, d.lower);
         o << comment << "    {\n";
         const std::string exitCode = ctx == Context::BranchDelay
-                                         ? "return J::exitInDelaySlot(vu, " + std::to_string(pc) + "u, taken, target);"
-                                         : "return J::exitAt(vu, " + std::to_string(pc) + "u);";
-        o << "        if (J::atBudget(vu, budgetEnd)) " << exitCode << "\n";
-        o << "        J::commit(vu);\n";
+                                         ? "return J::exitInDelaySlot(vu, cyc, " + std::to_string(pc) + "u, taken, target);"
+                                         : "return J::exitAt(vu, cyc, " + std::to_string(pc) + "u);";
+        o << "        if (J::atBudget(vu, cyc, budgetEnd)) " << exitCode << "\n";
 
         // Stall until operands are ready (calculatePairReadyCycle).
         std::ostringstream ready;
@@ -308,9 +308,9 @@ private:
         if (lu.waitP)
             ready << " r = J::waitP(vu, r);";
         if (lu.pipeline == VU1Interpreter::PipelineXgkick)
-            ready << " r = J::xgkick(vu, r);";
+            ready << " r = J::xgkick(vu, cyc, r);";
         if (!ready.str().empty())
-            o << "        if (!J::stall(vu, budgetEnd, [&]() { uint64_t r = J::now(vu);" << ready.str()
+            o << "        if (!J::stall(vu, cyc, budgetEnd, [&]() { uint64_t r = cyc;" << ready.str()
               << " return r; })) " << exitCode << "\n";
 
         uint32_t writtenVi = 0u;
@@ -352,16 +352,16 @@ private:
         const auto lw = lu.vfWrite;
         if (lw.reg != 0u && d.suppressedLowerVf != lw.reg)
             o << "        J::markVf<" << unsigned(lw.reg) << ", " << unsigned(lw.lanes) << ", "
-              << unsigned(lu.vfLatency ? lu.vfLatency : lu.latency) << ">(vu);\n";
+              << unsigned(lu.vfLatency ? lu.vfLatency : lu.latency) << ">(vu, cyc);\n";
         const auto &uu = d.upperUsage;
         if (uu.vfWrite.reg != 0u)
             o << "        J::markVf<" << unsigned(uu.vfWrite.reg) << ", " << unsigned(uu.vfWrite.lanes) << ", "
-              << unsigned(uu.vfLatency ? uu.vfLatency : uu.latency) << ">(vu);\n";
+              << unsigned(uu.vfLatency ? uu.vfLatency : uu.latency) << ">(vu, cyc);\n";
         for (uint32_t reg = 1; reg < 16u; ++reg)
             if (lu.viWrite & (1u << reg))
-                o << "        J::markVi<" << reg << ", " << unsigned(lu.viLatency ? lu.viLatency : lu.latency) << ">(vu);\n";
+                o << "        J::markVi<" << reg << ", " << unsigned(lu.viLatency ? lu.viLatency : lu.latency) << ">(vu, cyc);\n";
         if (uu.accWrite)
-            o << "        J::markAcc<" << unsigned(uu.accWrite) << ">(vu);\n";
+            o << "        J::markAcc<" << unsigned(uu.accWrite) << ">(vu, cyc);\n";
         if (lw.reg != 0u && d.suppressedLowerVf != lw.reg)
             for (uint32_t c = 0; c < 4u; ++c)
                 if (lw.lanes & VU1Jit::lane(c))
@@ -422,7 +422,7 @@ private:
             o << "        S.pc = " << next << "u;\n";
         if (ctx == Context::Normal && d.eBit)
             o << "        S.ebit = true;\n";
-        o << (m_eagerFlags ? "        J::endCycleEagerFlags(vu);\n    }\n" : "        J::endCycle(vu);\n    }\n");
+        o << (m_eagerFlags ? "        J::endCycleEagerFlags(vu, cyc);\n    }\n" : "        J::endCycle(vu, cyc);\n    }\n");
     }
 
     // Whether the pair writes VF0 (which then has to be restored).
@@ -575,7 +575,7 @@ private:
                 case 0x2Eu: kind = OpMula; break;
                 case 0x2Fu: case 0x30u: kind = Nop; break;
                 case 0x1Fu:
-                    o << "        J::clip(vu, S.vf[" << fs << "], S.vf[" << ft << "]);\n";
+                    o << "        J::clip(vu, cyc, S.vf[" << fs << "], S.vf[" << ft << "]);\n";
                     return;
                 default: kind = Fallback; break;
                 }
@@ -586,7 +586,7 @@ private:
             return;
         if (kind == Fallback)
         {
-            o << "        J::execUpper(vu, 0x" << std::hex << instr << std::dec << "u);\n";
+            o << "        J::execUpper(vu, cyc, 0x" << std::hex << instr << std::dec << "u);\n";
             m_upperNorm = {fd, 0xFu, 2, 0}; // (reserved ops are refused; be conservative)
             return;
         }
@@ -700,7 +700,7 @@ private:
         const std::string dst = toAcc ? "S.acc" : (kind == Itof || kind == Ftoi || kind == Abs) ? "S.vf[" + std::to_string(ft) + "]"
                                                                                                   : "S.vf[" + std::to_string(fd) + "]";
         if (flags)
-            o << "            J::fmacFinish<" << dest << ">(vu, 0x" << std::hex << instr << std::dec << "u, r, " << dst
+            o << "            J::fmacFinish<" << dest << ">(vu, cyc, 0x" << std::hex << instr << std::dec << "u, r, " << dst
               << ", " << (productSum ? "xs" : "0u") << ", ez);\n";
         else
             o << "            J::applyDest<" << dest << ">(" << dst << ", r);\n";
@@ -770,7 +770,7 @@ private:
         if (cross)
             ez += " | 8";
         const bool productSum = op == 3 || op == 4 || op == 7;
-        o << "            J::fmac4<" << dest << ">(vu, 0x" << std::hex << instr << std::dec << "u, r, " << dst << ", "
+        o << "            J::fmac4<" << dest << ">(vu, cyc, 0x" << std::hex << instr << std::dec << "u, r, " << dst << ", "
           << (productSum ? "J::productFlags4<" + std::to_string(dest) + ">(a, b)" : std::string("0u")) << ", " << ez << ");\n        }\n";
         m_upperNorm = {toAcc ? 32u : fd, dest, 1, 0};
     }
@@ -779,7 +779,7 @@ private:
 
     void fallbackLower(std::ostringstream &o, uint32_t instr, uint32_t upper)
     {
-        o << "        J::execLower(vu, 0x" << std::hex << instr << "u, 0x" << upper << std::dec << "u);\n";
+        o << "        J::execLower(vu, cyc, 0x" << std::hex << instr << "u, 0x" << upper << std::dec << "u);\n";
     }
 
     void emitLower(std::ostringstream &o, uint32_t pc, uint32_t instr, uint32_t upper)
@@ -803,7 +803,7 @@ private:
         auto storeVf = [&](const std::string &base, uint32_t reg)
         {
             o << "        { " << addr(base) << " if (a + 16u <= J::dataSize(vu)) { uint32_t w[4]; std::memcpy(w, S.vf[" << reg
-              << "], 16); J::store(vu, a, w, " << dest << "u); } }\n";
+              << "], 16); J::store(vu, cyc, a, w, " << dest << "u); } }\n";
         };
         const std::string imm11 = std::to_string(imm);
         switch (op)
@@ -827,7 +827,7 @@ private:
         case 0x05u: // ISW
             o << "        { " << addr("static_cast<uint32_t>(static_cast<int32_t>(S.vi[" + std::to_string(viS) + "] + (" + imm11 + ")))")
               << " if (a + 16u <= J::dataSize(vu)) { const uint32_t v = static_cast<uint16_t>(S.vi[" << viT
-              << "] & 0xFFFF); const uint32_t w[4] = {v, v, v, v}; J::store(vu, a, w, " << dest << "u); } }\n";
+              << "] & 0xFFFF); const uint32_t w[4] = {v, v, v, v}; J::store(vu, cyc, a, w, " << dest << "u); } }\n";
             return;
         case 0x08u: // IADDIU
         case 0x09u: // ISUBIU
@@ -839,15 +839,15 @@ private:
             return;
         }
         case 0x10u:
-            o << "        J::syncFlags(vu);\n";
+            o << "        J::syncFlags(vu, cyc);\n";
             o << "        S.vi[1] = ((S.clip & 0xFFFFFFu) == " << (instr & 0xFFFFFFu) << "u) ? 1 : 0;\n";
             return;
         case 0x12u:
-            o << "        J::syncFlags(vu);\n";
+            o << "        J::syncFlags(vu, cyc);\n";
             o << "        S.vi[1] = ((S.clip & " << (instr & 0xFFFFFFu) << "u) != 0u) ? 1 : 0;\n";
             return;
         case 0x13u:
-            o << "        J::syncFlags(vu);\n";
+            o << "        J::syncFlags(vu, cyc);\n";
             o << "        S.vi[1] = ((S.clip | " << (instr & 0xFFFFFFu) << "u) == 0xFFFFFFu) ? 1 : 0;\n";
             return;
         case 0x14u:
@@ -857,7 +857,7 @@ private:
             const uint32_t imm12 = (((instr >> 21) & 1u) << 11) | (instr & 0x7FFu);
             if (viT == 0u)
                 return;
-            o << "        J::syncFlags(vu);\n";
+            o << "        J::syncFlags(vu, cyc);\n";
             if (op == 0x14u)
                 o << "        S.vi[" << viT << "] = ((S.status & 0xFFFu) == " << imm12 << "u) ? 1 : 0;\n";
             else
@@ -866,20 +866,20 @@ private:
             return;
         }
         case 0x18u:
-            o << "        J::syncFlags(vu);\n";
+            o << "        J::syncFlags(vu, cyc);\n";
             if (viT != 0u)
                 o << "        S.vi[" << viT << "] = ((S.mac & 0xFFFFu) == static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" << viS
                   << "]))) ? 1 : 0;\n";
             return;
         case 0x1Au:
         case 0x1Bu:
-            o << "        J::syncFlags(vu);\n";
+            o << "        J::syncFlags(vu, cyc);\n";
             if (viT != 0u)
                 o << "        S.vi[" << viT << "] = static_cast<int32_t>(S.mac " << (op == 0x1Au ? "&" : "|")
                   << " static_cast<uint32_t>(static_cast<uint16_t>(S.vi[" << viS << "])));\n";
             return;
         case 0x1Cu:
-            o << "        J::syncFlags(vu);\n";
+            o << "        J::syncFlags(vu, cyc);\n";
             if (viT != 0u)
                 o << "        S.vi[" << viT << "] = static_cast<int32_t>(S.clip & 0x0FFFu);\n";
             return;
@@ -1178,5 +1178,19 @@ int main(int argc, char **argv)
     registry += "};\nextern const size_t g_ps2Vu1CompiledProgramCount = " + std::to_string(generated.size()) + ";\n";
     if (!writeIfChanged(dir + "/vu1_programs.cpp", registry))
         return 1;
+    // Remove programs from earlier runs that are no longer generated.
+    std::set<std::string> current;
+    for (const auto &[key, variant] : generated)
+    {
+        char name[64];
+        std::snprintf(name, sizeof(name), "vu1p_%llx.cpp", static_cast<unsigned long long>(key));
+        current.insert(name);
+    }
+    for (const auto &entry : std::filesystem::directory_iterator(dir))
+    {
+        const std::string file = entry.path().filename().string();
+        if (file.rfind("vu1p_", 0) == 0 && file.size() > 4 && file.substr(file.size() - 4) == ".cpp" && !current.count(file))
+            std::filesystem::remove(entry.path());
+    }
     return 0;
 }
