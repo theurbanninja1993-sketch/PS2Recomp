@@ -136,7 +136,7 @@ namespace ps2x::iop::detail
         std::array<uint16_t, 0x40> m_global{}; // 0x7C0-0x7FF
         // PS2X_SPU_TRACE diagnostics.
         bool m_trace = false;
-        bool m_mixAutoDma = false; // PS2X_SPU_ADMA: movie streams are still timing-garbled
+        bool m_mixAutoDma = true; // PS2X_SPU_NO_ADMA=1 mutes the AutoDMA (movie) stream
         uint32_t m_traceWrites = 0;
         uint64_t m_traceTicks = 0;
         uint64_t m_statKeyOns = 0;

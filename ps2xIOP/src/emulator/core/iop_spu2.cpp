@@ -67,7 +67,8 @@ namespace ps2x::iop::detail
         : m_ram(RamBytes)
     {
         m_trace = std::getenv("PS2X_SPU_TRACE") != nullptr;
-        m_mixAutoDma = std::getenv("PS2X_SPU_ADMA") != nullptr;
+        // AutoDMA (movie audio) is mixed unless PS2X_SPU_NO_ADMA=1.
+        m_mixAutoDma = std::getenv("PS2X_SPU_NO_ADMA") == nullptr;
         reset();
     }
 

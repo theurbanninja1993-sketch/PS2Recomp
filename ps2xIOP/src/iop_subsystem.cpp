@@ -164,6 +164,11 @@ namespace ps2x::iop
         return true;
     }
 
+    uint64_t IopSubsystem::cycles() const noexcept
+    {
+        return m_impl->emulator.cycles();
+    }
+
     void IopSubsystem::runEeCycles(uint64_t eeCycles) noexcept
     {
         m_impl->emulator.runEeCycles(eeCycles);

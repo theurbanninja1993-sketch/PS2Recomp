@@ -687,9 +687,44 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
     m_iopSubsystem->onSifTransfer(transfer);
 }
 
+namespace
+{
+    // EE cycles per NTSC VBlank (294.912 MHz / 59.94 Hz).
+    constexpr uint64_t kEeCyclesPerVBlank = 4'920'120u;
+    const bool g_iopFreeRun = std::getenv("PS2X_IOP_FREE_RUN") != nullptr;
+}
+
+// The IOP (and the SPU2 it clocks) runs at most one VBlank of time per VBlank:
+// with the EE cycle count as the only clock the sound chip ran ~20% fast in
+// busy stretches (the intro movie), underrunning streamed audio. Before the
+// first VBlank it runs freely (boot). PS2X_IOP_FREE_RUN=1: old behaviour.
 void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
-    m_iopSubsystem->runEeCycles(eeCycles);
+    if (g_iopFreeRun || m_iopEeAllowed == 0u)
+    {
+        m_iopSubsystem->runEeCycles(eeCycles);
+        return;
+    }
+    // The IOP clock also advances in synchronous RPC handlers and nested
+    // waits, so cap against its own cycle count (EE cycles = 8 IOP cycles).
+    const uint64_t iopEe = m_iopSubsystem->cycles() * 8u;
+    const uint64_t allowed = m_iopEeAllowed > iopEe ? m_iopEeAllowed - iopEe : 0u;
+    const uint64_t give = std::min(eeCycles, allowed);
+    if (give != 0u)
+        m_iopSubsystem->runEeCycles(give);
+}
+
+void PS2Runtime::advanceIopVBlank() noexcept
+{
+    if (g_iopFreeRun)
+        return;
+    const uint64_t iopEe = m_iopSubsystem->cycles() * 8u;
+    if (m_iopEeAllowed == 0u)
+        m_iopEeAllowed = iopEe; // first VBlank: start from where boot left the IOP
+    m_iopEeAllowed += kEeCyclesPerVBlank;
+    // Keep within two VBlanks of real time when the EE reports too few cycles.
+    if (m_iopEeAllowed > iopEe + 2u * kEeCyclesPerVBlank)
+        m_iopSubsystem->runEeCycles(m_iopEeAllowed - iopEe - kEeCyclesPerVBlank);
 }
 
 void PS2Runtime::resetIop()

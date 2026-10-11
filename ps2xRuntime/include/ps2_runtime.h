@@ -493,6 +493,7 @@ private:
     [[nodiscard]] ps2x::iop::RpcResult handleIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request);
     void notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer);
     void advanceIopEeCycles(uint64_t eeCycles) noexcept;
+    void advanceIopVBlank() noexcept;
     void resetIop();
 
     friend class PS2IopTransport;
@@ -504,6 +505,9 @@ private:
     GS m_gs;
     std::unique_ptr<PS2IopHostAdapter> m_iopHost;
     std::unique_ptr<ps2x::iop::IopSubsystem> m_iopSubsystem;
+    // IOP time follows the VBlank clock (real time), not the EE cycle count
+    // (recompiled code over-counts busy stretches): see advanceIopEeCycles.
+    uint64_t m_iopEeAllowed = 0; // EE cycles of IOP time real time allows so far
     PS2AudioBackend m_audioBackend;
     PSPadBackend m_padBackend;
     PS2RomDevice m_romDevice;
