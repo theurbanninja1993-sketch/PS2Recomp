@@ -582,8 +582,8 @@ namespace
 
     // Field of view: RwCameraSetViewWindow(camera, &viewWindow) (0x18F2D8;
     // view window = tan(FOV / 2) wide, at camera + 0x60) gets the game's
-    // request scaled by settings FOV / 70, so zooms and cutscene framing keep
-    // their relative changes. The game only sets it when its FOV changes:
+    // request scaled by settings FOV / 70, so zooms keep their relative
+    // changes (cutscenes are left as they are). The game only sets it when its FOV changes:
     // the last request is kept to re-apply a new setting.
     PS2Runtime::RecompiledFunction g_vcsOrigSetViewWindow = nullptr;
     struct VcsFov
@@ -594,9 +594,18 @@ namespace
     };
     VcsFov g_vcsFov;
 
-    float vcsFovSetting()
+    // Cutscenes keep the original framing: TheCamera.Cams[0].Mode
+    // (0x6F4540) is MODE_FLYBY (17) while one plays (4 = on foot).
+    bool vcsCutsceneCamera(const uint8_t *rdram)
     {
-        return std::clamp(ps2HostSettings().fieldOfView, 40.0f, 120.0f);
+        uint16_t mode = 0;
+        std::memcpy(&mode, rdram + 0x006F4540u, sizeof(mode));
+        return mode == 17u;
+    }
+
+    float vcsFovSetting(const uint8_t *rdram)
+    {
+        return vcsCutsceneCamera(rdram) ? 70.0f : std::clamp(ps2HostSettings().fieldOfView, 40.0f, 120.0f);
     }
 
     void vcsSetViewWindow(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -609,7 +618,7 @@ namespace
             g_vcsFov.camera = camera;
             g_vcsFov.gameX = vw[0];
             g_vcsFov.gameY = vw[1];
-            const float setting = vcsFovSetting();
+            const float setting = vcsFovSetting(rdram);
             g_vcsFov.appliedFov = setting;
             if (setting != 70.0f && vw[0] > 0.0f && std::isfinite(vw[0]) && std::isfinite(vw[1]))
             {
@@ -680,7 +689,7 @@ namespace
             // A new FOV setting: re-issue the game's last view window.
             const uint32_t camera = g_vcsFov.camera;
             if (g_vcsOrigSetViewWindow && camera >= 0x00100000u && camera + 0x70u <= PS2_RAM_SIZE &&
-                g_vcsFov.appliedFov != vcsFovSetting())
+                g_vcsFov.appliedFov != vcsFovSetting(rdram))
             {
                 const R5900Context saved = *ctx;
                 const float vw[2] = {g_vcsFov.gameX, g_vcsFov.gameY};

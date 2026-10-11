@@ -2468,7 +2468,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     settings.fieldOfView = 70.0f;
                     changed = true;
                 }
-                ImGui::TextDisabled("70 is the original. Zooms and cutscenes scale with it.");
+                ImGui::TextDisabled("70 is the original. Zooms scale with it; cutscenes keep their framing.");
                 changed |= ImGui::SliderFloat("Draw distance", &settings.drawDistance, 1.0f, 3.0f, "%.1fx");
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Reset##draw"))
