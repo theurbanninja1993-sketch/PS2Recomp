@@ -2587,9 +2587,9 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
 
         ImGui::Spacing();
         ImGui::Separator();
+        changed |= ImGui::Checkbox("Show this menu every time the game starts", &settings.showAtLaunch);
         if (launch)
         {
-            changed |= ImGui::Checkbox("Show this menu every time the game starts", &settings.showAtLaunch);
             if (ImGui::Button("Start game"))
             {
                 ps2HostSettingsSave(); // also marks the first launch done
