@@ -1,4 +1,5 @@
 #include "runtime/ps2_pad.h"
+#include "runtime/ps2_host_settings.h"
 #include "ps2_host_backend.h"
 #include <atomic>
 
@@ -43,6 +44,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[2] = 0xFF;
     data[3] = 0xFF;
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+    if (g_ps2SettingsMenuOpen.load(std::memory_order_relaxed))
+        return true; // the settings menu has the keyboard and mouse
 
     uint16_t btns = 0xFFFFu;
     constexpr int kGamepad = 0;
@@ -229,6 +232,14 @@ void PSPadBackend::updateHostInput()
     // Click in the window to capture the mouse for mouse look; Left Alt (or
     // losing focus) releases it.
     bool captured = m_mouseCaptured.load(std::memory_order_relaxed);
+    if (g_ps2SettingsMenuOpen.load(std::memory_order_relaxed))
+    {
+        if (captured)
+            EnableCursor();
+        m_mouseCaptured.store(false, std::memory_order_relaxed);
+        GetMouseDelta();
+        return;
+    }
     if (!captured && IsWindowFocused() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
     {
         DisableCursor();
@@ -243,25 +254,23 @@ void PSPadBackend::updateHostInput()
     if (!captured)
         return;
     // Direct mouse look (applied to the camera by a game hook, see
-    // consumeMouseLook): PS2X_MOUSE_SENS scales, PS2X_MOUSE_INVERT_Y inverts,
-    // '-' / '=' adjust the sensitivity while playing.
-    static float s_sensitivity = []()
-    {
-        const char *env = std::getenv("PS2X_MOUSE_SENS");
-        return env ? std::strtof(env, nullptr) : 1.0f;
-    }();
+    // consumeMouseLook). Sensitivity / invert Y come from the settings (F2
+    // menu, PS2X_MOUSE_SENS / PS2X_MOUSE_INVERT_Y); '-' / '=' adjust the
+    // sensitivity while playing.
+    PS2HostSettings &settings = ps2HostSettings();
     if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_EQUAL))
     {
-        s_sensitivity = std::clamp(s_sensitivity * (IsKeyPressed(KEY_EQUAL) ? 1.25f : 0.8f), 0.05f, 20.0f);
-        std::fprintf(stderr, "[pad] mouse sensitivity %.2f (PS2X_MOUSE_SENS)\n", s_sensitivity);
+        settings.mouseSensitivity = std::clamp(settings.mouseSensitivity * (IsKeyPressed(KEY_EQUAL) ? 1.25f : 0.8f), 0.05f, 20.0f);
+        ps2HostSettingsSave();
+        std::fprintf(stderr, "[pad] mouse sensitivity %.2f\n", settings.mouseSensitivity);
     }
-    const float s_radiansPerPixel = 0.001f * s_sensitivity;
-    static const float s_pitchSign = std::getenv("PS2X_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
+    const float radiansPerPixel = 0.001f * settings.mouseSensitivity;
+    const float pitchSign = settings.mouseInvertY ? -1.0f : 1.0f;
     const Vector2 delta = GetMouseDelta();
     if (delta.x != 0.0f || delta.y != 0.0f)
     {
-        m_lookYaw.store(m_lookYaw.load(std::memory_order_relaxed) + delta.x * s_radiansPerPixel, std::memory_order_relaxed);
-        m_lookPitch.store(m_lookPitch.load(std::memory_order_relaxed) - delta.y * s_radiansPerPixel * s_pitchSign,
+        m_lookYaw.store(m_lookYaw.load(std::memory_order_relaxed) + delta.x * radiansPerPixel, std::memory_order_relaxed);
+        m_lookPitch.store(m_lookPitch.load(std::memory_order_relaxed) - delta.y * radiansPerPixel * pitchSign,
                           std::memory_order_relaxed);
         static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
         if (s_debug)

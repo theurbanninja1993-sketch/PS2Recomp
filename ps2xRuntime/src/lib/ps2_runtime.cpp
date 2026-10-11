@@ -1,4 +1,5 @@
 #include "ps2_runtime.h"
+#include "runtime/ps2_host_settings.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"
@@ -925,7 +926,9 @@ bool PS2Runtime::initialize(const char *title)
 #else
         // PS2X_HIDDEN_WINDOW keeps headless test runs off the desktop.
         SetConfigFlags(FLAG_WINDOW_RESIZABLE | (std::getenv("PS2X_HIDDEN_WINDOW") ? FLAG_WINDOW_HIDDEN : 0));
+        ps2HostSettingsLoad(); // window mode/size applied by the first presented frame
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+        SetWindowMinSize(320, 240);
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
@@ -2988,17 +2991,34 @@ void PS2Runtime::run()
         m_padBackend.updateHostInput();
         if (IsKeyPressed(KEY_F9))
             ps2GsRequestCapture(180u); // ~3 s of GS input for tools/gs_replay
+#if !defined(PLATFORM_VITA)
+        ps2HostSettingsApplyWindow();
+#endif
+        const PS2HostSettings &hostSettings = ps2HostSettings();
+        {
+            static int s_filter = -1;
+            const int filter = hostSettings.smoothFiltering ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT;
+            if (filter != s_filter)
+            {
+                SetTextureFilter(frameTex, filter);
+                s_filter = filter;
+            }
+        }
         BeginDrawing();
         ClearBackground(BLACK);
         const float srcWidth = static_cast<float>(std::max<uint32_t>(1u, presentWidth));
         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
         const float screenWidth = static_cast<float>(GetScreenWidth());
         const float screenHeight = static_cast<float>(GetScreenHeight());
-        // A PS2 picture is always shown at 4:3, whatever its pixel dimensions (field-mode
-        // games present 640x224/240 per field, frame-mode ones 640x448/480).
-        constexpr float kDisplayAspect = 4.0f / 3.0f;
-        const float dstWidth = std::min(screenWidth, screenHeight * kDisplayAspect);
-        const float dstHeight = dstWidth / kDisplayAspect;
+        // A PS2 picture is shown at the TV's aspect, whatever its pixel dimensions
+        // (field-mode games present 640x224/240 per field, frame-mode ones
+        // 640x448/480): 4:3, or 16:9 for a game's anamorphic widescreen mode.
+        const float displayAspect = hostSettings.aspect == PS2HostSettings::Aspect::Widescreen ? 16.0f / 9.0f
+                                    : hostSettings.aspect == PS2HostSettings::Aspect::Stretch
+                                        ? screenWidth / std::max(1.0f, screenHeight)
+                                        : 4.0f / 3.0f;
+        const float dstWidth = std::min(screenWidth, screenHeight * displayAspect);
+        const float dstHeight = dstWidth / displayAspect;
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,

@@ -3,8 +3,10 @@
 #include "ps2_runtime_macros.h"
 #include "ps2_log.h"
 #include "runtime/ee_scheduler.h"
+#include "runtime/ps2_host_settings.h"
 
 #include <unordered_set>
+#include <utility>
 #include "Kernel/Syscalls/Helpers/State.h"
 #include "Kernel/Stubs/CD.h"
 #include "Kernel/Stubs/MemoryCard.h"
@@ -2210,14 +2212,36 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     {
         toggleVisible();
     }
+    static bool s_openAtStart = std::getenv("PS2X_OPEN_SETTINGS") != nullptr; // UI checks
+    if (IsKeyPressed(KEY_F2) || std::exchange(s_openAtStart, false))
+    {
+        g_ps2SettingsMenuOpen.store(!g_ps2SettingsMenuOpen.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
 
-    if (!m_visible)
+    // "F2: Settings" hint for the first seconds of a run.
+    const bool showHint = GetTime() < 10.0;
+    const bool settingsOpen = g_ps2SettingsMenuOpen.load(std::memory_order_relaxed);
+    if (!m_visible && !settingsOpen && !showHint)
     {
         return;
     }
 
     rlImGuiBegin();
+    if (settingsOpen)
+        drawSettingsMenu();
+    else if (showHint)
+        drawSettingsHint();
+    if (m_visible)
+        drawDebugger(runtime);
+    rlImGuiEnd();
+#else
+    (void)runtime;
+#endif
+}
 
+void PS2DebugPanel::drawDebugger(PS2Runtime &runtime)
+{
+#if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
     ImGui::SetNextWindowSize(ImVec2(780.0f, 620.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Runtime Debugger", &m_visible, ImGuiWindowFlags_MenuBar))
     {
@@ -2302,9 +2326,122 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
         }
     }
     ImGui::End();
-
-    rlImGuiEnd();
 #else
     (void)runtime;
+#endif
+}
+
+void PS2DebugPanel::drawSettingsHint()
+{
+#if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
+    const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
+    ImGui::SetNextWindowPos(ImVec2(12.0f * scale, static_cast<float>(GetScreenHeight()) - 12.0f * scale), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.55f);
+    if (ImGui::Begin("##settings-hint", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
+    {
+        ImGui::SetWindowFontScale(scale);
+        ImGui::TextUnformatted("F2: Settings");
+    }
+    ImGui::End();
+#endif
+}
+
+void PS2DebugPanel::drawSettingsMenu()
+{
+#if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
+    PS2HostSettings &settings = ps2HostSettings();
+    bool changed = false;
+    const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
+
+    ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(520.0f * scale, 0.0f), ImGuiCond_Always);
+    bool open = true;
+    if (ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize))
+    {
+        ImGui::SetWindowFontScale(scale);
+        ImGui::PushItemWidth(260.0f * scale);
+
+        ImGui::SeparatorText("Display");
+        static const char *kModes[] = {"Windowed", "Borderless fullscreen", "Fullscreen"};
+        int mode = static_cast<int>(settings.displayMode);
+        if (ImGui::Combo("Display mode", &mode, kModes, IM_ARRAYSIZE(kModes)))
+        {
+            settings.displayMode = static_cast<PS2HostSettings::DisplayMode>(mode);
+            ps2HostSettingsRequestWindowApply();
+            changed = true;
+        }
+
+        if (settings.displayMode == PS2HostSettings::DisplayMode::Windowed)
+        {
+            struct Size
+            {
+                int w, h;
+            };
+            static const Size kSizes[] = {{640, 480}, {960, 720}, {1280, 960}, {1440, 1080}, {1280, 720},
+                                          {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+            char current[32];
+            std::snprintf(current, sizeof(current), "%d x %d", settings.windowWidth, settings.windowHeight);
+            if (ImGui::BeginCombo("Window size", current))
+            {
+                const int monitor = GetCurrentMonitor();
+                for (const Size &size : kSizes)
+                {
+                    if (size.w > GetMonitorWidth(monitor) || size.h > GetMonitorHeight(monitor))
+                        continue;
+                    char label[32];
+                    std::snprintf(label, sizeof(label), "%d x %d", size.w, size.h);
+                    const bool selected = size.w == settings.windowWidth && size.h == settings.windowHeight;
+                    if (ImGui::Selectable(label, selected))
+                    {
+                        settings.windowWidth = size.w;
+                        settings.windowHeight = size.h;
+                        ps2HostSettingsRequestWindowApply();
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        int aspect = static_cast<int>(settings.aspect);
+        ImGui::TextUnformatted("Aspect ratio");
+        changed |= ImGui::RadioButton("4:3 (original)", &aspect, 0);
+        ImGui::SameLine();
+        changed |= ImGui::RadioButton("16:9", &aspect, 1);
+        ImGui::SameLine();
+        changed |= ImGui::RadioButton("Stretch", &aspect, 2);
+        settings.aspect = static_cast<PS2HostSettings::Aspect>(aspect);
+        if (settings.aspect == PS2HostSettings::Aspect::Widescreen)
+            ImGui::TextDisabled("Also set Widescreen ON in the game's Display options.");
+
+        changed |= ImGui::Checkbox("Smooth scaling", &settings.smoothFiltering);
+
+        ImGui::BeginDisabled();
+        static const char *kInternal[] = {"Native (640 x 448)"};
+        int internal = 0;
+        ImGui::Combo("Internal resolution", &internal, kInternal, IM_ARRAYSIZE(kInternal));
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Higher internal resolutions are in development.");
+
+        ImGui::SeparatorText("Mouse");
+        changed |= ImGui::SliderFloat("Sensitivity", &settings.mouseSensitivity, 0.05f, 5.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        changed |= ImGui::Checkbox("Invert vertical look", &settings.mouseInvertY);
+
+        ImGui::PopItemWidth();
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Close"))
+            open = false;
+        ImGui::SameLine();
+        ImGui::TextDisabled("F2 opens/closes this menu");
+    }
+    ImGui::End();
+
+    if (changed)
+        ps2HostSettingsSave();
+    if (!open)
+        g_ps2SettingsMenuOpen.store(false, std::memory_order_relaxed);
 #endif
 }

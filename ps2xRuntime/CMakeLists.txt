@@ -390,6 +390,7 @@ add_library(ps2_runtime STATIC
     src/lib/gs/gpu/gs_gpu_renderer.cpp
     src/lib/ps2_iop_host.cpp
     src/lib/ps2_memory.cpp
+    src/lib/ps2_host_settings.cpp
     src/lib/ps2_pad.cpp
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
