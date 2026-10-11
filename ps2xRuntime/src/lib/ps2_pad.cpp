@@ -196,17 +196,24 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             clearBit(PAD_L2);
         m_weaponPulse += m_weaponPulse > 0 ? -1 : (m_weaponPulse < 0 ? 1 : 0);
 
-        // Mouse look: the right stick deflection set from mouse motion.
-        const float lookX = m_lookX.load(std::memory_order_relaxed);
-        const float lookY = m_lookY.load(std::memory_order_relaxed);
-        if (captured && lookX != 0.0f)
-            data[4] = static_cast<uint8_t>(128 + lookX * 127);
-        if (captured && lookY != 0.0f)
-            data[5] = static_cast<uint8_t>(128 + lookY * 127);
     }
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
+    return true;
+}
+
+bool PSPadBackend::applyFakeMouse(float &yaw, float &pitch)
+{
+    static const char *s_env = std::getenv("PS2X_MOUSE_FAKE");
+    if (!s_env)
+        return false;
+    static float s_yaw = 0.0f, s_pitch = 0.0f;
+    static const bool s_parsed = std::sscanf(s_env, "%f,%f", &s_yaw, &s_pitch) >= 1;
+    if (!s_parsed)
+        return false;
+    yaw += s_yaw;
+    pitch += s_pitch;
     return true;
 }
 
@@ -227,44 +234,25 @@ void PSPadBackend::updateHostInput()
     }
     m_mouseCaptured.store(captured, std::memory_order_relaxed);
     if (!captured)
-    {
-        m_lookX.store(0.0f, std::memory_order_relaxed);
-        m_lookY.store(0.0f, std::memory_order_relaxed);
         return;
-    }
-    // Mouse speed (pixels per displayed frame) becomes a held right-stick
-    // deflection. PS2 games ignore small deflections (analog dead zone), so
-    // any motion starts just past it; the stick eases back once motion stops.
-    static const float s_sensitivity = []()
+    // Direct mouse look (applied to the camera by a game hook, see
+    // consumeMouseLook): PS2X_MOUSE_SENS scales, PS2X_MOUSE_INVERT_Y inverts.
+    static const float s_radiansPerPixel = []()
     {
         const char *env = std::getenv("PS2X_MOUSE_SENS");
-        return env ? std::strtof(env, nullptr) : 1.0f;
+        return 0.0025f * (env ? std::strtof(env, nullptr) : 1.0f);
     }();
-    constexpr float kDeadZone = 0.3f;
+    static const float s_pitchSign = std::getenv("PS2X_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     const Vector2 delta = GetMouseDelta();
-    auto axis = [&](std::atomic<float> &look, float d)
+    if (delta.x != 0.0f || delta.y != 0.0f)
     {
-        float value = look.load(std::memory_order_relaxed);
-        if (d != 0.0f)
-        {
-            const float speed = std::min(std::fabs(d) * s_sensitivity / 12.0f, 1.0f);
-            const float target = std::copysign(kDeadZone + (1.0f - kDeadZone) * speed, d);
-            value = (value == 0.0f || (value > 0.0f) != (target > 0.0f)) ? target : 0.5f * (value + target);
-        }
-        else
-        {
-            value *= 0.6f;
-            if (std::fabs(value) < kDeadZone)
-                value = 0.0f;
-        }
-        look.store(value, std::memory_order_relaxed);
-        return value;
-    };
-    const float lookX = axis(m_lookX, delta.x);
-    const float lookY = axis(m_lookY, delta.y);
-    static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
-    if (s_debug && (delta.x != 0.0f || delta.y != 0.0f))
-        std::fprintf(stderr, "[pad] mouse d=(%.1f,%.1f) look=(%.2f,%.2f)\n", delta.x, delta.y, lookX, lookY);
+        m_lookYaw.store(m_lookYaw.load(std::memory_order_relaxed) + delta.x * s_radiansPerPixel, std::memory_order_relaxed);
+        m_lookPitch.store(m_lookPitch.load(std::memory_order_relaxed) - delta.y * s_radiansPerPixel * s_pitchSign,
+                          std::memory_order_relaxed);
+        static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
+        if (s_debug)
+            std::fprintf(stderr, "[pad] mouse d=(%.1f,%.1f)\n", delta.x, delta.y);
+    }
     const float wheel = GetMouseWheelMove();
     if (wheel != 0.0f)
         m_wheelSteps.fetch_add(wheel > 0.0f ? 1 : -1, std::memory_order_relaxed);

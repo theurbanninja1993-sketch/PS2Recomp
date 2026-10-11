@@ -19,6 +19,16 @@ public:
 
     // Game-specific "player is driving" check, used by the keyboard (W/S drive)
     // and the optional modern gamepad driving controls.
+    // Mouse look: radians of yaw (positive = turn right) and pitch (positive =
+    // look up) accumulated since the last call; a game hook applies them to
+    // its camera. Returns false when the mouse is not captured.
+    bool consumeMouseLook(float &yaw, float &pitch)
+    {
+        yaw = m_lookYaw.exchange(0.0f, std::memory_order_relaxed);
+        pitch = m_lookPitch.exchange(0.0f, std::memory_order_relaxed);
+        return m_mouseCaptured.load(std::memory_order_relaxed) || applyFakeMouse(yaw, pitch);
+    }
+
     using VehicleProbe = bool (*)(const uint8_t *rdram);
     void setVehicleProbe(VehicleProbe probe, const uint8_t *rdram)
     {
@@ -27,10 +37,11 @@ public:
     }
 
 private:
+    static bool applyFakeMouse(float &yaw, float &pitch); // PS2X_MOUSE_FAKE=<yaw>,<pitch> per camera update (tests)
     VehicleProbe m_vehicleProbe = nullptr;
     const uint8_t *m_rdram = nullptr;
     std::atomic<bool> m_mouseCaptured{false};
-    std::atomic<float> m_lookX{0.0f}, m_lookY{0.0f}; // right-stick deflection from mouse motion, -1..1
+    std::atomic<float> m_lookYaw{0.0f}, m_lookPitch{0.0f}; // radians not yet applied
     std::atomic<int> m_wheelSteps{0};
     int m_weaponPulse = 0; // pad reads left on a scripted weapon-cycle press (+ next, - previous)
 };

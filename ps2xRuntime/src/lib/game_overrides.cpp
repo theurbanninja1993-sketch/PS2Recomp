@@ -7,6 +7,7 @@
 #include "ps2_syscalls.h"
 #include "ps2_log.h"
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <atomic>
 #include <sstream>
@@ -396,8 +397,162 @@ namespace
         return false;
     }
 
+    // Direct mouse look. The on-foot follow camera (0x29DAB0, a0 = CCam)
+    // integrates turn speeds the right stick drives:
+    // +0x130 vertical (positive = look up), +0x140 horizontal (positive =
+    // turn left). One update moves the angle by ~0.45x the speed, which the
+    // game then damps. The hook sets the speeds for exactly this update's
+    // mouse motion and clears them afterwards, so there is no stick ramp-up,
+    // dead zone or drift.
+    PS2Runtime::RecompiledFunction g_vcsOrigFollowPedCam = nullptr;
+    PS2Runtime::RecompiledFunction g_vcsOrigFollowCarCam = nullptr;
+
+    void vcsRunCameraWithMouse(PS2Runtime::RecompiledFunction original, uint8_t *rdram, R5900Context *ctx,
+                               PS2Runtime *runtime)
+    {
+        float yaw = 0.0f, pitch = 0.0f;
+        const bool captured = runtime->padBackend().consumeMouseLook(yaw, pitch);
+        const uint32_t cam = getRegU32(ctx, 4);
+        const bool apply = captured && (yaw != 0.0f || pitch != 0.0f) && cam >= 0x00100000u &&
+                           cam + 0x144u <= PS2_RAM_SIZE;
+        if (apply)
+        {
+            constexpr float kAnglePerSpeed = 0.45f;
+            const float verticalSpeed = pitch / kAnglePerSpeed;
+            const float horizontalSpeed = -yaw / kAnglePerSpeed;
+            std::memcpy(rdram + cam + 0x130u, &verticalSpeed, 4);
+            std::memcpy(rdram + cam + 0x140u, &horizontalSpeed, 4);
+        }
+        original(rdram, ctx, runtime);
+        if (apply)
+        {
+            const float zero = 0.0f;
+            std::memcpy(rdram + cam + 0x130u, &zero, 4);
+            std::memcpy(rdram + cam + 0x140u, &zero, 4);
+        }
+    }
+
+    void vcsFollowPedCam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        vcsRunCameraWithMouse(g_vcsOrigFollowPedCam, rdram, ctx, runtime);
+    }
+
+    // Vehicle cameras have no stick look on the PS2, so the mouse adds a view
+    // offset instead (like GTA IV/V): only the RenderWare camera is rotated
+    // about the vehicle (see vcsFrameUpdate), so game logic never sees it.
+    // (Wrapping CCamera::Process is unreliable: thread switches inside it
+    // resume past a wrapper.) The offset eases back behind the vehicle once
+    // the mouse rests.
+    struct VcsCarLook
+    {
+        float yaw = 0.0f, pitch = 0.0f; // radians; yaw positive = look right
+        uint32_t idleUpdates = 0;
+        uint32_t vehicleCam = 0;        // CCam of the last vehicle-camera update
+        uint64_t vehicleFrame = 0;      // presented frame of that update
+    };
+    VcsCarLook g_vcsCarLook;
+
+    void vcsRotate(float v[3], const float axis[3], float angle)
+    {
+        // Rodrigues rotation about a unit axis.
+        const float c = std::cos(angle), sn = std::sin(angle);
+        const float dot = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
+        const float cross[3] = {axis[1] * v[2] - axis[2] * v[1], axis[2] * v[0] - axis[0] * v[2], axis[0] * v[1] - axis[1] * v[0]};
+        for (int i = 0; i < 3; ++i)
+            v[i] = v[i] * c + cross[i] * sn + axis[i] * dot * (1.0f - c);
+    }
+
+    void vcsFollowCarCam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        VcsCarLook &look = g_vcsCarLook;
+        look.vehicleCam = getRegU32(ctx, 4);
+        look.vehicleFrame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        float yaw = 0.0f, pitch = 0.0f;
+        const bool captured = runtime->padBackend().consumeMouseLook(yaw, pitch);
+        if (captured && (yaw != 0.0f || pitch != 0.0f))
+        {
+            look.yaw = std::remainder(look.yaw + yaw, 6.2831853f);
+            look.pitch = std::clamp(look.pitch + pitch, -0.6f, 0.9f);
+            look.idleUpdates = 0;
+        }
+        else if (++look.idleUpdates > 45u) // ~1.5 s at the game's 30 Hz
+        {
+            look.yaw *= 0.9f;
+            look.pitch *= 0.9f;
+        }
+        if (std::fabs(look.yaw) < 1.0e-3f && std::fabs(look.pitch) < 1.0e-3f)
+            look.yaw = look.pitch = 0.0f;
+        g_vcsOrigFollowCarCam(rdram, ctx, runtime);
+    }
+
+    // Rotates the RenderWare camera frame's modelling matrix (right +0x10,
+    // up +0x20, at +0x30, pos +0x40) by the vehicle look offset.
+    void vcsApplyCarLook(uint8_t *rdram, uint32_t frame)
+    {
+        VcsCarLook &look = g_vcsCarLook;
+        const uint64_t now = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        if (now > look.vehicleFrame + 4u)
+            look.yaw = look.pitch = 0.0f; // left the vehicle
+        if (look.yaw == 0.0f && look.pitch == 0.0f)
+            return;
+        const uint32_t cam = look.vehicleCam;
+        uint32_t target = 0;
+        if (cam < 0x00100000u || cam + 0x80u > PS2_RAM_SIZE || frame < 0x00100000u || frame + 0x50u > PS2_RAM_SIZE)
+            return;
+        std::memcpy(&target, rdram + cam + 0x70u, 4);
+        if (target < 0x00100000u || target + 0x40u > PS2_RAM_SIZE)
+            return;
+        float *m = reinterpret_cast<float *>(rdram + frame + 0x10u);
+        float pivot[3];
+        std::memcpy(pivot, rdram + target + 0x30u, 12);
+        float right[3] = {m[0], m[1], m[2]};
+        float up[3] = {m[4], m[5], m[6]};
+        float at[3] = {m[8], m[9], m[10]};
+        float offset[3] = {m[12] - pivot[0], m[13] - pivot[1], m[14] - pivot[2]};
+        float pitchAxis[3] = {at[1], -at[0], 0.0f}; // horizontal, to the right
+        const float axisLength = std::sqrt(pitchAxis[0] * pitchAxis[0] + pitchAxis[1] * pitchAxis[1]);
+        if (!std::isfinite(axisLength) || axisLength < 1.0e-4f || !std::isfinite(offset[0] + offset[1] + offset[2]))
+            return;
+        pitchAxis[0] /= axisLength;
+        pitchAxis[1] /= axisLength;
+        const float zAxis[3] = {0.0f, 0.0f, 1.0f};
+        // Pitch about the horizontal right axis, then yaw about Z (Z up:
+        // looking right is clockwise seen from above).
+        for (float *v : {right, up, at, offset})
+        {
+            vcsRotate(v, pitchAxis, look.pitch);
+            vcsRotate(v, zAxis, -look.yaw);
+        }
+        for (int i = 0; i < 3; ++i)
+        {
+            m[i] = right[i];
+            m[4 + i] = up[i];
+            m[8 + i] = at[i];
+            m[12 + i] = pivot[i] + offset[i];
+        }
+    }
+
+    // RwFrameUpdateObjects; CCamera::Process calls it (returning to
+    // 0x37AE5C) right after copying TheCamera's matrix into the RenderWare
+    // camera's frame, so the look offset reaches rendering only.
+    PS2Runtime::RecompiledFunction g_vcsOrigFrameUpdate = nullptr;
+
+    void vcsFrameUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (getRegU32(ctx, 31) == 0x0037AE5Cu)
+            vcsApplyCarLook(rdram, getRegU32(ctx, 4));
+        g_vcsOrigFrameUpdate(rdram, ctx, runtime);
+    }
+
     void applyGtaVcsUs(PS2Runtime &runtime)
     {
+        if ((g_vcsOrigFollowPedCam = runtime.lookupFunction(0x0029DAB0u)))
+            runtime.replaceFunction(0x0029DAB0u, &vcsFollowPedCam);
+        if ((g_vcsOrigFollowCarCam = runtime.lookupFunction(0x0029FAF0u)))
+            runtime.replaceFunction(0x0029FAF0u, &vcsFollowCarCam);
+        if ((g_vcsOrigFrameUpdate = runtime.lookupFunction(0x001B4688u)))
+            runtime.replaceFunction(0x001B4688u, &vcsFrameUpdate);
+
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
