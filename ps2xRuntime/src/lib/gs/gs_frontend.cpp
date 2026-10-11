@@ -1827,6 +1827,13 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
     for (int i = 0; i < batch.vertexCount; ++i)
         batch.vertices[static_cast<size_t>(i)] = m_vtxQueue[i];
     batch.state.context = m_ctx[m_prim.ctxt ? 1 : 0];
+    // Half-height interlaced output (e.g. VCS movies / loading screens): the
+    // game draws alternate fields half a pixel apart (XYOFFSET.OFY +-8) for
+    // the TV to interlace. Every field is shown at the same place here, so
+    // that offset only makes the picture bob; drop it.
+    if (m_privRegs && (m_privRegs->smode2 & 1ull) != 0ull && ((m_privRegs->display1 >> 44) & 0x7FFull) < 256ull &&
+        ((m_privRegs->display2 >> 44) & 0x7FFull) < 256ull)
+        batch.state.context.xyoffset.ofy &= static_cast<uint16_t>(~0xFu);
     batch.state.prim = m_prim;
     batch.state.texa = m_texa;
     batch.state.texclut = m_texclut;
