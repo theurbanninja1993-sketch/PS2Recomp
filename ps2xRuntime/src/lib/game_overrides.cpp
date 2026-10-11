@@ -6,6 +6,7 @@
 #include "Kernel/Stubs/MPEG.h"
 #include "ps2_syscalls.h"
 #include "ps2_log.h"
+#include "runtime/ps2_host_settings.h"
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -579,6 +580,92 @@ namespace
         }
     }
 
+    // Field of view: RwCameraSetViewWindow(camera, &viewWindow) (0x18F2D8;
+    // view window = tan(FOV / 2) wide, at camera + 0x60) gets the game's
+    // request scaled by settings FOV / 70, so zooms and cutscene framing keep
+    // their relative changes. The game only sets it when its FOV changes:
+    // the last request is kept to re-apply a new setting.
+    PS2Runtime::RecompiledFunction g_vcsOrigSetViewWindow = nullptr;
+    struct VcsFov
+    {
+        uint32_t camera = 0;
+        float gameX = 0.0f, gameY = 0.0f; // the game's last request
+        float appliedFov = 70.0f;
+    };
+    VcsFov g_vcsFov;
+
+    float vcsFovSetting()
+    {
+        return std::clamp(ps2HostSettings().fieldOfView, 40.0f, 120.0f);
+    }
+
+    void vcsSetViewWindow(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t camera = getRegU32(ctx, 4), viewWindow = getRegU32(ctx, 5);
+        if (viewWindow >= 0x00100000u && viewWindow + 8u <= PS2_RAM_SIZE)
+        {
+            float vw[2];
+            std::memcpy(vw, rdram + viewWindow, sizeof(vw));
+            g_vcsFov.camera = camera;
+            g_vcsFov.gameX = vw[0];
+            g_vcsFov.gameY = vw[1];
+            const float setting = vcsFovSetting();
+            g_vcsFov.appliedFov = setting;
+            if (setting != 70.0f && vw[0] > 0.0f && std::isfinite(vw[0]) && std::isfinite(vw[1]))
+            {
+                constexpr float kMaxHalfFov = 1.48f; // ~170 degrees
+                const float half = std::min(std::atan(vw[0]) * (setting / 70.0f), kMaxHalfFov);
+                const float x = std::tan(half);
+                vw[1] *= x / vw[0];
+                vw[0] = x;
+                std::memcpy(rdram + viewWindow, vw, sizeof(vw));
+            }
+        }
+        g_vcsOrigSetViewWindow(rdram, ctx, runtime);
+    }
+
+    // Draw distance (far part): RwCameraSetFarClipPlane(camera, far)
+    // (0x18F400, far at camera + 0x7C) on the main camera gets the game's
+    // value times the setting; kept for re-applying, like the FOV.
+    PS2Runtime::RecompiledFunction g_vcsOrigSetFarClip = nullptr;
+    float g_vcsGameFarClip = 0.0f, g_vcsAppliedDrawDistance = 1.0f;
+
+    float vcsDrawDistanceSetting()
+    {
+        return std::clamp(ps2HostSettings().drawDistance, 0.5f, 4.0f);
+    }
+
+    void vcsSetFarClip(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t camera = getRegU32(ctx, 4);
+        if (camera != 0u && camera == g_vcsFov.camera && std::isfinite(ctx->f[12]) && ctx->f[12] > 0.0f)
+        {
+            g_vcsGameFarClip = ctx->f[12];
+            g_vcsAppliedDrawDistance = vcsDrawDistanceSetting();
+            ctx->f[12] = g_vcsGameFarClip * g_vcsAppliedDrawDistance;
+        }
+        g_vcsOrigSetFarClip(rdram, ctx, runtime);
+    }
+
+    // Draw distance (detail part): CCam::Process (0x294540) ends with the
+    // LOD distance multiplier, tan(35 deg) / tan(FOV / 2), at CCam + 0x138;
+    // for TheCamera.Cams[0] (0x6F4540, the one in use) that is 0x6F4678,
+    // read by the renderer after CCamera::Process. Only a freshly computed
+    // value is scaled (an unchanged one was ours: it must not compound).
+    float g_vcsLodWritten = 0.0f;
+
+    void vcsScaleLodDistance(uint8_t *rdram)
+    {
+        constexpr uint32_t kLodMultiplier = 0x006F4678u;
+        float value = 0.0f;
+        std::memcpy(&value, rdram + kLodMultiplier, sizeof(value));
+        if (value == g_vcsLodWritten || !std::isfinite(value) || value <= 0.0f || value > 100.0f)
+            return;
+        value *= vcsDrawDistanceSetting();
+        std::memcpy(rdram + kLodMultiplier, &value, sizeof(value));
+        g_vcsLodWritten = value;
+    }
+
     // RwFrameUpdateObjects; CCamera::Process calls it (returning to
     // 0x37AE5C) right after copying TheCamera's matrix into the RenderWare
     // camera's frame, so the look offset reaches rendering only.
@@ -587,7 +674,32 @@ namespace
     void vcsFrameUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         if (getRegU32(ctx, 31) == 0x0037AE5Cu)
+        {
             vcsApplyCarLook(rdram, getRegU32(ctx, 4));
+            vcsScaleLodDistance(rdram);
+            // A new FOV setting: re-issue the game's last view window.
+            const uint32_t camera = g_vcsFov.camera;
+            if (g_vcsOrigSetViewWindow && camera >= 0x00100000u && camera + 0x70u <= PS2_RAM_SIZE &&
+                g_vcsFov.appliedFov != vcsFovSetting())
+            {
+                const R5900Context saved = *ctx;
+                const float vw[2] = {g_vcsFov.gameX, g_vcsFov.gameY};
+                std::memcpy(rdram + camera + 0x60u, vw, sizeof(vw));
+                SET_GPR_U32(ctx, 4, camera);
+                SET_GPR_U32(ctx, 5, camera + 0x60u);
+                vcsSetViewWindow(rdram, ctx, runtime);
+                *ctx = saved;
+            }
+            if (g_vcsOrigSetFarClip && camera >= 0x00100000u && g_vcsGameFarClip > 0.0f &&
+                g_vcsAppliedDrawDistance != vcsDrawDistanceSetting())
+            {
+                const R5900Context saved = *ctx;
+                SET_GPR_U32(ctx, 4, camera);
+                ctx->f[12] = g_vcsGameFarClip;
+                vcsSetFarClip(rdram, ctx, runtime);
+                *ctx = saved;
+            }
+        }
         g_vcsOrigFrameUpdate(rdram, ctx, runtime);
     }
 
@@ -599,6 +711,10 @@ namespace
             runtime.replaceFunction(0x0029FAF0u, &vcsFollowCarCam);
         if ((g_vcsOrigFrameUpdate = runtime.lookupFunction(0x001B4688u)))
             runtime.replaceFunction(0x001B4688u, &vcsFrameUpdate);
+        if ((g_vcsOrigSetViewWindow = runtime.lookupFunction(0x0018F2D8u)))
+            runtime.replaceFunction(0x0018F2D8u, &vcsSetViewWindow);
+        if ((g_vcsOrigSetFarClip = runtime.lookupFunction(0x0018F400u)))
+            runtime.replaceFunction(0x0018F400u, &vcsSetFarClip);
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
 

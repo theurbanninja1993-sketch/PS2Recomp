@@ -230,6 +230,10 @@ void ps2HostSettingsLoad()
             s.internalScale = std::clamp(std::atoi(v), 1, 4);
         else if (key == "flicker_filter")
             s.flickerFilter = std::atoi(v) != 0;
+        else if (key == "field_of_view")
+            s.fieldOfView = std::clamp(std::strtof(v, nullptr), 40.0f, 120.0f);
+        else if (key == "draw_distance")
+            s.drawDistance = std::clamp(std::strtof(v, nullptr), 0.5f, 4.0f);
         else if (key == "mouse_invert_y")
             s.mouseInvertY = std::atoi(v) != 0;
         else if (key == "texture_replacement")
@@ -338,6 +342,8 @@ void ps2HostSettingsSave()
         << "smooth_filtering=" << (s.smoothFiltering ? 1 : 0) << "\n"
         << "internal_scale=" << s.internalScale << "\n"
         << "flicker_filter=" << (s.flickerFilter ? 1 : 0) << "\n"
+        << "field_of_view=" << s.fieldOfView << "\n"
+        << "draw_distance=" << s.drawDistance << "\n"
         << "mouse_sensitivity=" << s.mouseSensitivity << "\n"
         << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << "\n"
         << "gamepad_layout=" << static_cast<int>(s.gamepadLayout) << "\n";

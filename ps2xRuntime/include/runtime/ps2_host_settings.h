@@ -78,6 +78,8 @@ struct PS2HostSettings
     bool smoothFiltering = true; // bilinear scaling of the picture (off: sharp pixels)
     int internalScale = 1;       // GPU renderer resolution multiplier (1 = native 640x448)
     bool flickerFilter = false;  // the game's interlace flicker filter (a vertical blur)
+    float fieldOfView = 70.0f;  // degrees at the game's default view (70 = original)
+    float drawDistance = 1.0f;  // multiplier on view / detail distances (1 = original)
     float mouseSensitivity = 1.0f;
     bool mouseInvertY = false;
 

@@ -2459,6 +2459,25 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::TextDisabled("Needs the GPU renderer (PS2X_GS_GPU=1).");
 
                 changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
+
+                ImGui::SeparatorText("View");
+                changed |= ImGui::SliderFloat("Field of view", &settings.fieldOfView, 50.0f, 110.0f, "%.0f deg");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset##fov"))
+                {
+                    settings.fieldOfView = 70.0f;
+                    changed = true;
+                }
+                ImGui::TextDisabled("70 is the original. Zooms and cutscenes scale with it.");
+                changed |= ImGui::SliderFloat("Draw distance", &settings.drawDistance, 1.0f, 3.0f, "%.1fx");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset##draw"))
+                {
+                    settings.drawDistance = 1.0f;
+                    changed = true;
+                }
+                ImGui::TextDisabled("Keeps buildings and objects detailed farther away. High values make the\n"
+                                    "game stream more of the city than the PS2 was built for.");
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
