@@ -2,6 +2,7 @@
 
 #include "runtime/gs/gs_backend.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -17,6 +18,11 @@ namespace gsgpu
 // GS raster backend that renders with the GPU (see docs/gpu-renderer.md).
 // Every call is executed in order on a dedicated render thread that owns the
 // GL context; calls returning data wait for the render thread.
+// Internal resolution the GPU renderer should use (render targets this many
+// times the GS size; 0 = no request). Set from the host settings; applied
+// between frames. PS2X_GS_SCALE sets the starting value.
+extern std::atomic<uint32_t> g_gsGpuScaleRequest;
+
 class GSGpuBackend final : public GSRasterBackend
 {
 public:

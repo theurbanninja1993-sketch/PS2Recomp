@@ -3,6 +3,7 @@
 #include "runtime/gs/gs_backend.h"
 #include "runtime/gs/gpu/gl_context.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -50,6 +51,11 @@ namespace gsgpu
         GSTransferSnapshot transferSnapshot();
 
         [[nodiscard]] bool gpuAvailable() const { return m_gpu; }
+
+        // Internal resolution: render targets are `scale` times the GS size
+        // in each direction (1 = native). Changing it rebuilds the targets
+        // from local memory.
+        void setScale(uint32_t scale);
 
     private:
         struct Target
@@ -132,6 +138,15 @@ namespace gsgpu
         bool bytesToRows(const Target &target, uint32_t begin, uint32_t end, uint32_t &y0, uint32_t &y1) const;
         void markStaleRows(Target &target, uint32_t beginByte, uint32_t endByte);
         void loadStaleRows(Target &target);
+        // Colour target a draw can sample directly (instead of local memory)
+        // for texture TBP0/TBW/PSM covering `rows`; brought up to date.
+        Target *textureSourceTarget(uint32_t tbp0, uint32_t tbw, uint32_t tpsm, uint32_t rows);
+        // Scaled copy of `target` for draws sampling the target they render to.
+        GLuint feedbackCopy(const Target &target);
+        // High-resolution version of the CPU-composed presentation frame.
+        void upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame);
+        void applyPendingScale();
+        void destroyTargets();
 
         // CPU copy of local memory <-> VRAM.
         void readbackVram();
@@ -144,12 +159,18 @@ namespace gsgpu
         std::unique_ptr<GSCpuBackend> m_cpu; // presentation, local->host transfers
         uint8_t *m_vram = nullptr;
 
+        uint32_t m_scale = 1;
+        std::atomic<uint32_t> m_requestedScale{1};
+        GLuint m_feedbackTexture = 0;
+        uint32_t m_feedbackWidth = 0, m_feedbackHeight = 0;
         std::vector<std::unique_ptr<Target>> m_targets;
         std::unordered_map<uint64_t, GLuint> m_framebuffers; // (color tex, depth tex) -> FBO
 
         GLuint m_vramBuffer = 0, m_swizzleBuffer = 0, m_clutBuffer = 0, m_stagingBuffer = 0;
         size_t m_stagingCapacity = 0;
-        Program m_draw, m_loadColor, m_loadDepth, m_resolve, m_hostToLocal, m_localToLocal, m_clutLoad;
+        Program m_draw, m_loadColor, m_loadDepth, m_resolve, m_hostToLocal, m_localToLocal, m_clutLoad, m_compose;
+        GLuint m_presentTexture = 0, m_presentFramebuffer = 0; // upscaled display output
+        uint32_t m_presentWidth = 0, m_presentHeight = 0;
         GLuint m_vao = 0, m_emptyVao = 0;
         GLuint m_vbo = 0;
         size_t m_vboCapacity = 0;

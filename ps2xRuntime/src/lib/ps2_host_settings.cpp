@@ -1,6 +1,8 @@
 #include "runtime/ps2_host_settings.h"
 
 #include "raylib.h"
+#include "runtime/gs/gs_frontend.h"
+#include "runtime/gs/gs_gpu_backend.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -62,6 +64,10 @@ void ps2HostSettingsLoad()
             s.smoothFiltering = std::atoi(v) != 0;
         else if (key == "mouse_sensitivity")
             s.mouseSensitivity = std::clamp(std::strtof(v, nullptr), 0.05f, 20.0f);
+        else if (key == "internal_scale")
+            s.internalScale = std::clamp(std::atoi(v), 1, 4);
+        else if (key == "flicker_filter")
+            s.flickerFilter = std::atoi(v) != 0;
         else if (key == "mouse_invert_y")
             s.mouseInvertY = std::atoi(v) != 0;
     }
@@ -70,6 +76,24 @@ void ps2HostSettingsLoad()
     if (std::getenv("PS2X_MOUSE_INVERT_Y"))
         s.mouseInvertY = true;
     g_windowApplyPending = true;
+    ps2HostSettingsApplyRenderer();
+}
+
+void ps2HostSettingsApplyRenderer()
+{
+    // PS2X_GS_SCALE (tests) wins over the saved value at startup.
+    static const char *s_envScale = std::getenv("PS2X_GS_SCALE");
+    static bool s_first = true;
+    if (!(s_first && s_envScale))
+        g_gsGpuScaleRequest.store(static_cast<uint32_t>(g_settings.internalScale), std::memory_order_relaxed);
+    s_first = false;
+    g_gsFlickerFilter.store(g_settings.flickerFilter, std::memory_order_relaxed);
+}
+
+bool ps2HostSettingsGpuRenderer()
+{
+    static const bool s_gpu = std::getenv("PS2X_GS_GPU") != nullptr;
+    return s_gpu;
 }
 
 void ps2HostSettingsSave()
@@ -90,6 +114,8 @@ void ps2HostSettingsSave()
         << "window_height=" << s.windowHeight << "\n"
         << "aspect=" << static_cast<int>(s.aspect) << "\n"
         << "smooth_filtering=" << (s.smoothFiltering ? 1 : 0) << "\n"
+        << "internal_scale=" << s.internalScale << "\n"
+        << "flicker_filter=" << (s.flickerFilter ? 1 : 0) << "\n"
         << "mouse_sensitivity=" << s.mouseSensitivity << "\n"
         << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << "\n";
 }

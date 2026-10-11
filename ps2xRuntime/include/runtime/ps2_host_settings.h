@@ -27,6 +27,8 @@ struct PS2HostSettings
     int windowHeight = 720;
     Aspect aspect = Aspect::Standard;
     bool smoothFiltering = true; // bilinear scaling of the picture (off: sharp pixels)
+    int internalScale = 1;       // GPU renderer resolution multiplier (1 = native 640x448)
+    bool flickerFilter = false;  // the game's interlace flicker filter (a vertical blur)
     float mouseSensitivity = 1.0f;
     bool mouseInvertY = false;
 };
@@ -42,6 +44,10 @@ std::string ps2HostSettingsPath();
 // (made in the menu or by loading) to the host window.
 void ps2HostSettingsApplyWindow();
 void ps2HostSettingsRequestWindowApply();
+// Pushes the renderer settings (internal resolution, flicker filter) to the GS.
+void ps2HostSettingsApplyRenderer();
+// The GPU renderer is in use (internal resolution only applies to it).
+bool ps2HostSettingsGpuRenderer();
 
 // The settings menu is open: the game gets neutral input and the mouse is free.
 extern std::atomic<bool> g_ps2SettingsMenuOpen;

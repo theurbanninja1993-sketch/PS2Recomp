@@ -1,15 +1,19 @@
 #include "runtime/gs/gpu/gs_gpu_renderer.h"
 
 #include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
+
+std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 
 namespace gsgpu
 {
@@ -288,6 +292,8 @@ noperspective in float v_fog;
 layout(location = 0, index = 0) out vec4 o_color;
 layout(location = 0, index = 1) out vec4 o_factor;
 layout(binding = 1) uniform sampler2D u_target;
+layout(binding = 3) uniform sampler2D u_rtTex;
+uniform int u_rtScale; // 0: texture read from local memory; else sampled from a render target at this scale
 layout(std430, binding = 2) readonly buffer ClutBuffer { uint clut[]; };
 uniform int u_tme, u_tfx, u_tcc, u_fge;
 uniform uvec4 u_tex;      // TBP0, TBW, PSM, CPSM
@@ -368,8 +374,39 @@ uint lerp2(uint a, uint b, uint w)
     return lo | (hi << 16);
 }
 
+// Texel of a render target used as the texture, in target pixels: GS wrap
+// modes apply to the GS texel the pixel belongs to, and the colour goes
+// through the same format conversion as a local-memory read.
+uint rtTexel(int uh, int vh)
+{
+    int u = int(floor(float(uh) / float(u_rtScale)));
+    int v = int(floor(float(vh) / float(u_rtScale)));
+    int su = uh - u * u_rtScale, sv = vh - v * u_rtScale;
+    u = wrapCoordinate(u, u_texSize.x, u_tex2.z & 3u, u_region.x, u_region.y);
+    v = wrapCoordinate(v, u_texSize.y, (u_tex2.z >> 2) & 3u, u_region.z, u_region.w);
+    uint c = packUnorm4x8(texelFetch(u_rtTex, ivec2(u * u_rtScale + su, v * u_rtScale + sv), 0));
+    uint psm = u_tex.z;
+    return applyTexa(psm, is16BitPsm(psm) ? rgba5551To8888(rgba8888To5551(c)) : c);
+}
+
 uint sampleTexture(vec2 uv)
 {
+    if (u_rtScale != 0)
+    {
+        // A pixel drawn at GS position p is texel position p + 0.5, so
+        // target pixel k (drawn at k / scale) sits at k / scale + 0.5.
+        vec2 s = (uv - 0.5) * float(u_rtScale);
+        if (u_tex2.w == 0u)
+            return rtTexel(int(floor(s.x + 0.5)), int(floor(s.y + 0.5)));
+        int u0 = int(floor(s.x)), v0 = int(floor(s.y));
+        uint wx = uint((s.x - float(u0)) * 256.0 + 0.5);
+        uint wy = uint((s.y - float(v0)) * 256.0 + 0.5);
+        uint c00 = rtTexel(u0, v0), c10 = rtTexel(u0 + 1, v0), c01 = rtTexel(u0, v0 + 1), c11 = rtTexel(u0 + 1, v0 + 1);
+        uint even = lerp2(lerp2(c00 & 0x00FF00FFu, c10 & 0x00FF00FFu, wx), lerp2(c01 & 0x00FF00FFu, c11 & 0x00FF00FFu, wx), wy);
+        uint odd = lerp2(lerp2((c00 >> 8) & 0x00FF00FFu, (c10 >> 8) & 0x00FF00FFu, wx),
+                         lerp2((c01 >> 8) & 0x00FF00FFu, (c11 >> 8) & 0x00FF00FFu, wx), wy);
+        return even | (odd << 8);
+    }
     if (u_tex2.w == 0u)
         return texel(int(uv.x), int(uv.y));
     vec2 s = uv - 0.5;
@@ -471,6 +508,32 @@ void main()
 }
 )";
 
+        // Upscaled display output: the PCRTC merge of the two read circuits
+        // (circuit 2 or the background below, circuit 1 blended over it).
+        const char *kComposeShader = R"(#version 460 core
+layout(binding = 0) uniform sampler2D u_circuit1;
+layout(binding = 1) uniform sampler2D u_circuit2;
+uniform ivec4 u_rect1; // read origin and size in target pixels; size 0 = circuit off
+uniform ivec4 u_rect2;
+uniform vec3 u_bg;
+uniform vec2 u_mode;   // MMOD ALP factor (or < 0: circuit 1's alpha), SLBG
+out vec4 o_color;
+void main()
+{
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    vec3 dst = u_bg;
+    if (u_rect2.z > 0 && u_mode.y == 0.0 && p.x < u_rect2.z && p.y < u_rect2.w)
+        dst = texelFetch(u_circuit2, u_rect2.xy + p, 0).rgb;
+    if (u_rect1.z > 0 && p.x < u_rect1.z && p.y < u_rect1.w)
+    {
+        vec4 src = texelFetch(u_circuit1, u_rect1.xy + p, 0);
+        float factor = u_mode.x >= 0.0 ? u_mode.x : min(1.0, src.a * 2.0);
+        dst = mix(dst, src.rgb, factor);
+    }
+    o_color = vec4(dst, 1.0);
+}
+)";
+
         // Full-target triangle for load passes (rows limited by the scissor).
         const char *kFullscreenVertexShader = R"(#version 460 core
 void main()
@@ -483,10 +546,11 @@ void main()
         // VRAM -> colour target.
         const char *kLoadColorShader = R"(
 uniform uvec3 u_buffer; // block, bw, psm
+uniform uint u_scale;   // target pixels per GS pixel (nearest upscale)
 out vec4 o_color;
 void main()
 {
-    uint x = uint(gl_FragCoord.x), y = uint(gl_FragCoord.y);
+    uint x = uint(gl_FragCoord.x) / u_scale, y = uint(gl_FragCoord.y) / u_scale;
     uint raw = readVram(u_buffer.z, u_buffer.x, u_buffer.y, x, y);
     uint c = is16BitPsm(u_buffer.z) ? rgba5551To8888(raw)
            : (u_buffer.z == 0x01u ? ((raw & 0x00FFFFFFu) | 0x80000000u) : raw);
@@ -497,9 +561,10 @@ void main()
         // VRAM -> depth target.
         const char *kLoadDepthShader = R"(
 uniform uvec3 u_buffer; // block, bw, psm
+uniform uint u_scale;
 void main()
 {
-    uint x = uint(gl_FragCoord.x), y = uint(gl_FragCoord.y);
+    uint x = uint(gl_FragCoord.x) / u_scale, y = uint(gl_FragCoord.y) / u_scale;
     uint raw = readVram(u_buffer.z, u_buffer.x, u_buffer.y, x, y);
     gl_FragDepth = float(double(raw) * (1.0LF / 4294967296.0LF));
 }
@@ -511,13 +576,14 @@ layout(local_size_x = 64, local_size_y = 4) in;
 layout(binding = 0) uniform sampler2D u_source;
 uniform uvec4 u_buffer; // block, bw, psm, depth
 uniform uvec3 u_rows;   // first row, row count, width
+uniform uint u_scale;   // each GS pixel takes the target pixel at its sample point
 void main()
 {
     uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;
     if (x >= u_rows.z || y >= u_rows.y)
         return;
     y += u_rows.x;
-    vec4 t = texelFetch(u_source, ivec2(x, y), 0);
+    vec4 t = texelFetch(u_source, ivec2(x * u_scale, y * u_scale), 0);
     uint value;
     if (u_buffer.w != 0u)
     {
@@ -696,6 +762,10 @@ void main()
             m_gpu = std::getenv("PS2X_GS_GPU_CPU") == nullptr; // debug: keep the CPU path
             if (m_gpu)
                 initGpuObjects();
+            if (const char *env = std::getenv("PS2X_GS_SCALE"))
+                g_gsGpuScaleRequest.store(static_cast<uint32_t>(std::atoi(env)), std::memory_order_relaxed);
+            m_scale = std::clamp<uint32_t>(g_gsGpuScaleRequest.load(std::memory_order_relaxed), 1u, 8u);
+            m_requestedScale.store(m_scale, std::memory_order_relaxed);
         }
         else
         {
@@ -751,6 +821,8 @@ void main()
         m_hostToLocal.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kHostToLocalShader)});
         m_localToLocal.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kLocalToLocalShader)});
         m_clutLoad.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kClutLoadShader)});
+        m_compose.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
+                                        compileShader(gl, GL_FRAGMENT_SHADER, kComposeShader)});
 
         gl.glCreateBuffers(1, &m_vramBuffer);
         gl.glNamedBufferStorage(m_vramBuffer, kLocalMemoryBytes, nullptr, GL_DYNAMIC_STORAGE_BIT);
@@ -818,7 +890,7 @@ void main()
         GL &gl = m_context.gl;
         gl.glCreateTextures(GL_TEXTURE_2D, 1, &target->texture);
         gl.glTextureStorage2D(target->texture, 1, depth ? GL_DEPTH_COMPONENT32F : GL_RGBA8,
-                              static_cast<GLsizei>(target->width), static_cast<GLsizei>(target->height));
+                              static_cast<GLsizei>(target->width * m_scale), static_cast<GLsizei>(target->height * m_scale));
         gl.glTextureParameteri(target->texture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         gl.glTextureParameteri(target->texture, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         gl.glCreateFramebuffers(1, &target->loadFramebuffer);
@@ -875,10 +947,12 @@ void main()
         Program &program = target.depth ? m_loadDepth : m_loadColor;
         gl.glUseProgram(program.id);
         gl.glProgramUniform3ui(program.id, uniform(program, "u_buffer"), target.block, target.bw, target.psm);
+        gl.glProgramUniform1ui(program.id, uniform(program, "u_scale"), m_scale);
         gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target.loadFramebuffer);
-        gl.glViewport(0, 0, static_cast<GLsizei>(target.width), static_cast<GLsizei>(target.height));
+        gl.glViewport(0, 0, static_cast<GLsizei>(target.width * m_scale), static_cast<GLsizei>(target.height * m_scale));
         gl.glEnable(GL_SCISSOR_TEST);
-        gl.glScissor(0, static_cast<GLint>(y0), static_cast<GLsizei>(target.width), static_cast<GLsizei>(rows));
+        gl.glScissor(0, static_cast<GLint>(y0 * m_scale), static_cast<GLsizei>(target.width * m_scale),
+                     static_cast<GLsizei>(rows * m_scale));
         gl.glDisable(GL_BLEND);
         if (target.depth)
         {
@@ -909,6 +983,7 @@ void main()
         gl.glProgramUniform4ui(m_resolve.id, uniform(m_resolve, "u_buffer"), target.block, target.bw, target.psm,
                                target.depth ? 1u : 0u);
         gl.glProgramUniform3ui(m_resolve.id, uniform(m_resolve, "u_rows"), y0, rows, target.width);
+        gl.glProgramUniform1ui(m_resolve.id, uniform(m_resolve, "u_scale"), m_scale);
         gl.glBindTextureUnit(0, target.texture);
         gl.glDispatchCompute((target.width + 63u) / 64u, (rows + 3u) / 4u, 1u);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
@@ -988,6 +1063,49 @@ void main()
         m_syncReason = "stale";
         resolveRange(begin, end); // other targets' data there
         loadRows(target, y0, y1 - y0 + 1u);
+    }
+
+    Renderer::Target *Renderer::textureSourceTarget(uint32_t tbp0, uint32_t tbw, uint32_t tpsm, uint32_t rows)
+    {
+        const bool tex16 = tpsm == PSM_CT16 || tpsm == PSM_CT16S;
+        const bool tex32 = tpsm == PSM_CT32 || tpsm == PSM_CT24;
+        if (!tex16 && !tex32)
+            return nullptr; // palettized / Z reinterpretations read local memory
+        for (auto &candidate : m_targets)
+        {
+            Target &target = *candidate;
+            if (target.depth || target.block != tbp0 || target.bw != std::max<uint32_t>(tbw, 1u) || target.usedRows == 0u)
+                continue;
+            if (tex16 ? target.psm != tpsm : (target.psm != PSM_CT32 && target.psm != PSM_CT24))
+                continue;
+            if (rows > target.height)
+                return nullptr;
+            // Rows it doesn't mirror yet come from VRAM; rows another view of
+            // the memory changed since (tracked as stale) are reloaded.
+            growTarget(target, rows);
+            loadStaleRows(target);
+            return &target;
+        }
+        return nullptr;
+    }
+
+    GLuint Renderer::feedbackCopy(const Target &target)
+    {
+        GL &gl = m_context.gl;
+        const uint32_t width = target.width * m_scale, height = target.height * m_scale;
+        if (m_feedbackTexture == 0 || m_feedbackWidth < width || m_feedbackHeight < height)
+        {
+            if (m_feedbackTexture != 0)
+                gl.glDeleteTextures(1, &m_feedbackTexture);
+            m_feedbackWidth = std::max(m_feedbackWidth, width);
+            m_feedbackHeight = std::max(m_feedbackHeight, height);
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_feedbackTexture);
+            gl.glTextureStorage2D(m_feedbackTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_feedbackWidth),
+                                  static_cast<GLsizei>(m_feedbackHeight));
+        }
+        gl.glCopyImageSubData(target.texture, GL_TEXTURE_2D, 0, 0, 0, 0, m_feedbackTexture, GL_TEXTURE_2D, 0, 0, 0, 0,
+                              static_cast<GLsizei>(width), static_cast<GLsizei>(target.usedRows * m_scale), 1);
+        return m_feedbackTexture;
     }
 
     void Renderer::vramWroteRange(uint32_t beginByte, uint32_t endByte)
@@ -1081,24 +1199,38 @@ void main()
         m_drawColor = &color;
         m_drawDepth = depth;
 
-        // The texture is read from VRAM: targets drawn over it go there first.
+        // Texture: a colour target holding it is sampled directly (keeps an
+        // upscaled image's detail through render-to-texture passes);
+        // otherwise it is read from VRAM, where targets drawn over it go first.
+        GLuint textureSource = 0;
         if (state.prim.tme)
         {
-            uint32_t begin = 0, end = 0;
-            bufferRange(key.tbp0, key.tbw, state.textureHeight, static_cast<uint8_t>(key.tpsm), begin, end);
-            m_syncReason = "texture";
-            resolveRange(begin, end);
+            static const bool s_vramTextures = std::getenv("PS2X_GS_GPU_NO_RT_TEXTURE") != nullptr;
+            Target *source = s_vramTextures ? nullptr
+                                            : textureSourceTarget(key.tbp0, key.tbw, key.tpsm, state.textureHeight);
+            if (source)
+            {
+                textureSource = source == &color ? feedbackCopy(color) : source->texture;
+            }
+            else
+            {
+                uint32_t begin = 0, end = 0;
+                bufferRange(key.tbp0, key.tbw, state.textureHeight, static_cast<uint8_t>(key.tpsm), begin, end);
+                m_syncReason = "texture";
+                resolveRange(begin, end);
+            }
         }
 
         Program &p = m_draw;
         gl.glUseProgram(p.id);
         gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebufferFor(color, depth));
-        gl.glViewport(0, 0, static_cast<GLsizei>(color.width), static_cast<GLsizei>(color.height));
+        const int scale = static_cast<int>(m_scale);
+        gl.glViewport(0, 0, static_cast<GLsizei>(color.width * m_scale), static_cast<GLsizei>(color.height * m_scale));
         gl.glEnable(GL_SCISSOR_TEST);
         const int x0 = std::max(0, key.scissor[0]), y0 = std::max(0, key.scissor[1]);
         const int x1 = std::min<int>(key.scissor[2], static_cast<int>(color.width) - 1);
         const int y1 = std::min<int>(key.scissor[3], static_cast<int>(color.height) - 1);
-        gl.glScissor(x0, y0, std::max(0, x1 - x0 + 1), std::max(0, y1 - y0 + 1));
+        gl.glScissor(x0 * scale, y0 * scale, std::max(0, x1 - x0 + 1) * scale, std::max(0, y1 - y0 + 1) * scale);
         m_drawY0 = std::max(y0, drawY0);
         m_drawY1 = std::min(y1, drawY1);
 
@@ -1188,6 +1320,9 @@ void main()
                                   static_cast<int>(state.textureHeight));
             gl.glProgramUniform3ui(p.id, uniform(p, "u_texa"), state.texa.ta0, state.texa.ta1, state.texa.aem ? 1u : 0u);
         }
+        set1("u_rtScale", textureSource != 0 ? scale : 0);
+        if (textureSource != 0)
+            gl.glBindTextureUnit(3, textureSource);
         gl.glBindVertexArray(m_vao);
     }
 
@@ -1322,8 +1457,11 @@ void main()
         // GS pixel centres are at integer coordinates, GL's at +0.5: shifting
         // vertices by half a pixel makes GL sample where the GS does (off by
         // half a pixel, every render-to-texture pass drifts the image).
-        const float ofx = static_cast<float>(ctx.xyoffset.ofx) / 16.0f - 0.5f;
-        const float ofy = static_cast<float>(ctx.xyoffset.ofy) / 16.0f - 0.5f;
+        // Upscaled, the GS sample point of a pixel is its first sub-pixel's
+        // centre: half a target pixel.
+        const float halfPixel = 0.5f / static_cast<float>(m_scale);
+        const float ofx = static_cast<float>(ctx.xyoffset.ofx) / 16.0f - halfPixel;
+        const float ofy = static_cast<float>(ctx.xyoffset.ofy) / 16.0f - halfPixel;
         const float texW = static_cast<float>(state.textureWidth);
         const float texH = static_cast<float>(state.textureHeight);
         auto makeVertex = [&](const GSVertex &v, const GSVertex &colorSource) -> Vertex
@@ -1690,11 +1828,181 @@ void main()
     {
         // Presentation reads local memory (both circuits, preferred source).
         m_syncReason = "present";
-        readbackVram();
-        m_cpu->Sync(GSSyncReason::Presentation);
-        m_cpu->TextureFlush();
-        ScopeTimer timer{m_timePresent};
-        return m_cpu->Present(request);
+        PresentationFrame frame;
+        if (m_gpu && m_scale > 1u)
+        {
+            // Upscaled: compose from the render targets; local memory (and
+            // the CPU composition) only for displays the GPU didn't draw.
+            flushBatch();
+            ScopeTimer timer{m_timePresent};
+            upscalePresentation(request, frame);
+        }
+        if (!frame)
+        {
+            readbackVram();
+            m_cpu->Sync(GSSyncReason::Presentation);
+            m_cpu->TextureFlush();
+            ScopeTimer timer{m_timePresent};
+            frame = m_cpu->Present(request);
+        }
+        if (const uint32_t requested = g_gsGpuScaleRequest.load(std::memory_order_relaxed); requested != 0u)
+            setScale(requested);
+        applyPendingScale(); // between frames
+        return frame;
+    }
+
+    void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
+    {
+        // When every enabled circuit reads a buffer the GPU drew, compose
+        // the display from the targets at full resolution (the CPU path's
+        // merge); anything else is left to the CPU composition.
+        static const bool s_fieldBob = std::getenv("PS2X_FIELD_BOB") != nullptr;
+        if (s_fieldBob)
+            return;
+        struct Circuit
+        {
+            Target *target = nullptr;
+            uint32_t x = 0, y = 0, width = 0, height = 0;
+        };
+        auto circuit = [&](uint64_t dispfb, uint64_t display, Circuit &out) -> bool
+        {
+            const uint32_t fbp = static_cast<uint32_t>(dispfb & 0x1FFu);
+            const uint32_t fbw = static_cast<uint32_t>((dispfb >> 9) & 0x3Fu);
+            const uint8_t psm = static_cast<uint8_t>((dispfb >> 15) & 0x1Fu);
+            out.x = static_cast<uint32_t>((dispfb >> 32) & 0x7FFu);
+            out.y = static_cast<uint32_t>((dispfb >> 43) & 0x7FFu);
+            const uint32_t dw = static_cast<uint32_t>((display >> 32) & 0x0FFFu);
+            const uint32_t dh = static_cast<uint32_t>((display >> 44) & 0x07FFu);
+            const uint32_t magh = static_cast<uint32_t>((display >> 23) & 0x0Fu);
+            out.width = (dw + 1u) / (magh + 1u);
+            out.height = dh + 1u;
+            if (out.width < 64u || out.height < 64u || out.width > 640u || out.height > 512u)
+                return false; // the CPU path substitutes defaults here
+            for (auto &candidate : m_targets)
+            {
+                Target &target = *candidate;
+                if (target.depth || target.block != fbp * 32u || target.bw != std::max<uint32_t>(fbw, 1u) ||
+                    is16Bit(target.psm) != is16Bit(psm))
+                    continue;
+                if (out.x + out.width > target.width || out.y + out.height > target.usedRows)
+                    return false;
+                out.target = &target;
+                return true;
+            }
+            return false;
+        };
+        const bool crt1 = (request.pmode & 1u) != 0u, crt2 = (request.pmode & 2u) != 0u;
+        Circuit c1, c2;
+        if ((crt1 && !circuit(request.dispfb1, request.display1, c1)) ||
+            (crt2 && !circuit(request.dispfb2, request.display2, c2)) || (!crt1 && !crt2))
+            return;
+        // A game-specific display source substitution (see GS frontend) is
+        // the CPU path's.
+        if (request.hasPreferredSource && !(crt1 && crt2) &&
+            request.preferredDestFbp == (crt1 ? c1 : c2).target->block / 32u)
+            return;
+
+        GL &gl = m_context.gl;
+        const uint32_t s = m_scale;
+        const uint32_t width = std::max(crt1 ? c1.width : 0u, crt2 ? c2.width : 0u) * s;
+        const uint32_t height = std::max(crt1 ? c1.height : 0u, crt2 ? c2.height : 0u) * s;
+        if (m_presentTexture == 0 || m_presentWidth < width || m_presentHeight < height)
+        {
+            if (m_presentTexture != 0)
+            {
+                gl.glDeleteFramebuffers(1, &m_presentFramebuffer);
+                gl.glDeleteTextures(1, &m_presentTexture);
+            }
+            m_presentWidth = std::max(m_presentWidth, width);
+            m_presentHeight = std::max(m_presentHeight, height);
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_presentTexture);
+            gl.glTextureStorage2D(m_presentTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_presentWidth),
+                                  static_cast<GLsizei>(m_presentHeight));
+            gl.glCreateFramebuffers(1, &m_presentFramebuffer);
+            gl.glNamedFramebufferTexture(m_presentFramebuffer, GL_COLOR_ATTACHMENT0, m_presentTexture, 0);
+            gl.glNamedFramebufferDrawBuffer(m_presentFramebuffer, GL_COLOR_ATTACHMENT0);
+        }
+        if (crt1)
+            loadStaleRows(*c1.target);
+        if (crt2)
+            loadStaleRows(*c2.target);
+
+        const bool both = crt1 && crt2;
+        const Circuit &top = crt1 ? c1 : c2; // a lone circuit is drawn as "circuit 1" at full weight
+        Program &p = m_compose;
+        gl.glUseProgram(p.id);
+        gl.glProgramUniform4i(p.id, uniform(p, "u_rect1"), static_cast<GLint>(top.x * s), static_cast<GLint>(top.y * s),
+                              static_cast<GLint>(top.width * s), static_cast<GLint>(top.height * s));
+        if (both)
+            gl.glProgramUniform4i(p.id, uniform(p, "u_rect2"), static_cast<GLint>(c2.x * s), static_cast<GLint>(c2.y * s),
+                                  static_cast<GLint>(c2.width * s), static_cast<GLint>(c2.height * s));
+        else
+            gl.glProgramUniform4i(p.id, uniform(p, "u_rect2"), 0, 0, 0, 0);
+        gl.glProgramUniform3f(p.id, uniform(p, "u_bg"), float(request.bgcolor & 0xFFu) / 255.0f,
+                              float((request.bgcolor >> 8) & 0xFFu) / 255.0f, float((request.bgcolor >> 16) & 0xFFu) / 255.0f);
+        const bool mmod = ((request.pmode >> 5) & 1u) != 0u, slbg = ((request.pmode >> 7) & 1u) != 0u;
+        const float alp = static_cast<float>((request.pmode >> 8) & 0xFFu) / 255.0f;
+        gl.glProgramUniform2f(p.id, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
+        gl.glBindTextureUnit(0, top.target->texture);
+        gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
+        gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_presentFramebuffer);
+        gl.glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+        gl.glDisable(GL_SCISSOR_TEST);
+        gl.glDisable(GL_BLEND);
+        gl.glDisable(GL_DEPTH_TEST);
+        gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        gl.glBindVertexArray(m_emptyVao);
+        gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        std::vector<uint8_t> out(static_cast<size_t>(width) * height * 4u);
+        gl.glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
+        gl.glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        gl.glGetTextureSubImage(m_presentTexture, 0, 0, 0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), 1,
+                                GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(out.size()), out.data());
+        frame.pixels = std::move(out);
+        frame.width = width;
+        frame.height = height;
+        frame.rowPixels = width;
+        frame.displayFbp = frame.sourceFbp = (crt1 ? c1 : c2).target->block / 32u;
+    }
+
+    void Renderer::setScale(uint32_t scale)
+    {
+        m_requestedScale.store(std::clamp<uint32_t>(scale, 1u, 8u), std::memory_order_relaxed);
+    }
+
+    void Renderer::applyPendingScale()
+    {
+        const uint32_t scale = m_requestedScale.load(std::memory_order_relaxed);
+        if (!m_gpu || scale == m_scale)
+            return;
+        // Targets carry everything VRAM lacks: put it there, then rebuild
+        // them at the new size from VRAM as they are drawn again.
+        flushBatch();
+        m_syncReason = "rescale";
+        resolveRange(0u, kLocalMemoryBytes);
+        destroyTargets();
+        m_scale = scale;
+        std::cerr << "[gs:gpu] internal resolution x" << m_scale << std::endl;
+    }
+
+    void Renderer::destroyTargets()
+    {
+        GL &gl = m_context.gl;
+        for (auto &entry : m_framebuffers)
+            gl.glDeleteFramebuffers(1, &entry.second);
+        m_framebuffers.clear();
+        for (auto &target : m_targets)
+        {
+            gl.glDeleteFramebuffers(1, &target->loadFramebuffer);
+            gl.glDeleteTextures(1, &target->texture);
+        }
+        m_targets.clear();
+        if (m_feedbackTexture != 0)
+            gl.glDeleteTextures(1, &m_feedbackTexture);
+        m_feedbackTexture = 0;
+        m_feedbackWidth = m_feedbackHeight = 0;
+        m_drawColor = m_drawDepth = nullptr;
     }
 
     bool Renderer::clearFramebuffer(const GSContext &context, uint32_t rgba)

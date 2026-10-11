@@ -497,7 +497,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
                                                    &sourceFbp,
                                                    &usedPreferredDisplaySource))
     {
-        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
+        Image blank = GenImageColor(tex.width, tex.height, MAGENTA); // the texture may have grown (upscaling)
         UpdateTexture(tex, blank.data);
         UnloadImage(blank);
         outWidth = FB_WIDTH;
@@ -533,13 +533,23 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     s_lastWidth = width;
     s_lastHeight = height;
 
+    // Upscaled frames (GPU internal resolution) need a bigger texture.
+    if (width > static_cast<uint32_t>(tex.width) || height > static_cast<uint32_t>(tex.height))
+    {
+        Image blank = GenImageColor(std::max<int>(tex.width, static_cast<int>(width)),
+                                    std::max<int>(tex.height, static_cast<int>(height)), BLANK);
+        UnloadTexture(tex);
+        tex = LoadTextureFromImage(blank);
+        UnloadImage(blank);
+    }
+    s_uploadBuffer.resize(static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height) * 4u);
     std::fill(s_uploadBuffer.begin(), s_uploadBuffer.end(), 0u);
     if (!s_scratch.empty() && width != 0u && height != 0u)
     {
-        const uint32_t copyWidth = std::min<uint32_t>(width, FB_WIDTH);
-        const uint32_t copyHeight = std::min<uint32_t>(height, FB_HEIGHT);
+        const uint32_t copyWidth = std::min<uint32_t>(width, static_cast<uint32_t>(tex.width));
+        const uint32_t copyHeight = std::min<uint32_t>(height, static_cast<uint32_t>(tex.height));
         const size_t srcRowBytes = static_cast<size_t>(width) * 4u;
-        const size_t dstRowBytes = static_cast<size_t>(FB_WIDTH) * 4u;
+        const size_t dstRowBytes = static_cast<size_t>(tex.width) * 4u;
         const size_t copyRowBytes = static_cast<size_t>(copyWidth) * 4u;
         for (uint32_t y = 0; y < copyHeight; ++y)
         {
@@ -2997,11 +3007,13 @@ void PS2Runtime::run()
         const PS2HostSettings &hostSettings = ps2HostSettings();
         {
             static int s_filter = -1;
+            static unsigned int s_filterTexture = 0;
             const int filter = hostSettings.smoothFiltering ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT;
-            if (filter != s_filter)
+            if (filter != s_filter || frameTex.id != s_filterTexture)
             {
                 SetTextureFilter(frameTex, filter);
                 s_filter = filter;
+                s_filterTexture = frameTex.id;
             }
         }
         BeginDrawing();

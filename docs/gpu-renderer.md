@@ -54,3 +54,37 @@ Selected with `PS2X_GS_GPU=1` until it is the default.
 `PS2X_GS_CAPTURE` + `tools/gs_replay` replay the same GS stream through both
 backends; presented frames are compared (max/mean difference, PNG dumps) and
 the CPU backend (1 worker) remains the bit-exact reference.
+
+## Internal resolution (upscaling)
+
+`PS2X_GS_SCALE=<n>` (or *Internal resolution* in the F2 settings menu) renders
+every target at n x the GS size. Bookkeeping (dirty/stale rows, memory
+ranges) stays in GS pixels; only the GL textures are scaled.
+
+- **Drawing**: viewport and scissor scale by n; the GS->GL half-pixel shift
+  becomes half a *target* pixel, so a GS pixel's sample point is the centre
+  of its first sub-pixel (identical to before at 1x).
+- **VRAM <-> target**: loads upscale nearest; resolves take each GS pixel's
+  sample-point sub-pixel. Local memory therefore stays exactly what a native
+  render would hold.
+- **Render-to-texture**: a draw whose texture is a colour target (same
+  TBP0/TBW, CT32/CT24 or matching CT16/CT16S) samples the target texture
+  directly (`u_rtScale`), with GS wrap modes applied per GS texel and
+  bilinear filtering at target resolution. A target pixel k sits at texel
+  position k/n + 0.5 (GS pixel p is texel p + 0.5); mapping plain `uv*n`
+  instead drifts the image half a pixel per copy pass. A draw sampling the
+  target it renders to reads a copy (`feedbackCopy`). Palettized or Z
+  reinterpretations still read local memory (resolved first). At 1x this
+  path is bit-identical to the local-memory path (PS2X_GS_GPU_NO_RT_TEXTURE=1)
+  and skips most resolves.
+- **Presentation**: when every enabled read circuit shows a GPU target, the
+  PCRTC merge (circuit 2 / background below, circuit 1 blended by ALP or its
+  alpha) runs as a fragment pass at full resolution and one frame is read
+  back; otherwise (preferred-source substitution, buffers the GPU never drew)
+  the CPU composition of local memory is used.
+- **Flicker filter**: games show the frame on both circuits a line apart,
+  blended 50/50 (VCS: PMODE 0x8027). With the filter off (settings, default)
+  the GS frontend drops the shorter circuit from the presentation request.
+
+Replay timing (VCS capture, 54 presents): 1x 6.9 ms, 2x 5.3 ms, 3x 9.7 ms,
+4x 12.9 ms per present.

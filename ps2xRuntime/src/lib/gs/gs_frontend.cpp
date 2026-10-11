@@ -633,6 +633,8 @@ void GS::refreshDisplaySnapshot()
     snapshotVRAM();
 }
 
+std::atomic<bool> g_gsFlickerFilter{true};
+
 GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 {
     GSPresentationRequest request{};
@@ -646,6 +648,16 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.display2 = m_privRegs->display2;
     request.bgcolor = m_privRegs->bgcolor;
     request.vsyncTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
+    // Flicker filter: games show the frame on both circuits a line apart,
+    // blended (a vertical blur against interlace flicker on CRTs). With the
+    // filter off only the taller read is shown.
+    if (!g_gsFlickerFilter.load(std::memory_order_relaxed) && (request.pmode & 3u) == 3u &&
+        (request.dispfb1 & 0x7FFFu) == (request.dispfb2 & 0x7FFFu))
+    {
+        const uint32_t dh1 = static_cast<uint32_t>((request.display1 >> 44) & 0x7FFu);
+        const uint32_t dh2 = static_cast<uint32_t>((request.display2 >> 44) & 0x7FFu);
+        request.pmode &= ~uint64_t(dh2 >= dh1 ? 1u : 2u);
+    }
     request.contextFrames[0] = m_ctx[0].frame;
     request.contextFrames[1] = m_ctx[1].frame;
     request.preferredSource = m_preferredDisplaySourceFrame;
@@ -688,12 +700,14 @@ void GS::latchHostPresentationFrame()
     const uint32_t sourceFbp = frame.sourceFbp;
     const uint32_t width = frame.width;
     const uint32_t height = frame.height;
+    const uint32_t rowPixels = frame.rowPixels;
     const bool usedPreferred = frame.usedPreferred;
     {
         std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
         m_hostPresentationFrame = std::move(frame.pixels);
         m_hostPresentationWidth = width;
         m_hostPresentationHeight = height;
+        m_hostPresentationRowPixels = rowPixels;
         m_hostPresentationDisplayFbp = displayFbp;
         m_hostPresentationSourceFbp = sourceFbp;
         m_hostPresentationUsedPreferred = usedPreferred;
@@ -742,7 +756,8 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     outPixels.resize(packedRowBytes * static_cast<size_t>(outHeight));
     if (outWidth != 0u && outHeight != 0u)
     {
-        const size_t sourceRowBytes = static_cast<size_t>(kHostFrameWidth) * 4u;
+        const size_t sourceRowBytes =
+            static_cast<size_t>(m_hostPresentationRowPixels != 0u ? m_hostPresentationRowPixels : kHostFrameWidth) * 4u;
         for (uint32_t y = 0; y < outHeight; ++y)
         {
             const size_t srcOffset = static_cast<size_t>(y) * sourceRowBytes;

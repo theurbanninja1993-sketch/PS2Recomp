@@ -2418,12 +2418,20 @@ void PS2DebugPanel::drawSettingsMenu()
 
         changed |= ImGui::Checkbox("Smooth scaling", &settings.smoothFiltering);
 
-        ImGui::BeginDisabled();
-        static const char *kInternal[] = {"Native (640 x 448)"};
-        int internal = 0;
-        ImGui::Combo("Internal resolution", &internal, kInternal, IM_ARRAYSIZE(kInternal));
+        const bool gpu = ps2HostSettingsGpuRenderer();
+        ImGui::BeginDisabled(!gpu);
+        static const char *kInternal[] = {"Native (640 x 448)", "2x (1280 x 896)", "3x (1920 x 1344)", "4x (2560 x 1792)"};
+        int internal = std::clamp(settings.internalScale, 1, 4) - 1;
+        if (ImGui::Combo("Internal resolution", &internal, kInternal, IM_ARRAYSIZE(kInternal)))
+        {
+            settings.internalScale = internal + 1;
+            changed = true;
+        }
         ImGui::EndDisabled();
-        ImGui::TextDisabled("Higher internal resolutions are in development.");
+        if (!gpu)
+            ImGui::TextDisabled("Needs the GPU renderer (PS2X_GS_GPU=1).");
+
+        changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
 
         ImGui::SeparatorText("Mouse");
         changed |= ImGui::SliderFloat("Sensitivity", &settings.mouseSensitivity, 0.05f, 5.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
@@ -2440,7 +2448,10 @@ void PS2DebugPanel::drawSettingsMenu()
     ImGui::End();
 
     if (changed)
+    {
+        ps2HostSettingsApplyRenderer();
         ps2HostSettingsSave();
+    }
     if (!open)
         g_ps2SettingsMenuOpen.store(false, std::memory_order_relaxed);
 #endif

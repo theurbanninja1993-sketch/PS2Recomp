@@ -1,6 +1,7 @@
 #ifndef PS2_GS_FRONTEND_H
 #define PS2_GS_FRONTEND_H
 
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +41,10 @@ struct GSDebugSnapshot
     bool hasHostPresentationFrame = false;
     size_t localToHostPendingBytes = 0;
 };
+
+// Show the game's two-circuit flicker-filter blend (true, as on a PS2) or
+// only one circuit (sharper). Set from the host settings.
+extern std::atomic<bool> g_gsFlickerFilter;
 
 enum class GSDebugEventKind : uint8_t
 {
@@ -224,6 +229,7 @@ private:
     bool m_hasPreferredDisplaySource = false;
     std::vector<uint8_t> m_hostPresentationFrame;
     uint32_t m_hostPresentationWidth = 0;
+    uint32_t m_hostPresentationRowPixels = 0; // 0: kHostFrameWidth
     uint32_t m_hostPresentationHeight = 0;
     uint32_t m_hostPresentationDisplayFbp = 0;
     uint32_t m_hostPresentationSourceFbp = 0;
