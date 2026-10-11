@@ -236,12 +236,19 @@ void PSPadBackend::updateHostInput()
     if (!captured)
         return;
     // Direct mouse look (applied to the camera by a game hook, see
-    // consumeMouseLook): PS2X_MOUSE_SENS scales, PS2X_MOUSE_INVERT_Y inverts.
-    static const float s_radiansPerPixel = []()
+    // consumeMouseLook): PS2X_MOUSE_SENS scales, PS2X_MOUSE_INVERT_Y inverts,
+    // '-' / '=' adjust the sensitivity while playing.
+    static float s_sensitivity = []()
     {
         const char *env = std::getenv("PS2X_MOUSE_SENS");
-        return 0.0025f * (env ? std::strtof(env, nullptr) : 1.0f);
+        return env ? std::strtof(env, nullptr) : 1.0f;
     }();
+    if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_EQUAL))
+    {
+        s_sensitivity = std::clamp(s_sensitivity * (IsKeyPressed(KEY_EQUAL) ? 1.25f : 0.8f), 0.05f, 20.0f);
+        std::fprintf(stderr, "[pad] mouse sensitivity %.2f (PS2X_MOUSE_SENS)\n", s_sensitivity);
+    }
+    const float s_radiansPerPixel = 0.0005f * s_sensitivity;
     static const float s_pitchSign = std::getenv("PS2X_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     const Vector2 delta = GetMouseDelta();
     if (delta.x != 0.0f || delta.y != 0.0f)
