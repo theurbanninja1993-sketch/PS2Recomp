@@ -16,7 +16,7 @@ public:
 
 private:
     void drawDebugger(PS2Runtime &runtime);
-    void drawSettingsMenu();
+    void drawSettingsMenu(PS2Runtime &runtime);
     void drawSettingsHint();
 
     bool m_initialized = false;

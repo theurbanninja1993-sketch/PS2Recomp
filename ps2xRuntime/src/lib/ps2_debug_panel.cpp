@@ -2228,7 +2228,7 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
 
     rlImGuiBegin();
     if (settingsOpen)
-        drawSettingsMenu();
+        drawSettingsMenu(runtime);
     else if (showHint)
         drawSettingsHint();
     if (m_visible)
@@ -2348,7 +2348,7 @@ void PS2DebugPanel::drawSettingsHint()
 #endif
 }
 
-void PS2DebugPanel::drawSettingsMenu()
+void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
 {
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
     PS2HostSettings &settings = ps2HostSettings();
@@ -2356,9 +2356,8 @@ void PS2DebugPanel::drawSettingsMenu()
     const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
 
     ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(520.0f * scale, 0.0f), ImGuiCond_Always);
     bool open = true;
-    if (ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize))
+    if (ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::SetWindowFontScale(scale);
         ImGui::PushItemWidth(260.0f * scale);
@@ -2444,6 +2443,27 @@ void PS2DebugPanel::drawSettingsMenu()
             open = false;
         ImGui::SameLine();
         ImGui::TextDisabled("F2 opens/closes this menu");
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize("Quit to desktop").x -
+                        ImGui::GetStyle().FramePadding.x * 2.0f);
+        if (ImGui::Button("Quit to desktop"))
+            ImGui::OpenPopup("Quit?");
+        ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+        {
+            ImGui::SetWindowFontScale(scale);
+            ImGui::TextUnformatted("Quit to desktop? Progress since your last save will be lost.");
+            ImGui::Spacing();
+            if (ImGui::Button("Quit"))
+            {
+                ps2HostSettingsSave();
+                runtime.requestStop();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
     }
     ImGui::End();
 

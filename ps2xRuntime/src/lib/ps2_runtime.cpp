@@ -3178,6 +3178,9 @@ void PS2Runtime::run()
     }
 
     requestStop();
+#if !defined(PLATFORM_VITA)
+    ps2HostSettingsSave(); // keeps a window size set by hand
+#endif
     if (gameThread.joinable())
     {
         gameThread.join();
