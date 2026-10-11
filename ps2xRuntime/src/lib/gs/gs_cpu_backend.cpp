@@ -2027,7 +2027,12 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     PresentationFrame result{};
     const GSPmodeState pmode = decodePmode(request.pmode);
     const GSSmode2State smode2 = decodeSMode2(request.smode2);
-    const bool fieldMode = smode2.interlaced && !smode2.frameMode;
+    // Interlaced field mode reads alternate lines per field. Games such as
+    // VCS render full-height frames, so showing the whole frame (weave) is
+    // stable; line-doubling the current field ("bob") makes the image shake
+    // by one line every VBlank. PS2X_FIELD_BOB=1 restores the bob.
+    static const bool s_fieldBob = std::getenv("PS2X_FIELD_BOB") != nullptr;
+    const bool fieldMode = s_fieldBob && smode2.interlaced && !smode2.frameMode;
     const bool oddField = (request.vsyncTick & 1ull) != 0ull;
     const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
     const GSFrameReg displayFrame2 = decodeDisplayFrame(request.dispfb2);
