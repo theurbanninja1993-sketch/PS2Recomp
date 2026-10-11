@@ -455,6 +455,8 @@ private:
     uint32_t m_gsVSyncCallbackSp = 0;
     std::unordered_map<uint64_t, uint32_t> m_invocationStackTops;
     std::atomic<uint64_t> m_nextDeadlineCycle{0};
+    // Host deadline (steady_clock ns) of the event at m_nextDeadlineCycle.
+    std::atomic<int64_t> m_nextDeadlineHostNs{0};
 
     mutable std::mutex m_snapshotMutex;
     EeKernelSnapshot m_snapshot;

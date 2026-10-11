@@ -422,8 +422,26 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
     s_unsynced += elapsed;
     if (s_unsynced < kSyncQuantum)
         return;
-    const uint64_t batch = s_unsynced;
+    uint64_t batch = s_unsynced;
     s_unsynced = 0u;
+    // Time spent in host-side work (MPEG decode, IOP calls, GS) adds no EE
+    // cycles, so the cycle count can fall behind real time; an event that is
+    // due by the clock (a VBlank) then waited for the count and fired late
+    // (intro movie: ~4% of VBlanks 10-14 ms late). Skip the count ahead.
+    static const bool s_noSkip = std::getenv("PS2X_NO_CYCLE_SKIP") != nullptr;
+    const uint64_t nextCycle = m_nextDeadlineCycle.load(std::memory_order_acquire);
+    if (!s_noSkip && nextCycle > m_eeCycle)
+    {
+        const int64_t hostDeadline = m_nextDeadlineHostNs.load(std::memory_order_acquire);
+        const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (hostDeadline != 0 && now >= hostDeadline)
+        {
+            const uint64_t skip = nextCycle - m_eeCycle;
+            m_eeCycle = nextCycle;
+            batch += skip;
+            m_checkpointPending.store(true, std::memory_order_release);
+        }
+    }
     m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(batch);
     m_runtime.advanceIopEeCycles(batch);
     m_runtime.pollAsyncDma();
@@ -567,6 +585,9 @@ void ps2PerfLogVBlank(double lateMs)
     {
         ++s_late;
         s_lostMs += lateMs;
+        static const bool s_each = std::getenv("PS2X_PERF_LOG_EACH") != nullptr;
+        if (s_each)
+            std::fprintf(s_file, "late f=%llu %.1f ms\n", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), lateMs);
     }
     if (s_count % 600u != 0u)
         return;
@@ -575,6 +596,17 @@ void ps2PerfLogVBlank(double lateMs)
     s_lastTime = now;
     std::fprintf(s_file, "frame=%llu late=%llu/600 lostMs=%d", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()),
                  static_cast<unsigned long long>(s_late), static_cast<int>(s_lostMs));
+    {
+        // Audio frames produced / dropped (host ring full) this period: real
+        // time is ~480480 per 600 VBlanks.
+        extern std::atomic<uint64_t> g_ps2AudioFramesSubmitted, g_ps2AudioFramesDropped;
+        static uint64_t s_lastSubmitted = 0, s_lastDropped = 0;
+        const uint64_t submitted = g_ps2AudioFramesSubmitted.load(), dropped = g_ps2AudioFramesDropped.load();
+        std::fprintf(s_file, " audio=%llu dropped=%llu", static_cast<unsigned long long>(submitted - s_lastSubmitted),
+                     static_cast<unsigned long long>(dropped - s_lastDropped));
+        s_lastSubmitted = submitted;
+        s_lastDropped = dropped;
+    }
     // Thread CPU from /proc (ticks are 1/100 s), summed per thread name.
     std::map<std::string, uint64_t> ticks;
     if (DIR *dir = opendir("/proc/self/task"))
@@ -2309,6 +2341,8 @@ void EeScheduler::updateNextDeadline()
                                          return left.sequence < right.sequence;
                                      });
     m_nextDeadlineCycle.store(it->deadlineCycle, std::memory_order_release);
+    m_nextDeadlineHostNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(it->hostDeadline.time_since_epoch()).count(),
+                               std::memory_order_release);
 }
 
 bool EeScheduler::hasReadyAtOrAbovePriority(int priority) const

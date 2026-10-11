@@ -1,6 +1,7 @@
 #ifndef PS2_LOG_H
 #define PS2_LOG_H
 
+#include <cstdlib>
 #include <algorithm>
 #include <deque>
 #include <filesystem>
@@ -186,10 +187,23 @@ inline void print_saved_location()
     ps2_log::log_entry(name); \
     struct _ps2_log_guard_ { const char *_n; _ps2_log_guard_(const char *n) : _n(n) {} \
         ~_ps2_log_guard_() { ps2_log::log_exit(_n); } } _ps2_log_guard_(name)
-#define PS2_IF_AGRESSIVE_LOGS(code) \
-    do                              \
-    {                               \
-        code;                       \
+namespace ps2_log
+{
+// Verbose diagnostics cost real time when printed to a terminal (the intro
+// movie printed ~8 lines per frame): off unless PS2X_AGGRESSIVE_LOGS is set.
+inline bool aggressiveLogsEnabled()
+{
+    static const bool s_enabled = std::getenv("PS2X_AGGRESSIVE_LOGS") != nullptr;
+    return s_enabled;
+}
+}
+#define PS2_IF_AGRESSIVE_LOGS(code)              \
+    do                                           \
+    {                                            \
+        if (ps2_log::aggressiveLogsEnabled())    \
+        {                                        \
+            code;                                \
+        }                                        \
     } while (0)
 
 #else

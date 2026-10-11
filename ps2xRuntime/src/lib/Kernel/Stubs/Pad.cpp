@@ -738,7 +738,8 @@ namespace ps2_stubs
                     (gamepad >= 0) && IsGamepadButtonDown(gamepad, GAMEPAD_BUTTON_MIDDLE_RIGHT);
                 const bool startPressed = (data[2] != 0xFFu || data[3] != 0xFFu ||
                                            IsKeyDown(KEY_ENTER) || gamepadStartPressed);
-                if (startPressed)
+                static const bool s_padReadLog = std::getenv("PS2X_PAD_DEBUG") != nullptr;
+                if (startPressed && s_padReadLog)
                 {
                     const uint32_t guestButtons =
                         (static_cast<uint32_t>(static_cast<uint8_t>(data[2] ^ 0xFFu)) << 8) |

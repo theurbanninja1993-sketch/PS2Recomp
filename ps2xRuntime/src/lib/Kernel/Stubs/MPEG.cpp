@@ -16,12 +16,40 @@ extern "C"
 }
 #endif
 
+#include <chrono>
 #include <deque>
 #include <memory>
 
 #include "Syscalls/Helpers/State.h"
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+namespace
+{
+    thread_local double g_mpegSwsMs = 0.0;
+    thread_local uint32_t g_mpegFramesDecoded = 0;
+}
+
+namespace
+{
+    // PS2X_MPEG_TIMING=1: log MPEG HLE calls that take longer than 3 ms.
+    struct MpegCallTimer
+    {
+        const char *name;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~MpegCallTimer()
+        {
+            static const bool s_enabled = std::getenv("PS2X_MPEG_TIMING") != nullptr;
+            if (!s_enabled)
+                return;
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            if (ms > 3.0)
+                std::fprintf(stderr, "[mpeg:slow] f=%llu %s %.1f ms frames=%u sws=%.1f ms\n", (unsigned long long)g_ps2PresentedFrameCounter.load(), name, ms,
+                             g_mpegFramesDecoded, g_mpegSwsMs);
+            g_mpegSwsMs = 0.0;
+            g_mpegFramesDecoded = 0;
+        }
+    };
+}
 
 namespace ps2_stubs
 {
@@ -265,7 +293,11 @@ namespace ps2_stubs
                     return false;
                 }
 
-                m_codecCtx->thread_count = 1;
+                // Slice threads split each picture without adding output delay
+                // (frame threading would); a demux burst decodes several pictures
+                // on the game thread, which made movie frames late.
+                m_codecCtx->thread_count = 4;
+                m_codecCtx->thread_type = FF_THREAD_SLICE;
                 m_codecCtx->pkt_timebase = AVRational{1, 90000};
                 // feedElementaryStream() does not create the decoder until a valid
                 // MPEG sequence header has been found.  Dropping non-key pictures
@@ -391,7 +423,7 @@ namespace ps2_stubs
                         width,
                         height,
                         AV_PIX_FMT_RGBA,
-                        SWS_BILINEAR,
+                        SWS_FAST_BILINEAR,
                         nullptr,
                         nullptr,
                         nullptr);
@@ -416,6 +448,7 @@ namespace ps2_stubs
 
                 uint8_t *dstData[4] = {decoded.rgba.data(), nullptr, nullptr, nullptr};
                 int dstLinesize[4] = {width * 4, 0, 0, 0};
+                const auto swsStart = std::chrono::steady_clock::now();
                 const int scaledRows = sws_scale(
                     m_swsCtx,
                     m_frame->data,
@@ -424,6 +457,8 @@ namespace ps2_stubs
                     height,
                     dstData,
                     dstLinesize);
+                g_mpegSwsMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swsStart).count();
+                ++g_mpegFramesDecoded;
                 if (scaledRows <= 0)
                 {
                     std::cerr << "[MPEG] FFmpeg scaler produced no rows." << std::endl;
@@ -486,8 +521,19 @@ namespace ps2_stubs
         constexpr size_t kMpegTimingScanLimit = 4096u;
         constexpr size_t kMaxDecodedPicturesAhead = 8u;
 
+        // Video elementary-stream data not yet given to the decoder (see
+        // pumpVideoDecode).
+        struct MpegPendingEs
+        {
+            std::vector<uint8_t> data;
+            int64_t pts90k = -1;
+            int64_t dts90k = -1;
+        };
+
         struct MpegPlaybackState
         {
+            std::deque<MpegPendingEs> pendingEs;
+            size_t pendingEsBytes = 0u;
             uint32_t picturesServed = 0u;
             uint32_t width = 320u;
             uint32_t height = 240u;
@@ -1011,10 +1057,39 @@ namespace ps2_stubs
             return result;
         }
 
+        // Decodes queued video data until `ahead` pictures are ready. A demux
+        // call often carries 30-40 pictures; decoding them all at once took
+        // 6-12 ms on the game thread and made movie frames late, so pictures
+        // are decoded as GetPicture consumes them.
+        void pumpVideoDecode(MpegPlaybackState &playback, size_t ahead)
+        {
+            while (!playback.pendingEs.empty() && playback.decodedFrames.size() < ahead)
+            {
+                MpegPendingEs next = std::move(playback.pendingEs.front());
+                playback.pendingEs.pop_front();
+                playback.pendingEsBytes -= std::min(playback.pendingEsBytes, next.data.size());
+                if (!playback.decoder)
+                    playback.decoder = std::make_unique<MpegFfmpegDecoder>();
+                if (!playback.decoder->feed(next.data.data(), next.data.size(), playback.decodedFrames, next.pts90k, next.dts90k))
+                {
+                    playback.decoder.reset();
+                    playback.waitingForVideoSequenceHeader = true;
+                    playback.videoSequenceSyncBuffer.clear();
+                    playback.decoderFailed = false;
+                    playback.pendingEs.clear();
+                    playback.pendingEsBytes = 0u;
+                    return;
+                }
+            }
+        }
+
+        constexpr size_t kVideoDecodeAhead = 3u;
+
         void flushDecoderIfEnded(MpegPlaybackState &playback)
         {
             if (playback.streamEnded && playback.decoder)
             {
+                pumpVideoDecode(playback, std::numeric_limits<size_t>::max()); // the tail first
                 playback.decoder->flush(playback.decodedFrames);
             }
         }
@@ -1099,21 +1174,14 @@ namespace ps2_stubs
                 playback.cdStreamGeneration = g_mpeg_stub_state.cdStreamGeneration;
             }
 
-            if (!playback.decoder)
-            {
-                playback.decoder = std::make_unique<MpegFfmpegDecoder>();
-            }
-
-            if (!playback.decoder->feed(data, size, playback.decodedFrames, pts90k, dts90k))
-            {
-                playback.decoder.reset();
-                playback.waitingForVideoSequenceHeader = true;
-                playback.videoSequenceSyncBuffer.clear();
-                playback.decoderFailed = false;
-                return;
-            }
-
+            MpegPendingEs pending;
+            pending.data.assign(data, data + size);
+            pending.pts90k = pts90k;
+            pending.dts90k = dts90k;
+            playback.pendingEsBytes += size;
+            playback.pendingEs.push_back(std::move(pending));
             playback.videoSequenceSyncBuffer.clear();
+            pumpVideoDecode(playback, kVideoDecodeAhead);
             flushDecoderIfEnded(playback);
         }
 
@@ -1413,6 +1481,7 @@ namespace ps2_stubs
         }
 
         size_t queuedAudioCallbacks();
+
         void pumpAudioCallbacks(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 
         bool mpegDemuxBackpressured(const MpegPlaybackState &playback)
@@ -1420,6 +1489,9 @@ namespace ps2_stubs
             // Audio the game has not taken yet (its buffer was full): stop
             // demuxing like libmpeg does, so playback is paced by the audio and
             // no packet is ever dropped.
+            constexpr size_t kMaxPendingVideoBytes = 512u * 1024u;
+            if (!g_mpeg_stub_state.currentCdStreamEofSeen && playback.pendingEsBytes > kMaxPendingVideoBytes)
+                return true;
             static const size_t s_maxQueuedAudio = std::getenv("PS2X_MPEG_AUDIO_THROTTLE") ? std::strtoul(std::getenv("PS2X_MPEG_AUDIO_THROTTLE"), nullptr, 10) : 0u;
             if (s_maxQueuedAudio != 0u && queuedAudioCallbacks() > s_maxQueuedAudio)
                 return true;
@@ -2273,6 +2345,7 @@ namespace ps2_stubs
 
     void sceMpegDemuxPss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        MpegCallTimer callTimer{"sceMpegDemuxPss"};
         const uint32_t mpegAddr = getRegU32(ctx, 4);
         const uint32_t dataAddr = getRegU32(ctx, 5);
         const uint32_t byteCount = getRegU32(ctx, 6);
@@ -2348,6 +2421,7 @@ namespace ps2_stubs
 
     void sceMpegDemuxPssRing(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        MpegCallTimer callTimer{"sceMpegDemuxPssRing"};
         static std::atomic<uint32_t> s_demuxRingEntryCount{0u};
         const uint32_t entryIdx = s_demuxRingEntryCount.fetch_add(1u, std::memory_order_relaxed);
         if (entryIdx < 4u)
@@ -2502,6 +2576,7 @@ namespace ps2_stubs
 
     void sceMpegGetPicture(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        MpegCallTimer callTimer{"sceMpegGetPicture"};
         const uint32_t mpegAddr = getRegU32(ctx, 4);
         const uint32_t imageAddr = getRegU32(ctx, 5);
         uint32_t width = kStubMovieWidth;
@@ -2512,6 +2587,7 @@ namespace ps2_stubs
         {
             std::unique_lock<std::mutex> lock(g_mpeg_stub_mutex);
             MpegPlaybackState &playback = getPlaybackState(mpegAddr);
+            pumpVideoDecode(playback, kVideoDecodeAhead);
             if (playback.decodedFrames.empty() &&
                 !g_mpeg_stub_state.currentCdStreamEofSeen &&
                 !playback.streamEnded &&
@@ -2580,6 +2656,7 @@ namespace ps2_stubs
 
                 frame = std::move(playback.decodedFrames.front());
                 playback.decodedFrames.pop_front();
+                pumpVideoDecode(playback, kVideoDecodeAhead);
                 playback.width = static_cast<uint32_t>(frame.width);
                 playback.height = static_cast<uint32_t>(frame.height);
                 width = playback.width;

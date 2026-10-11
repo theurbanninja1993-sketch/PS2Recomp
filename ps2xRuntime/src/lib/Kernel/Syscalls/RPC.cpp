@@ -1,3 +1,4 @@
+#include <chrono>
 #include "Common.h"
 #include "RPC.h"
 #include "../../ps2_iop_transport.h"
@@ -556,6 +557,25 @@ namespace ps2_syscalls
 
     void SifCallRpc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // PS2X_RPC_TIMING=1: log RPC calls that take longer than 3 ms (sid, fno).
+        struct RpcTimer
+        {
+            uint32_t sid, fno;
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~RpcTimer()
+            {
+                static const bool s_enabled = std::getenv("PS2X_RPC_TIMING") != nullptr;
+                if (!s_enabled)
+                    return;
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+                if (ms > 3.0)
+                    std::fprintf(stderr, "[rpc:slow] sid=0x%x fno=%u %.1f ms\n", sid, fno, ms);
+            }
+        };
+        uint32_t timerSid = 0;
+        if (const uint8_t *client = getConstMemPtr(rdram, getRegU32(ctx, 4)))
+            std::memcpy(&timerSid, client + 0x24, 4);
+        RpcTimer rpcTimer{timerSid, getRegU32(ctx, 5)};
         std::lock_guard<std::recursive_mutex> rpcCallLock(g_sif_call_rpc_mutex);
 
         const uint32_t clientPtr = getRegU32(ctx, 4);

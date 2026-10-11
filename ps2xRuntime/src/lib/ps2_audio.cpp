@@ -1,3 +1,4 @@
+#include <atomic>
 #include "runtime/ps2_audio.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_host_backend.h"
@@ -147,6 +148,8 @@ void PS2AudioBackend::setAudioReady(bool ready)
     m_audioReady = ready;
 }
 
+std::atomic<uint64_t> g_ps2AudioFramesSubmitted{0}, g_ps2AudioFramesDropped{0};
+
 void PS2AudioBackend::submitStream(const int16_t *stereoFrames, uint32_t frameCount)
 {
     if (!stereoFrames || frameCount == 0u)
@@ -162,11 +165,13 @@ void PS2AudioBackend::submitStream(const int16_t *stereoFrames, uint32_t frameCo
         std::fwrite(stereoFrames, sizeof(int16_t) * 2u, frameCount, s_dump);
         std::fflush(s_dump);
     }
+    g_ps2AudioFramesSubmitted.fetch_add(frameCount, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(g_streamRing.mutex);
     for (uint32_t i = 0; i < frameCount; ++i)
     {
         if (g_streamRing.queuedFrames == StreamRing::kFrames)
         {
+            g_ps2AudioFramesDropped.fetch_add(1u, std::memory_order_relaxed);
             // Full: drop the oldest frame rather than stall the emulator.
             g_streamRing.readFrame = (g_streamRing.readFrame + 1u) % StreamRing::kFrames;
             --g_streamRing.queuedFrames;

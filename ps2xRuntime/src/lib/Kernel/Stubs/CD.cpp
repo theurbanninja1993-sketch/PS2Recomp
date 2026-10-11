@@ -1,3 +1,4 @@
+#include <chrono>
 #include "Common.h"
 #include "CD.h"
 #include "MPEG.h"
@@ -874,6 +875,20 @@ namespace ps2_stubs
 
     void sceCdStRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // PS2X_CD_TIMING=1: log stream reads slower than 3 ms.
+        struct StReadTimer
+        {
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~StReadTimer()
+            {
+                static const bool s_enabled = std::getenv("PS2X_CD_TIMING") != nullptr;
+                if (!s_enabled)
+                    return;
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+                if (ms > 3.0)
+                    std::fprintf(stderr, "[cd:slow] sceCdStRead %.1f ms\n", ms);
+            }
+        } stReadTimer;
         const uint32_t requestedSectors = getRegU32(ctx, 4);
         const uint32_t buffer = getRegU32(ctx, 5);
         const uint32_t mode = getRegU32(ctx, 6);

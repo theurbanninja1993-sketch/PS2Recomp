@@ -1811,6 +1811,22 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                      GuestBranchKind kind,
                                      const char *debugName)
 {
+    // PS2X_STALL_TRACE=1: report host gaps > 5 ms between guest calls on the
+    // game thread (what holds a VBlank up).
+    static const bool s_stallTrace = std::getenv("PS2X_STALL_TRACE") != nullptr;
+    if (s_stallTrace)
+    {
+        static thread_local auto s_last = std::chrono::steady_clock::now();
+        static thread_local uint32_t s_lastTarget = 0, s_lastSource = 0;
+        const auto now = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(now - s_last).count();
+        if (ms > 5.0)
+            std::fprintf(stderr, "[stall] %.1f ms between call 0x%x (from 0x%x) and call 0x%x (from 0x%x) f=%llu\n", ms, s_lastTarget,
+                         s_lastSource, targetPc, sourcePc, (unsigned long long)g_ps2PresentedFrameCounter.load());
+        s_last = now;
+        s_lastTarget = targetPc;
+        s_lastSource = sourcePc;
+    }
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
