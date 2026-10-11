@@ -496,6 +496,10 @@ void PS2Memory::resetEeTimers() noexcept
     m_eeTimers = {};
 }
 
+std::atomic<uint64_t> g_eeTimerCountReads[4];
+std::atomic<uint64_t> g_eeTimerWraps[4];
+std::atomic<uint64_t> g_eeTimerOvfIrqs[4];
+
 uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
 {
     if (eeCycles == 0u)
@@ -524,48 +528,71 @@ uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
         const uint64_t scaled = remainingCycles * clockHz + timer.clockRemainder;
         const uint64_t ticks = wholeSeconds * clockHz + scaled / kEeClockHz;
         timer.clockRemainder = scaled % kEeClockHz;
-        if (ticks == 0u)
-        {
-            continue;
-        }
 
-        const uint32_t oldCount = timer.count & 0xFFFFu;
-        const uint32_t compare = timer.compare & 0xFFFFu;
-        const uint64_t compareDistance = ticksUntilMatch(oldCount, compare);
-        const uint64_t overflowDistance = 0x10000ull - oldCount;
-        const bool zeroReturn = (timer.mode & kEeTimerModeZret) != 0u;
-        const bool compareReached = ticks >= compareDistance;
-        bool overflowReached = false;
-
-        if (zeroReturn)
+        uint64_t compareEvents = 0u;
+        uint64_t overflowEvents = 0u;
+        if (ticks != 0u)
         {
-            overflowReached = ticks >= overflowDistance && overflowDistance <= compareDistance;
-            if (compareReached)
+            const uint32_t oldCount = timer.count & 0xFFFFu;
+            const uint32_t compare = timer.compare & 0xFFFFu;
+            const uint64_t compareDistance = ticksUntilMatch(oldCount, compare);
+            const uint64_t overflowDistance = 0x10000ull - oldCount;
+            const bool zeroReturn = (timer.mode & kEeTimerModeZret) != 0u;
+
+            if (zeroReturn)
             {
-                const uint64_t remaining = ticks - compareDistance;
-                timer.count = compare == 0u
-                                  ? static_cast<uint32_t>(remaining & 0xFFFFu)
-                                  : static_cast<uint32_t>(remaining % compare);
+                // Period compare+1 counts (0 -> 0x10000): count 0..compare.
+                const uint64_t period = compare == 0u ? 0x10000ull : static_cast<uint64_t>(compare);
+                if (ticks >= compareDistance)
+                {
+                    const uint64_t remaining = ticks - compareDistance;
+                    compareEvents = 1u + remaining / period;
+                    timer.count = compare == 0u
+                                      ? static_cast<uint32_t>(remaining & 0xFFFFu)
+                                      : static_cast<uint32_t>(remaining % compare);
+                }
+                else
+                {
+                    timer.count = static_cast<uint32_t>((oldCount + ticks) & 0xFFFFu);
+                }
+                overflowEvents = (ticks >= overflowDistance && overflowDistance <= compareDistance) ? 1u : 0u;
             }
             else
             {
+                if (ticks >= compareDistance)
+                    compareEvents = 1u + (ticks - compareDistance) / 0x10000ull;
+                overflowEvents = (oldCount + ticks) >> 16u;
+                g_eeTimerWraps[index].fetch_add(overflowEvents, std::memory_order_relaxed);
                 timer.count = static_cast<uint32_t>((oldCount + ticks) & 0xFFFFu);
             }
         }
-        else
-        {
-            overflowReached = ticks >= overflowDistance;
-            timer.count = static_cast<uint32_t>((oldCount + ticks) & 0xFFFFu);
-        }
 
-        if (compareReached && (timer.mode & kEeTimerModeCmpe) != 0u && (timer.mode & kEeTimerModeEquf) == 0u)
+        // Real hardware runs the handler within microseconds, well before the
+        // next match; here one advance can cover many (e.g. T1 on the bus
+        // clock wraps every 0.44 ms, and VCS counts those interrupts as its
+        // game clock: dropping them slowed cutscene animation against the
+        // dialogue). Keep the surplus and raise it after each acknowledge.
+        constexpr uint32_t kMaxPendingTimerEvents = 4096u;
+        if ((timer.mode & kEeTimerModeCmpe) != 0u)
+            timer.pendingCompare = static_cast<uint32_t>(std::min<uint64_t>(timer.pendingCompare + compareEvents, kMaxPendingTimerEvents));
+        else
+            timer.pendingCompare = 0u;
+        if ((timer.mode & kEeTimerModeOvfe) != 0u)
+            timer.pendingOverflow = static_cast<uint32_t>(std::min<uint64_t>(timer.pendingOverflow + overflowEvents, kMaxPendingTimerEvents));
+        else
+            timer.pendingOverflow = 0u;
+
+        if (timer.pendingCompare != 0u && (timer.mode & kEeTimerModeEquf) == 0u)
         {
+            --timer.pendingCompare;
             timer.mode |= kEeTimerModeEquf;
             interruptMask |= 1u << index;
         }
-        if (overflowReached && (timer.mode & kEeTimerModeOvfe) != 0u && (timer.mode & kEeTimerModeOvff) == 0u)
+        if (timer.pendingOverflow != 0u && (timer.mode & kEeTimerModeOvff) == 0u)
         {
+            --timer.pendingOverflow;
             timer.mode |= kEeTimerModeOvff;
+            g_eeTimerOvfIrqs[index].fetch_add(1u, std::memory_order_relaxed);
             interruptMask |= 1u << index;
         }
     }
@@ -580,6 +607,12 @@ uint64_t PS2Memory::cyclesUntilNextEeTimerInterrupt() const noexcept
         if ((timer.mode & kEeTimerModeCue) == 0u)
         {
             continue;
+        }
+
+        if ((timer.pendingCompare != 0u && (timer.mode & kEeTimerModeEquf) == 0u) ||
+            (timer.pendingOverflow != 0u && (timer.mode & kEeTimerModeOvff) == 0u))
+        {
+            return 1u; // a queued match/overflow is raised on the next advance
         }
 
         const uint32_t count = timer.count & 0xFFFFu;
@@ -1247,9 +1280,17 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             const uint32_t previousMode = timer.mode;
             const uint32_t status = (previousMode & kEeTimerModeStatusMask) & ~(value & kEeTimerModeStatusMask);
             timer.mode = (value & kEeTimerModeConfigMask) | status;
+            static const bool s_timerDebug = std::getenv("PS2X_TIMER_DEBUG") != nullptr;
+            if (s_timerDebug && ((previousMode ^ timer.mode) & kEeTimerModeConfigMask) != 0u)
+                std::fprintf(stderr, "[timer] T%zu mode %x -> %x\n", timerIndex, previousMode, timer.mode);
             if (((previousMode ^ timer.mode) & (kEeTimerModeClksMask | kEeTimerModeCue)) != 0u)
             {
                 timer.clockRemainder = 0u;
+            }
+            if ((timer.mode & kEeTimerModeCue) == 0u)
+            {
+                timer.pendingCompare = 0u;
+                timer.pendingOverflow = 0u;
             }
             break;
         }
@@ -2771,6 +2812,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
         switch (timerOffset)
         {
         case kEeTimerCountOffset:
+            g_eeTimerCountReads[timerIndex].fetch_add(1u, std::memory_order_relaxed);
             return timer.count & 0xFFFFu;
         case kEeTimerModeOffset:
             return timer.mode & (kEeTimerModeConfigMask | kEeTimerModeStatusMask);

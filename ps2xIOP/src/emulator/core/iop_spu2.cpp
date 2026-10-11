@@ -61,6 +61,19 @@ namespace ps2x::iop::detail
         void setHigh8(uint32_t &value, uint16_t high) { value = (value & 0x0000FFFFu) | (static_cast<uint32_t>(high & 0xFFu) << 16u); }
         void setAddrHigh(uint32_t &value, uint16_t high) { value = ((value & 0xFFFFu) | (static_cast<uint32_t>(high & 0xFu) << 16u)) & kAddressMask; }
         void setAddrLow(uint32_t &value, uint16_t low) { value = ((value & 0xF0000u) | low) & kAddressMask; }
+
+        // PS2X_SPU_VOICE_LOG=<file>: key on/off and pitch changes, stamped
+        // with the SPU sample clock (48 kHz), to check stream playback rates.
+        uint64_t g_spuSampleClock = 0;
+        FILE *voiceLog()
+        {
+            static FILE *s_file = []() -> FILE *
+            {
+                const char *path = std::getenv("PS2X_SPU_VOICE_LOG");
+                return path ? std::fopen(path, "w") : nullptr;
+            }();
+            return s_file;
+        }
     }
 
     Spu2::Spu2()
@@ -217,7 +230,11 @@ namespace ps2x::iop::detail
             {
             case 0x0: v.volL = value; break;
             case 0x2: v.volR = value; break;
-            case 0x4: v.pitch = value; break;
+            case 0x4:
+                if (FILE *log = voiceLog(); log && v.pitch != value)
+                    std::fprintf(log, "%llu pitch c%u v%u %x\n", static_cast<unsigned long long>(g_spuSampleClock), core, offset >> 4u, value);
+                v.pitch = value;
+                break;
             case 0x6: v.adsr1 = value; break;
             case 0x8: v.adsr2 = value; break;
             case 0xA: v.envelope = static_cast<int16_t>(value) < 0 ? 0 : value; break;
@@ -296,6 +313,8 @@ namespace ps2x::iop::detail
                 continue;
             Voice &v = c.voices[index];
             ++m_statKeyOns;
+            if (FILE *log = voiceLog())
+                std::fprintf(log, "%llu kon c%u v%u ssa=%x pitch=%x\n", static_cast<unsigned long long>(g_spuSampleClock), core, index, v.ssa, v.pitch);
             if (m_trace && m_statKeyOns <= 200u)
             {
                 const uint8_t *block = m_ram.data() + (v.ssa & kAddressMask & ~7u) * 2u;
@@ -320,6 +339,8 @@ namespace ps2x::iop::detail
 
     void Spu2::keyOff(uint32_t core, uint32_t voiceMask)
     {
+        if (FILE *log = voiceLog())
+            std::fprintf(log, "%llu koff c%u mask=%x\n", static_cast<unsigned long long>(g_spuSampleClock), core, voiceMask);
         Core &c = m_cores[core];
         for (uint32_t index = 0; index < kVoiceCount; ++index)
         {
@@ -526,6 +547,8 @@ namespace ps2x::iop::detail
         }
 
         ++m_statDmaPlain;
+        if (FILE *log = voiceLog())
+            std::fprintf(log, "%llu dma c%u tsa=%x bytes=%u\n", static_cast<unsigned long long>(g_spuSampleClock), core, c.tsa, bytes);
         c.statx = static_cast<uint16_t>(c.statx & ~0x80u);
         if ((chcr & 1u) != 0u && ram != nullptr)
         {
@@ -601,6 +624,7 @@ namespace ps2x::iop::detail
 
     void Spu2::tick(const uint8_t *ram, size_t ramSize, int16_t &outLeft, int16_t &outRight)
     {
+        ++g_spuSampleClock;
         int32_t coreOutL[2] = {0, 0};
         int32_t coreOutR[2] = {0, 0};
         for (uint32_t core = 0; core < 2u; ++core)

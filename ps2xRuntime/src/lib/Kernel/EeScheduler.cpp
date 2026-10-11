@@ -567,7 +567,7 @@ extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 // PS2X_PERF_LOG=<file>: every 600 VBlanks (~10 s) appends late VBlanks, real
 // time lost, per-thread CPU and VU1 compiled/interpreted calls, so slow spots
 // found while playing can be analysed afterwards.
-void ps2PerfLogVBlank(double lateMs)
+void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
 {
     static const char *s_path = std::getenv("PS2X_PERF_LOG");
     if (!s_path)
@@ -606,6 +606,17 @@ void ps2PerfLogVBlank(double lateMs)
                      static_cast<unsigned long long>(dropped - s_lastDropped));
         s_lastSubmitted = submitted;
         s_lastDropped = dropped;
+        // EE cycles this period (timers/CTimer); real time is ~2952M.
+        static uint64_t s_lastCycle = 0;
+        std::fprintf(s_file, " eeMcyc=%llu", static_cast<unsigned long long>((eeCycle - s_lastCycle) / 1000000u));
+        s_lastCycle = eeCycle;
+        extern std::atomic<uint64_t> g_eeTimerCountReads[4];
+        std::fprintf(s_file, " tReads=%llu,%llu,%llu,%llu", static_cast<unsigned long long>(g_eeTimerCountReads[0].exchange(0)),
+                     static_cast<unsigned long long>(g_eeTimerCountReads[1].exchange(0)), static_cast<unsigned long long>(g_eeTimerCountReads[2].exchange(0)),
+                     static_cast<unsigned long long>(g_eeTimerCountReads[3].exchange(0)));
+        extern std::atomic<uint64_t> g_eeTimerWraps[4], g_eeTimerOvfIrqs[4];
+        std::fprintf(s_file, " t1wraps=%llu t1ovfIrq=%llu", static_cast<unsigned long long>(g_eeTimerWraps[1].exchange(0)),
+                     static_cast<unsigned long long>(g_eeTimerOvfIrqs[1].exchange(0)));
     }
     // Thread CPU from /proc (ticks are 1/100 s), summed per thread name.
     std::map<std::string, uint64_t> ticks;
@@ -2082,7 +2093,7 @@ void EeScheduler::processDueDeadlines()
                 const auto now = std::chrono::steady_clock::now();
                 if (now - anchor > kVBlankCatchUpLimit)
                     anchor = now;
-                ps2PerfLogVBlank(std::chrono::duration<double, std::milli>(now - scheduled.hostDeadline).count());
+                ps2PerfLogVBlank(std::chrono::duration<double, std::milli>(now - scheduled.hostDeadline).count(), m_eeCycle);
                 static const bool s_stats = std::getenv("PS2X_SYNC_STATS") != nullptr;
                 if (s_stats)
                 {

@@ -515,6 +515,11 @@ public:
         uint32_t compare = 0;
         uint32_t hold = 0;
         uint64_t clockRemainder = 0;
+        // Compare matches / overflows that happened while the previous one's
+        // flag was still set (one advance can span many when the EE count
+        // skips ahead); raised one by one as the handler acknowledges.
+        uint32_t pendingCompare = 0;
+        uint32_t pendingOverflow = 0;
     };
 
     std::array<EeTimer, 4> m_eeTimers{};
