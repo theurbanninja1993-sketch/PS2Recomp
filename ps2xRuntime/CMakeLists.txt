@@ -388,9 +388,11 @@ add_library(ps2_runtime STATIC
     src/lib/gs/gs_gpu_backend.cpp
     src/lib/gs/gpu/gl_context.cpp
     src/lib/gs/gpu/gs_gpu_renderer.cpp
+    src/lib/gs/gs_texture_replacements.cpp
     src/lib/ps2_iop_host.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_host_settings.cpp
+    src/lib/ps2_mods.cpp
     src/lib/ps2_pad.cpp
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
@@ -559,6 +561,21 @@ target_include_directories(ps2_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel
 )
+
+# xxHash (header-only, XXH_INLINE_ALL): XXH3-64 texture hashes as PCSX2
+# computes them (texture-pack replacement names).
+include(FetchContent)
+FetchContent_Declare(
+    xxhash
+    GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
+    GIT_TAG v0.8.3
+    GIT_SHALLOW TRUE
+)
+FetchContent_GetProperties(xxhash)
+if(NOT xxhash_POPULATED)
+    FetchContent_Populate(xxhash)
+endif()
+target_include_directories(ps2_runtime PRIVATE "${xxhash_SOURCE_DIR}")
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
 # GPU GS renderer: headless GL 4.6 via EGL (Linux).

@@ -2,8 +2,13 @@
 
 #include "runtime/gs/gs_backend.h"
 #include "runtime/gs/gpu/gl_context.h"
+#include "runtime/gs/gs_texture_replacements.h"
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -148,6 +153,32 @@ namespace gsgpu
         void applyPendingScale();
         void destroyTargets();
 
+        // Texture replacement (PCSX2-format packs, gs_texture_replacements.h):
+        // texture memory is hashed from the CPU copy of local memory, kept in
+        // step with uploads while a pack is loaded; replacement images load
+        // on a worker thread and are sampled in place of the GS texture.
+        struct Replacement
+        {
+            GLuint texture = 0;
+            bool requested = false;
+        };
+        struct HashedTexture
+        {
+            uint64_t generation = 0; // 1 + sum of its pages' write generations when hashed
+            uint64_t hash = 0;
+        };
+        void updateReplacements(); // between frames: a new set of packs
+        bool replacementsActive() const { return m_replIndex && !m_replIndex->files.empty(); }
+        GLuint replacementTexture(const GSDrawState &state);
+        uint64_t hashTextureMemory(const GSDrawState &state);
+        uint64_t hashClut(const GSDrawState &state);
+        // CPU-copy bookkeeping for [begin, end): a write happened; `cpuStale`:
+        // only VRAM holds it (GPU writes) until the next readback.
+        void markPagesWritten(uint32_t beginByte, uint32_t endByte, bool cpuStale);
+        void replacementWorker();
+        void uploadLoadedReplacements();
+        void stopReplacementWorker();
+
         // CPU copy of local memory <-> VRAM.
         void readbackVram();
         void uploadVram(uint32_t beginByte, uint32_t endByte);
@@ -158,6 +189,22 @@ namespace gsgpu
         bool m_gpu = false;
         std::unique_ptr<GSCpuBackend> m_cpu; // presentation, local->host transfers
         uint8_t *m_vram = nullptr;
+
+        std::shared_ptr<const gsrepl::Index> m_replIndex;
+        uint64_t m_replVersion = 0;
+        std::unordered_map<gsrepl::Key, Replacement, gsrepl::KeyHash> m_replacements;
+        std::unordered_map<uint64_t, HashedTexture> m_textureHashes;
+        std::vector<uint32_t> m_pageGeneration = std::vector<uint32_t>(512, 0u); // 8 KiB pages of local memory
+        std::vector<uint8_t> m_pageCpuStale = std::vector<uint8_t>(512, 0u);
+        uint64_t m_clutHashKey = ~0ull, m_clutHash = 0;
+        std::thread m_replThread;
+        std::mutex m_replMutex;
+        std::condition_variable m_replCv;
+        bool m_replStop = false;
+        std::deque<std::pair<gsrepl::Key, std::string>> m_replRequests;
+        std::deque<std::pair<gsrepl::Key, std::unique_ptr<gsrepl::Image>>> m_replResults;
+        std::atomic<uint32_t> m_replResultCount{0};
+        uint64_t m_statReplDraws = 0, m_statReplHits = 0, m_statReplMisses = 0, m_statReplLoaded = 0, m_statReplHashes = 0;
 
         uint32_t m_scale = 1;
         std::atomic<uint32_t> m_requestedScale{1};

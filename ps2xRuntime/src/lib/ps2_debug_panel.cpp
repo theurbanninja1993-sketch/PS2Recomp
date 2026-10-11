@@ -4,6 +4,7 @@
 #include "ps2_log.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/ps2_host_settings.h"
+#include "runtime/ps2_mods.h"
 
 #include <unordered_set>
 #include <utility>
@@ -2592,6 +2593,69 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
             else
             {
                 m_captureAction = -1;
+            }
+
+            if (ImGui::BeginTabItem("Mods"))
+            {
+                ImGui::BeginChild("mods-scroll", ImVec2(0.0f, -footerH));
+                ImGui::TextWrapped("Put each mod in its own folder inside the mods folder. PCSX2 texture packs "
+                                   "for SLUS-21590 work as they are.");
+                ImGui::TextDisabled("%s", ps2ModsDirectory().c_str());
+                if (ImGui::Button("Open mods folder"))
+                    ps2ModsOpenFolder();
+                ImGui::SameLine();
+                if (ImGui::Button("Rescan"))
+                    ps2ModsRefresh();
+                if (ImGui::Checkbox("Use texture packs", &settings.textureReplacement))
+                {
+                    ps2HostSettingsSave();
+                    ps2ModsRefresh();
+                }
+                if (!ps2HostSettingsGpuRenderer())
+                    ImGui::TextDisabled("Texture packs need the GPU renderer (PS2X_GS_GPU=1).");
+                ImGui::Spacing();
+                const auto &mods = ps2Mods();
+                if (mods.empty())
+                {
+                    ImGui::TextDisabled("No mods installed.");
+                }
+                else if (ImGui::BeginTable("mods", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit,
+                                           ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+                {
+                    ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed);
+                    ImGui::TableSetupColumn("Mod", ImGuiTableColumnFlags_WidthStretch);
+                    ImGui::TableSetupColumn("Contents", ImGuiTableColumnFlags_WidthFixed, columnW * 0.4f);
+                    ImGui::TableHeadersRow();
+                    std::string toggle;
+                    bool toggleTo = false;
+                    for (const PS2ModInfo &mod : mods)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        bool enabled = mod.enabled;
+                        ImGui::PushID(mod.name.c_str());
+                        if (ImGui::Checkbox("##on", &enabled))
+                        {
+                            toggle = mod.name;
+                            toggleTo = enabled;
+                        }
+                        ImGui::PopID();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(mod.name.c_str());
+                        ImGui::TableNextColumn();
+                        if (mod.textures)
+                            ImGui::Text("%zu replacement textures", mod.textures);
+                        if (mod.patches)
+                            ImGui::TextDisabled("%zu patch files (not supported yet)", mod.patches);
+                        if (!mod.textures && !mod.patches)
+                            ImGui::TextDisabled("nothing this version can use");
+                    }
+                    ImGui::EndTable();
+                    if (!toggle.empty())
+                        ps2ModsSetEnabled(toggle, toggleTo); // after drawing: rebuilds the list
+                }
+                ImGui::EndChild();
+                ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
         }

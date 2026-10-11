@@ -220,6 +220,34 @@ namespace GSMem
         PixelStorageTraits<P4>::InitPageLookupTable(PageTableP4, BlockTableP4, ColumnTable4);
     }
 
+    template <PixelStorageMode P, typename Table>
+    static u32 PixelByteAddressT(const Table& table, u32 bp, u32 bw, u32 x, u32 y)
+    {
+        const u32 pixel = PixelStorageTraits<P>::Address(table, bp, bw, x, y);
+        return static_cast<u32>((static_cast<u64>(pixel) * UnpackedBitWidth(P) / 8u) & (MEMORY_SIZE - 1u));
+    }
+
+    u32 PixelByteAddress(u32 psm, u32 bp, u32 bw, u32 x, u32 y)
+    {
+        switch (static_cast<PixelStorageMode>(psm & 0x3Fu))
+        {
+        case C32: return PixelByteAddressT<C32>(PageTableC32, bp, bw, x, y);
+        case C24: return PixelByteAddressT<C24>(PageTableC32, bp, bw, x, y);
+        case C16: return PixelByteAddressT<C16>(PageTableC16, bp, bw, x, y);
+        case C16S: return PixelByteAddressT<C16S>(PageTableC16S, bp, bw, x, y);
+        case P8: return PixelByteAddressT<P8>(PageTableP8, bp, bw, x, y);
+        case P4: return PixelByteAddressT<P4>(PageTableP4, bp, bw, x, y);
+        case P8H: return PixelByteAddressT<P8H>(PageTableC32, bp, bw, x, y);
+        case P4HL: return PixelByteAddressT<P4HL>(PageTableC32, bp, bw, x, y);
+        case P4HH: return PixelByteAddressT<P4HH>(PageTableC32, bp, bw, x, y);
+        case Z32: return PixelByteAddressT<Z32>(PageTableZ32, bp, bw, x, y);
+        case Z24: return PixelByteAddressT<Z24>(PageTableZ32, bp, bw, x, y);
+        case Z16: return PixelByteAddressT<Z16>(PageTableZ16, bp, bw, x, y);
+        case Z16S: return PixelByteAddressT<Z16S>(PageTableZ16S, bp, bw, x, y);
+        default: return 0u;
+        }
+    }
+
     u32 ReadTexture(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw, u32 x, u32 y)
     {
         switch (static_cast<PixelStorageMode>(psm & 0x3Fu))

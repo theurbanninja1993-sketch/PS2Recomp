@@ -232,6 +232,23 @@ void ps2HostSettingsLoad()
             s.flickerFilter = std::atoi(v) != 0;
         else if (key == "mouse_invert_y")
             s.mouseInvertY = std::atoi(v) != 0;
+        else if (key == "texture_replacement")
+            s.textureReplacement = std::atoi(v) != 0;
+        else if (key == "mods_disabled")
+        {
+            s.disabledMods.clear();
+            size_t start = 0;
+            while (start <= value.size())
+            {
+                const size_t bar = value.find('|', start);
+                const std::string name = value.substr(start, bar == std::string::npos ? std::string::npos : bar - start);
+                if (!name.empty())
+                    s.disabledMods.push_back(name);
+                if (bar == std::string::npos)
+                    break;
+                start = bar + 1;
+            }
+        }
         else if (key == "show_at_launch")
             s.showAtLaunch = std::atoi(v) != 0;
         else if (key == "gamepad_layout")
@@ -309,6 +326,11 @@ void ps2HostSettingsSave()
     }
     out << "# PS2Recomp host settings (also editable in game: F2)\n"
         << "show_at_launch=" << (s.showAtLaunch ? 1 : 0) << "\n"
+        << "texture_replacement=" << (s.textureReplacement ? 1 : 0) << "\n";
+    out << "mods_disabled=";
+    for (size_t i = 0; i < s.disabledMods.size(); ++i)
+        out << (i ? "|" : "") << s.disabledMods[i];
+    out << "\n"
         << "display_mode=" << static_cast<int>(s.displayMode) << "\n"
         << "window_width=" << s.windowWidth << "\n"
         << "window_height=" << s.windowHeight << "\n"

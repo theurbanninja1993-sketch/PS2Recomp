@@ -37,6 +37,8 @@ namespace gsgpu
     X(PFNGLDELETETEXTURESPROC, glDeleteTextures)                           \
     X(PFNGLTEXTURESTORAGE2DPROC, glTextureStorage2D)                       \
     X(PFNGLTEXTURESUBIMAGE2DPROC, glTextureSubImage2D)                     \
+    X(PFNGLCOMPRESSEDTEXTURESUBIMAGE2DPROC, glCompressedTextureSubImage2D) \
+    X(PFNGLTEXTUREPARAMETERFPROC, glTextureParameterf)                     \
     X(PFNGLTEXTUREPARAMETERIPROC, glTextureParameteri)                     \
     X(PFNGLGETTEXTURESUBIMAGEPROC, glGetTextureSubImage)                   \
     X(PFNGLBINDTEXTUREUNITPROC, glBindTextureUnit)                         \

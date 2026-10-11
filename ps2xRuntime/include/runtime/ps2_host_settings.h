@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <string>
+#include <vector>
 
 // Controls. PS2 buttons are indices into the pad's button word (bit i,
 // active low): 0 Select, 1 L3, 2 R3, 3 Start, 4 Up, 5 Right, 6 Down, 7 Left,
@@ -80,6 +81,8 @@ struct PS2HostSettings
     float mouseSensitivity = 1.0f;
     bool mouseInvertY = false;
 
+    bool textureReplacement = true;     // apply texture packs from the mods folder
+    std::vector<std::string> disabledMods; // mod folder names switched off
     bool showAtLaunch = false; // open the settings before the game starts, every launch (always on the first)
 
     ps2controls::GamepadLayout gamepadLayout = ps2controls::GamepadLayout::Classic;

@@ -4,6 +4,9 @@
 #include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
 
+#define XXH_INLINE_ALL
+#include "xxhash.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -293,6 +296,8 @@ layout(location = 0, index = 0) out vec4 o_color;
 layout(location = 0, index = 1) out vec4 o_factor;
 layout(binding = 1) uniform sampler2D u_target;
 layout(binding = 3) uniform sampler2D u_rtTex;
+layout(binding = 4) uniform sampler2D u_replTex;
+uniform int u_replace; // the texture is a replacement image (texels with GS-scale alpha)
 uniform int u_rtScale; // 0: texture read from local memory; else sampled from a render target at this scale
 layout(std430, binding = 2) readonly buffer ClutBuffer { uint clut[]; };
 uniform int u_tme, u_tfx, u_tcc, u_fge;
@@ -428,8 +433,16 @@ void main()
     {
         float q = abs(v_stq.z) > 1.0e-8 ? v_stq.z : 1.0;
         vec2 uv = v_stq.xy * (1.0 / q) * vec2(u_texSize);
-        uint t = sampleTexture(uv);
-        vec4 ct = vec4(float(t & 0xFFu), float((t >> 8) & 0xFFu), float((t >> 16) & 0xFFu), float(t >> 24));
+        vec4 ct;
+        if (u_replace != 0)
+        {
+            ct = floor(texture(u_replTex, uv / vec2(u_texSize)) * 255.0 + 0.5);
+        }
+        else
+        {
+            uint t = sampleTexture(uv);
+            ct = vec4(float(t & 0xFFu), float((t >> 8) & 0xFFu), float((t >> 16) & 0xFFu), float(t >> 24));
+        }
         if (u_tfx == 0)
         {
             c.rgb = min(floor(ct.rgb * cf.rgb / 128.0), 255.0);
@@ -775,6 +788,7 @@ void main()
 
     Renderer::~Renderer()
     {
+        stopReplacementWorker();
         if (m_gpu && m_vram)
         {
             flushBatch();
@@ -987,6 +1001,12 @@ void main()
         gl.glBindTextureUnit(0, target.texture);
         gl.glDispatchCompute((target.width + 63u) / 64u, (rows + 3u) / 4u, 1u);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        if (replacementsActive())
+        {
+            uint32_t begin = 0, end = 0;
+            rowsToBytes(target, y0, y0 + rows - 1u, begin, end);
+            markPagesWritten(begin, end, true);
+        }
         target.dirtyY0 = ~0u;
         target.dirtyY1 = 0;
     }
@@ -1203,14 +1223,21 @@ void main()
         // upscaled image's detail through render-to-texture passes);
         // otherwise it is read from VRAM, where targets drawn over it go first.
         GLuint textureSource = 0;
+        GLuint replacement = 0;
         if (state.prim.tme)
         {
+            if (replacementsActive())
+                uploadLoadedReplacements();
             static const bool s_vramTextures = std::getenv("PS2X_GS_GPU_NO_RT_TEXTURE") != nullptr;
             Target *source = s_vramTextures ? nullptr
                                             : textureSourceTarget(key.tbp0, key.tbw, key.tpsm, state.textureHeight);
             if (source)
             {
                 textureSource = source == &color ? feedbackCopy(color) : source->texture;
+            }
+            else if (replacementsActive() && (replacement = replacementTexture(state)) != 0)
+            {
+                // Sampled from the replacement image, not local memory.
             }
             else
             {
@@ -1323,6 +1350,17 @@ void main()
         set1("u_rtScale", textureSource != 0 ? scale : 0);
         if (textureSource != 0)
             gl.glBindTextureUnit(3, textureSource);
+        set1("u_replace", replacement != 0 ? 1 : 0);
+        if (replacement != 0)
+        {
+            // The game's filter and wrap modes (region modes never get here).
+            const bool linear = state.linearFilter;
+            gl.glTextureParameteri(replacement, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
+            gl.glTextureParameteri(replacement, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
+            gl.glTextureParameteri(replacement, GL_TEXTURE_WRAP_S, (ctx.clamp & 3u) == 1u ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+            gl.glTextureParameteri(replacement, GL_TEXTURE_WRAP_T, ((ctx.clamp >> 2) & 3u) == 1u ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+            gl.glBindTextureUnit(4, replacement);
+        }
         gl.glBindVertexArray(m_vao);
     }
 
@@ -1551,6 +1589,7 @@ void main()
         GL &gl = m_context.gl;
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
         gl.glGetNamedBufferSubData(m_vramBuffer, 0, kLocalMemoryBytes, m_vram);
+        std::fill(m_pageCpuStale.begin(), m_pageCpuStale.end(), uint8_t{0});
     }
 
     void Renderer::uploadVram(uint32_t beginByte, uint32_t endByte)
@@ -1560,6 +1599,7 @@ void main()
         flushBatch();
         m_context.gl.glNamedBufferSubData(m_vramBuffer, beginByte, endByte - beginByte, m_vram + beginByte);
         vramWroteRange(beginByte, endByte);
+        markPagesWritten(beginByte, endByte, false);
     }
 
     void Renderer::initialize(uint8_t *vram, uint32_t vramSize)
@@ -1596,6 +1636,8 @@ void main()
             m_cpu->LoadClut(tex0, texclut);
             return;
         }
+        if (replacementsActive())
+            m_cpu->LoadClut(tex0, texclut); // the palette hash reads the CPU CLUT
         const bool fourBit = tex0.psm == PSM_T4 || tex0.psm == PSM_T4HL || tex0.psm == PSM_T4HH;
         const bool eightBit = tex0.psm == PSM_T8 || tex0.psm == PSM_T8H;
         if (!fourBit && !eightBit)
@@ -1747,6 +1789,8 @@ void main()
             resolveRange(begin, end);
         }
 
+        if (replacementsActive() && (command.direction == 0u || command.direction == 2u))
+            m_cpu->BeginTransfer(command); // keeps the CPU copy (texture hashing) in step
         if (command.direction == 1u)
         {
             // Local -> host: the CPU backend reads the refreshed local memory.
@@ -1761,6 +1805,7 @@ void main()
             bufferRange(buf.dbp, buf.dbw, static_cast<uint32_t>(command.trxpos.dsay) + command.trxreg.rrh, buf.dpsm,
                         begin, end);
             vramWroteRange(begin, end);
+            markPagesWritten(begin, end, true); // the source may hold GPU-drawn data
             m_transferState.copiedPixels = m_transferState.totalPixels;
             m_transferState.direction = 3u;
         }
@@ -1792,12 +1837,15 @@ void main()
         const uint32_t streamBytes = bits == 4u ? (pixels + 1u) / 2u : pixels * (bits / 8u);
         flushBatch();
         dispatchHostToLocal(data, pixels, streamBytes);
+        if (replacementsActive())
+            m_cpu->UploadImage(data, sizeBytes);
 
         const auto &buf = m_transfer.bitbltbuf;
         uint32_t begin = 0, end = 0;
         bufferRange(buf.dbp, buf.dbw, static_cast<uint32_t>(m_transfer.trxpos.dsay) + m_transfer.trxreg.rrh, buf.dpsm,
                     begin, end);
         vramWroteRange(begin, end);
+        markPagesWritten(begin, end, false);
 
         m_transferState.copiedPixels += pixels;
         if (m_transferState.copiedPixels >= m_transferState.totalPixels)
@@ -1824,10 +1872,311 @@ void main()
         readbackVram();
     }
 
+    // ------------------------------------------------------ texture replacement
+
+    void Renderer::markPagesWritten(uint32_t beginByte, uint32_t endByte, bool cpuStale)
+    {
+        if (!replacementsActive() || beginByte >= endByte)
+            return;
+        const uint32_t first = beginByte / kPageBytes, last = std::min<uint32_t>((endByte - 1u) / kPageBytes, 511u);
+        // An upload makes the CPU copy current there again (a page only
+        // partly rewritten hashes mixed data: a miss, never a wrong match).
+        for (uint32_t page = first; page <= last; ++page)
+        {
+            ++m_pageGeneration[page];
+            m_pageCpuStale[page] = cpuStale ? 1u : 0u;
+        }
+    }
+
+    void Renderer::updateReplacements()
+    {
+        const uint64_t version = gsrepl::currentVersion();
+        if (version == m_replVersion)
+            return;
+        m_replVersion = version;
+        const bool wasActive = replacementsActive();
+        m_replIndex = gsrepl::current();
+        GL &gl = m_context.gl;
+        {
+            std::lock_guard lock(m_replMutex);
+            m_replRequests.clear();
+            m_replResults.clear();
+            m_replResultCount.store(0u, std::memory_order_relaxed);
+        }
+        for (auto &entry : m_replacements)
+            if (entry.second.texture != 0)
+                gl.glDeleteTextures(1, &entry.second.texture);
+        m_replacements.clear();
+        m_textureHashes.clear();
+        m_clutHashKey = ~0ull;
+        if (!replacementsActive())
+        {
+            stopReplacementWorker();
+            return;
+        }
+        std::cerr << "[gs:gpu] texture replacement: " << m_replIndex->files.size() << " textures" << std::endl;
+        if (!wasActive)
+        {
+            // The CPU copy of local memory becomes the hashing source: bring
+            // it up to date; uploads keep it so from here on.
+            readbackVram();
+            std::fill(m_pageGeneration.begin(), m_pageGeneration.end(), 0u);
+        }
+        if (!m_replThread.joinable())
+        {
+            m_replStop = false;
+            m_replThread = std::thread([this]() { replacementWorker(); });
+        }
+    }
+
+    void Renderer::stopReplacementWorker()
+    {
+        if (!m_replThread.joinable())
+            return;
+        {
+            std::lock_guard lock(m_replMutex);
+            m_replStop = true;
+        }
+        m_replCv.notify_all();
+        m_replThread.join();
+    }
+
+    void Renderer::replacementWorker()
+    {
+        for (;;)
+        {
+            std::pair<gsrepl::Key, std::string> request;
+            {
+                std::unique_lock lock(m_replMutex);
+                m_replCv.wait(lock, [this]() { return m_replStop || !m_replRequests.empty(); });
+                if (m_replStop)
+                    return;
+                request = std::move(m_replRequests.front());
+                m_replRequests.pop_front();
+            }
+            auto image = std::make_unique<gsrepl::Image>();
+            std::string error;
+            if (!gsrepl::loadImage(request.second, *image, error))
+            {
+                std::cerr << "[gs:gpu] replacement " << request.second << ": " << error << std::endl;
+                image.reset();
+            }
+            std::lock_guard lock(m_replMutex);
+            m_replResults.emplace_back(request.first, std::move(image));
+            m_replResultCount.fetch_add(1u, std::memory_order_release);
+        }
+    }
+
+    void Renderer::uploadLoadedReplacements()
+    {
+        if (m_replResultCount.load(std::memory_order_acquire) == 0u)
+            return;
+        std::deque<std::pair<gsrepl::Key, std::unique_ptr<gsrepl::Image>>> results;
+        {
+            std::lock_guard lock(m_replMutex);
+            results.swap(m_replResults);
+            m_replResultCount.store(0u, std::memory_order_relaxed);
+        }
+        GL &gl = m_context.gl;
+        for (auto &result : results)
+        {
+            auto it = m_replacements.find(result.first);
+            if (it == m_replacements.end() || !result.second || result.second->levels.empty())
+                continue; // index changed meanwhile, or the file failed (stays "requested")
+            const gsrepl::Image &image = *result.second;
+            GLuint texture = 0;
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &texture);
+            gl.glTextureStorage2D(texture, static_cast<GLsizei>(image.levels.size()), image.glFormat,
+                                  static_cast<GLsizei>(image.levels[0].width), static_cast<GLsizei>(image.levels[0].height));
+            for (size_t level = 0; level < image.levels.size(); ++level)
+            {
+                const auto &l = image.levels[level];
+                if (image.compressed)
+                    gl.glCompressedTextureSubImage2D(texture, static_cast<GLint>(level), 0, 0, static_cast<GLsizei>(l.width),
+                                                     static_cast<GLsizei>(l.height), image.glFormat,
+                                                     static_cast<GLsizei>(l.data.size()), l.data.data());
+                else
+                    gl.glTextureSubImage2D(texture, static_cast<GLint>(level), 0, 0, static_cast<GLsizei>(l.width),
+                                           static_cast<GLsizei>(l.height), GL_RGBA, GL_UNSIGNED_BYTE, l.data.data());
+            }
+            gl.glTextureParameteri(texture, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(image.levels.size()) - 1);
+            gl.glTextureParameterf(texture, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, 16.0f);
+            it->second.texture = texture;
+            ++m_statReplLoaded;
+        }
+    }
+
+    uint64_t Renderer::hashTextureMemory(const GSDrawState &state)
+    {
+        // PCSX2 HashTextureLevel(): whole GS blocks of the texture in block
+        // order when it covers whole blocks of a format using all 32 bits of
+        // its words; otherwise the expanded texels (palette indices / RGBA).
+        const GSTex0Reg &tex0 = state.context.tex0;
+        const uint32_t psm = tex0.psm, tbp = tex0.tbp0, tbw = tex0.tbw;
+        const uint32_t width = 1u << std::min<uint32_t>(tex0.tw, 10u), height = 1u << std::min<uint32_t>(tex0.th, 10u);
+        uint32_t bsx = 8, bsy = 8;
+        if (psm == PSM_CT16 || psm == PSM_CT16S || psm == 0x32u || psm == 0x3Au)
+            bsx = 16, bsy = 8;
+        else if (psm == PSM_T8)
+            bsx = 16, bsy = 16;
+        else if (psm == PSM_T4)
+            bsx = 32, bsy = 16;
+        const bool fullWords = psm == PSM_CT32 || psm == 0x30u || psm == PSM_T8 || psm == PSM_T4;
+        ++m_statReplHashes;
+        XXH3_state_t st;
+        XXH3_64bits_reset(&st);
+        if (width >= bsx && height >= bsy && fullWords)
+        {
+            for (uint32_t y = 0; y < height; y += bsy)
+                for (uint32_t x = 0; x < width; x += bsx)
+                    XXH3_64bits_update(&st, m_vram + (GSMem::PixelByteAddress(psm, tbp, tbw, x, y) & ~255u), 256u);
+            return XXH3_64bits_digest(&st);
+        }
+        const bool palettized = isPalettized(static_cast<uint8_t>(psm));
+        std::vector<uint8_t> row(static_cast<size_t>(width) * (palettized ? 1u : 4u));
+        const uint32_t ta0 = state.texa.ta0, ta1 = state.texa.ta1;
+        const bool aem = state.texa.aem;
+        for (uint32_t y = 0; y < height; ++y)
+        {
+            for (uint32_t x = 0; x < width; ++x)
+            {
+                const uint32_t raw = m_cpu->ReadVram(psm, tbp, tbw, x, y);
+                if (palettized)
+                {
+                    row[x] = static_cast<uint8_t>(raw);
+                    continue;
+                }
+                uint32_t c = raw;
+                if (psm == PSM_CT24 || psm == 0x31u)
+                    c = (raw & 0x00FFFFFFu) | ((aem && (raw & 0x00FFFFFFu) == 0u) ? 0u : (ta0 << 24));
+                else if (is16Bit(static_cast<uint8_t>(psm)))
+                {
+                    const uint32_t a = (raw & 0x8000u) ? ta1 : ((aem && (raw & 0x7FFFu) == 0u) ? 0u : ta0);
+                    c = ((raw & 0x1Fu) << 3) | (((raw >> 5) & 0x1Fu) << 11) | (((raw >> 10) & 0x1Fu) << 19) | (a << 24);
+                }
+                std::memcpy(row.data() + x * 4u, &c, 4u);
+            }
+            XXH3_64bits_update(&st, row.data(), row.size());
+        }
+        return XXH3_64bits_digest(&st);
+    }
+
+    uint64_t Renderer::hashClut(const GSDrawState &state)
+    {
+        // PCSX2 GSClut::Read32 buffer: 16 (4-bit) or 256 (8-bit) 32-bit
+        // entries in index order; 16-bit palettes expanded with TEXA.
+        const GSTex0Reg &tex0 = state.context.tex0;
+        const bool fourBit = tex0.psm == PSM_T4 || tex0.psm == PSM_T4HL || tex0.psm == PSM_T4HH;
+        const bool sixteen = tex0.cpsm == PSM_CT16 || tex0.cpsm == PSM_CT16S;
+        const uint64_t key = (m_clutVersion << 24) ^ (uint64_t(tex0.csa) << 1) ^ (fourBit ? 1u : 0u) ^
+                             (uint64_t(tex0.cpsm) << 8) ^
+                             (sixteen ? (uint64_t(state.texa.ta0) << 40 ^ uint64_t(state.texa.ta1) << 48 ^ uint64_t(state.texa.aem) << 56) : 0u);
+        if (key == m_clutHashKey)
+            return m_clutHash;
+        const auto &clut = m_cpu->clutTable();
+        uint32_t entries[256];
+        const uint32_t count = fourBit ? 16u : 256u;
+        if (!sixteen)
+        {
+            const uint32_t csa = (tex0.csa & 15u) << 4;
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const uint32_t e = fourBit ? csa + i : std::min((i & ~15u) + csa, 240u) + (i & 15u);
+                entries[i] = uint32_t(clut[e & 0xFFu]) | (uint32_t(clut[(e & 0xFFu) + 256u]) << 16);
+            }
+        }
+        else
+        {
+            const uint32_t base = static_cast<uint32_t>(tex0.csa) << 4;
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const uint32_t raw = clut[(base + i) & 0x1FFu];
+                const uint32_t a = (raw & 0x8000u) ? state.texa.ta1 : ((state.texa.aem && (raw & 0x7FFFu) == 0u) ? 0u : state.texa.ta0);
+                entries[i] = ((raw & 0x1Fu) << 3) | (((raw >> 5) & 0x1Fu) << 11) | (((raw >> 10) & 0x1Fu) << 19) | (a << 24);
+            }
+        }
+        m_clutHashKey = key;
+        m_clutHash = XXH3_64bits(entries, count * 4u);
+        return m_clutHash;
+    }
+
+    GLuint Renderer::replacementTexture(const GSDrawState &state)
+    {
+        const GSContext &ctx = state.context;
+        const GSTex0Reg &tex0 = ctx.tex0;
+        const uint32_t psm = tex0.psm;
+        const bool palettized = isPalettized(static_cast<uint8_t>(psm));
+        if (!palettized && psm != PSM_CT32 && psm != PSM_CT24 && psm != PSM_CT16 && psm != PSM_CT16S)
+            return 0;
+        if ((ctx.clamp & 3u) >= 2u || ((ctx.clamp >> 2) & 3u) >= 2u)
+            return 0; // region clamp / repeat: not supported by replacements
+        ++m_statReplDraws;
+        uint32_t begin = 0, end = 0;
+        bufferRange(tex0.tbp0, tex0.tbw, 1u << std::min<uint32_t>(tex0.th, 10u), static_cast<uint8_t>(psm), begin, end);
+        if (begin >= end)
+            return 0;
+        uint64_t generation = 1;
+        for (uint32_t page = begin / kPageBytes; page <= std::min<uint32_t>((end - 1u) / kPageBytes, 511u); ++page)
+        {
+            if (m_pageCpuStale[page])
+                return 0; // drawn by the GPU (render-to-texture): never a replacement
+            generation += m_pageGeneration[page];
+        }
+        const bool texa = !palettized && psm != PSM_CT32;
+        const uint64_t texKey = uint64_t(tex0.tbp0) | uint64_t(tex0.tbw) << 14 | uint64_t(psm) << 20 | uint64_t(tex0.tw) << 26 |
+                                uint64_t(tex0.th) << 30 |
+                                (texa ? (uint64_t(state.texa.ta0) << 34 | uint64_t(state.texa.aem) << 42 | uint64_t(state.texa.ta1) << 43) : 0u);
+        HashedTexture &hashed = m_textureHashes[texKey];
+        if (hashed.generation != generation)
+        {
+            hashed.hash = hashTextureMemory(state);
+            hashed.generation = generation;
+        }
+        gsrepl::Key key;
+        key.tex0Hash = hashed.hash;
+        key.clutHash = palettized ? hashClut(state) : 0u;
+        key.bits = gsrepl::makeBits(psm, tex0.tw, tex0.th, texa ? state.texa.ta0 : 0u, texa ? state.texa.aem : 0u,
+                                    texa ? state.texa.ta1 : 0u);
+        const auto file = m_replIndex->files.find(key);
+        if (file == m_replIndex->files.end())
+        {
+            ++m_statReplMisses;
+            static const bool s_logMisses = std::getenv("PS2X_TEXREPL_LOG_MISSES") != nullptr;
+            if (s_logMisses)
+                std::fprintf(stderr, "[texrepl] miss %016llx-%016llx-%08x tbp=%u tbw=%u\n", (unsigned long long)key.tex0Hash,
+                             (unsigned long long)key.clutHash, key.bits, tex0.tbp0, tex0.tbw);
+            return 0;
+        }
+        ++m_statReplHits;
+        Replacement &replacement = m_replacements[key];
+        if (replacement.texture != 0)
+            return replacement.texture;
+        if (!replacement.requested)
+        {
+            replacement.requested = true;
+            {
+                std::lock_guard lock(m_replMutex);
+                m_replRequests.emplace_back(key, file->second);
+            }
+            m_replCv.notify_one();
+        }
+        return 0; // loading: the original texture this time
+    }
+
     PresentationFrame Renderer::present(const GSPresentationRequest &request)
     {
         // Presentation reads local memory (both circuits, preferred source).
         m_syncReason = "present";
+        updateReplacements();
+        if (replacementsActive())
+        {
+            static const bool s_stats = std::getenv("PS2X_TEXREPL_STATS") != nullptr;
+            static uint32_t s_presents = 0;
+            if (s_stats && ++s_presents % 300u == 0u)
+                std::cerr << "[texrepl] draws=" << m_statReplDraws << " hits=" << m_statReplHits << " misses=" << m_statReplMisses
+                          << " loaded=" << m_statReplLoaded << " hashed=" << m_statReplHashes
+                          << " textures=" << m_textureHashes.size() << std::endl;
+        }
         PresentationFrame frame;
         if (m_gpu && m_scale > 1u)
         {
