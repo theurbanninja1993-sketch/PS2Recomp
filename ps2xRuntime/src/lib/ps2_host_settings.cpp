@@ -11,11 +11,172 @@
 #include <fstream>
 
 std::atomic<bool> g_ps2SettingsMenuOpen{false};
+std::atomic<bool> g_ps2LaunchMenuPending{false};
+
+namespace ps2controls
+{
+    const char *ps2ButtonName(int button)
+    {
+        static const char *kNames[kPs2ButtonCount] = {"Select", "L3", "R3", "Start", "D-pad Up", "D-pad Right",
+                                                      "D-pad Down", "D-pad Left", "L2", "R2", "L1", "R1",
+                                                      "Triangle", "Circle", "Cross", "Square"};
+        return button >= 0 && button < kPs2ButtonCount ? kNames[button] : "(none)";
+    }
+
+    const char *hostButtonName(int button)
+    {
+        static const char *kNames[kHostButtonCount] = {"A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Left stick click",
+                                                       "Right stick click", "Back / View", "Start / Menu",
+                                                       "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"};
+        return button >= 0 && button < kHostButtonCount ? kNames[button] : "?";
+    }
+
+    namespace
+    {
+        enum Ps2 : int
+        {
+            Select = 0, L3, R3, Start, Up, Right, Down, Left, L2, R2, L1, R1, Triangle, Circle, Cross, Square
+        };
+    }
+
+    void presetGamepad(GamepadLayout layout, int map[kContextCount][kHostButtonCount])
+    {
+        // Classic: the PS2 pad, button for button.
+        static const int kClassic[kHostButtonCount] = {Cross, Circle, Square, Triangle, L1, R1, L2, R2, L3, R3,
+                                                       Select, Start, Up, Down, Left, Right};
+        for (int context = 0; context < kContextCount; ++context)
+            for (int b = 0; b < kHostButtonCount; ++b)
+                map[context][b] = kClassic[b];
+        if (layout != GamepadLayout::Modern)
+            return;
+        // Modern (GTA V style). On foot: RT fire, LT aim / lock on, bumpers
+        // cycle weapons, B is the action button.
+        int *foot = map[OnFoot];
+        foot[PadRT] = Circle;
+        foot[PadLT] = R1;
+        foot[PadLB] = L2;
+        foot[PadRB] = R2;
+        foot[PadB] = L1;
+        // In vehicles: RT accelerate, LT brake / reverse, RB handbrake, LB horn.
+        int *car = map[InVehicle];
+        car[PadRT] = Cross;
+        car[PadLT] = Square;
+        car[PadRB] = R1;
+        car[PadLB] = L1;
+    }
+
+    const char *actionName(int action)
+    {
+        static const char *kNames[kActionCount] = {
+            "Move forward / accelerate", "Move back / brake", "Move / steer left", "Move / steer right", "Sprint",
+            "Jump", "Fire / attack", "Aim / lock on", "Action", "Next weapon", "Enter / exit vehicle", "Handbrake",
+            "Horn", "Camera mode", "Look behind", "Pause", "Menu: accept", "Menu: back", "Menu: up", "Menu: down",
+            "Menu: left", "Menu: right"};
+        return action >= 0 && action < kActionCount ? kNames[action] : "?";
+    }
+
+    void defaultKeys(int keys[kActionCount][2])
+    {
+        for (int a = 0; a < kActionCount; ++a)
+            keys[a][0] = keys[a][1] = kNone;
+        auto set = [&](int action, int first, int second = kNone)
+        {
+            keys[action][0] = first;
+            keys[action][1] = second;
+        };
+        set(MoveForward, KEY_W);
+        set(MoveBackward, KEY_S);
+        set(MoveLeft, KEY_A);
+        set(MoveRight, KEY_D);
+        set(Sprint, KEY_LEFT_SHIFT);
+        set(Jump, KEY_SPACE);
+        set(Fire, kMouseBase + MOUSE_BUTTON_LEFT);
+        set(Aim, kMouseBase + MOUSE_BUTTON_RIGHT);
+        set(Interact, KEY_Q);
+        set(NextWeapon, KEY_TAB);
+        set(EnterVehicle, KEY_E, KEY_F);
+        set(Handbrake, KEY_SPACE);
+        set(Horn, KEY_H);
+        set(CameraMode, KEY_V);
+        set(LookBehind, KEY_C);
+        set(Pause, KEY_ESCAPE, KEY_P);
+        set(MenuAccept, KEY_ENTER, KEY_KP_ENTER);
+        set(MenuBack, KEY_BACKSPACE);
+        set(MenuUp, KEY_UP);
+        set(MenuDown, KEY_DOWN);
+        set(MenuLeft, KEY_LEFT);
+        set(MenuRight, KEY_RIGHT);
+    }
+
+    std::string bindingName(int binding)
+    {
+        if (binding == kNone)
+            return "-";
+        if (binding >= kMouseBase)
+        {
+            static const char *kMouse[] = {"Mouse Left", "Mouse Right", "Mouse Middle", "Mouse 4", "Mouse 5",
+                                           "Mouse 6", "Mouse 7"};
+            const int button = binding - kMouseBase;
+            return button >= 0 && button < 7 ? kMouse[button] : "Mouse ?";
+        }
+        if ((binding >= KEY_A && binding <= KEY_Z) || (binding >= KEY_ZERO && binding <= KEY_NINE))
+            return std::string(1, static_cast<char>(binding));
+        if (binding >= KEY_F1 && binding <= KEY_F12)
+            return "F" + std::to_string(binding - KEY_F1 + 1);
+        if (binding >= KEY_KP_0 && binding <= KEY_KP_9)
+            return "Num " + std::to_string(binding - KEY_KP_0);
+        switch (binding)
+        {
+        case KEY_SPACE: return "Space";
+        case KEY_ESCAPE: return "Esc";
+        case KEY_ENTER: return "Enter";
+        case KEY_KP_ENTER: return "Num Enter";
+        case KEY_TAB: return "Tab";
+        case KEY_BACKSPACE: return "Backspace";
+        case KEY_INSERT: return "Insert";
+        case KEY_DELETE: return "Delete";
+        case KEY_HOME: return "Home";
+        case KEY_END: return "End";
+        case KEY_PAGE_UP: return "Page Up";
+        case KEY_PAGE_DOWN: return "Page Down";
+        case KEY_UP: return "Up";
+        case KEY_DOWN: return "Down";
+        case KEY_LEFT: return "Left";
+        case KEY_RIGHT: return "Right";
+        case KEY_LEFT_SHIFT: return "Left Shift";
+        case KEY_RIGHT_SHIFT: return "Right Shift";
+        case KEY_LEFT_CONTROL: return "Left Ctrl";
+        case KEY_RIGHT_CONTROL: return "Right Ctrl";
+        case KEY_LEFT_ALT: return "Left Alt";
+        case KEY_RIGHT_ALT: return "Right Alt";
+        case KEY_CAPS_LOCK: return "Caps Lock";
+        case KEY_GRAVE: return "`";
+        case KEY_MINUS: return "-";
+        case KEY_EQUAL: return "=";
+        case KEY_LEFT_BRACKET: return "[";
+        case KEY_RIGHT_BRACKET: return "]";
+        case KEY_BACKSLASH: return "\\";
+        case KEY_SEMICOLON: return ";";
+        case KEY_APOSTROPHE: return "'";
+        case KEY_COMMA: return ",";
+        case KEY_PERIOD: return ".";
+        case KEY_SLASH: return "/";
+        default: return "Key " + std::to_string(binding);
+        }
+    }
+}
+
+PS2HostSettings::PS2HostSettings()
+{
+    ps2controls::presetGamepad(gamepadLayout, gamepadMap);
+    ps2controls::defaultKeys(keys);
+}
 
 namespace
 {
     PS2HostSettings g_settings;
     bool g_windowApplyPending = false;
+    bool g_firstLaunch = false;
 
     int clampMode(int value) { return std::clamp(value, 0, 2); }
 }
@@ -43,6 +204,7 @@ void ps2HostSettingsLoad()
 {
     PS2HostSettings &s = g_settings;
     std::ifstream in(ps2HostSettingsPath());
+    g_firstLaunch = !in.is_open();
     std::string line;
     while (std::getline(in, line))
     {
@@ -70,6 +232,38 @@ void ps2HostSettingsLoad()
             s.flickerFilter = std::atoi(v) != 0;
         else if (key == "mouse_invert_y")
             s.mouseInvertY = std::atoi(v) != 0;
+        else if (key == "show_at_launch")
+            s.showAtLaunch = std::atoi(v) != 0;
+        else if (key == "gamepad_layout")
+        {
+            s.gamepadLayout = static_cast<ps2controls::GamepadLayout>(clampMode(std::atoi(v)));
+            if (s.gamepadLayout != ps2controls::GamepadLayout::Custom)
+                ps2controls::presetGamepad(s.gamepadLayout, s.gamepadMap);
+        }
+        else if (key.rfind("pad_", 0) == 0 && s.gamepadLayout == ps2controls::GamepadLayout::Custom)
+        {
+            // pad_<context>_<host button>=<ps2 button>
+            int context = 0, button = 0;
+            if (std::sscanf(key.c_str(), "pad_%d_%d", &context, &button) == 2 && context >= 0 &&
+                context < ps2controls::kContextCount && button >= 0 && button < ps2controls::kHostButtonCount)
+                s.gamepadMap[context][button] = std::clamp(std::atoi(v), ps2controls::kNone, ps2controls::kPs2ButtonCount - 1);
+        }
+        else if (key.rfind("key_", 0) == 0)
+        {
+            // key_<action>=<binding>,<binding>
+            int action = 0, first = ps2controls::kNone, second = ps2controls::kNone;
+            if (std::sscanf(key.c_str(), "key_%d", &action) == 1 && action >= 0 && action < ps2controls::kActionCount &&
+                std::sscanf(v, "%d,%d", &first, &second) >= 1)
+            {
+                s.keys[action][0] = first;
+                s.keys[action][1] = second;
+            }
+        }
+    }
+    if (std::getenv("PS2X_MODERN_DRIVING") && s.gamepadLayout == ps2controls::GamepadLayout::Classic)
+    {
+        s.gamepadLayout = ps2controls::GamepadLayout::Modern; // the old switch for trigger driving
+        ps2controls::presetGamepad(s.gamepadLayout, s.gamepadMap);
     }
     if (const char *env = std::getenv("PS2X_MOUSE_SENS"))
         s.mouseSensitivity = std::clamp(std::strtof(env, nullptr), 0.05f, 20.0f);
@@ -88,6 +282,11 @@ void ps2HostSettingsApplyRenderer()
         g_gsGpuScaleRequest.store(static_cast<uint32_t>(g_settings.internalScale), std::memory_order_relaxed);
     s_first = false;
     g_gsFlickerFilter.store(g_settings.flickerFilter, std::memory_order_relaxed);
+}
+
+bool ps2HostSettingsFirstLaunch()
+{
+    return g_firstLaunch;
 }
 
 bool ps2HostSettingsGpuRenderer()
@@ -109,6 +308,7 @@ void ps2HostSettingsSave()
         return;
     }
     out << "# PS2Recomp host settings (also editable in game: F2)\n"
+        << "show_at_launch=" << (s.showAtLaunch ? 1 : 0) << "\n"
         << "display_mode=" << static_cast<int>(s.displayMode) << "\n"
         << "window_width=" << s.windowWidth << "\n"
         << "window_height=" << s.windowHeight << "\n"
@@ -117,7 +317,16 @@ void ps2HostSettingsSave()
         << "internal_scale=" << s.internalScale << "\n"
         << "flicker_filter=" << (s.flickerFilter ? 1 : 0) << "\n"
         << "mouse_sensitivity=" << s.mouseSensitivity << "\n"
-        << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << "\n";
+        << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << "\n"
+        << "gamepad_layout=" << static_cast<int>(s.gamepadLayout) << "\n";
+    // Load sees the layout before the per-button lines.
+    if (s.gamepadLayout == ps2controls::GamepadLayout::Custom)
+        for (int context = 0; context < ps2controls::kContextCount; ++context)
+            for (int button = 0; button < ps2controls::kHostButtonCount; ++button)
+                out << "pad_" << context << "_" << button << "=" << s.gamepadMap[context][button] << "\n";
+    for (int action = 0; action < ps2controls::kActionCount; ++action)
+        out << "key_" << action << "=" << s.keys[action][0] << "," << s.keys[action][1] << "  # "
+            << ps2controls::actionName(action) << "\n";
 }
 
 void ps2HostSettingsRequestWindowApply()

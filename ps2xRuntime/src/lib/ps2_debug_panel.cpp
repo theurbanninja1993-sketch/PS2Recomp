@@ -2213,7 +2213,8 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
         toggleVisible();
     }
     static bool s_openAtStart = std::getenv("PS2X_OPEN_SETTINGS") != nullptr; // UI checks
-    if (IsKeyPressed(KEY_F2) || std::exchange(s_openAtStart, false))
+    if ((IsKeyPressed(KEY_F2) && !g_ps2LaunchMenuPending.load(std::memory_order_relaxed) && m_captureAction < 0) ||
+        std::exchange(s_openAtStart, false))
     {
         g_ps2SettingsMenuOpen.store(!g_ps2SettingsMenuOpen.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
@@ -2351,98 +2352,258 @@ void PS2DebugPanel::drawSettingsHint()
 void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
 {
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
+    namespace pc = ps2controls;
     PS2HostSettings &settings = ps2HostSettings();
     bool changed = false;
     const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
+    const bool launch = g_ps2LaunchMenuPending.load(std::memory_order_relaxed);
 
     ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     bool open = true;
-    if (ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::Begin(launch ? "Settings###settings" : "Settings###settings", launch ? nullptr : &open,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::SetWindowFontScale(scale);
-        ImGui::PushItemWidth(260.0f * scale);
-
-        ImGui::SeparatorText("Display");
-        static const char *kModes[] = {"Windowed", "Borderless fullscreen", "Fullscreen"};
-        int mode = static_cast<int>(settings.displayMode);
-        if (ImGui::Combo("Display mode", &mode, kModes, IM_ARRAYSIZE(kModes)))
+        if (launch)
         {
-            settings.displayMode = static_cast<PS2HostSettings::DisplayMode>(mode);
-            ps2HostSettingsRequestWindowApply();
-            changed = true;
+            ImGui::TextUnformatted("Set up the game before it starts. Everything here can be changed later with F2.");
+            ImGui::Spacing();
         }
-
-        if (settings.displayMode == PS2HostSettings::DisplayMode::Windowed)
+        ImGui::PushItemWidth(260.0f * scale);
+        if (ImGui::BeginTabBar("settings-tabs"))
         {
-            struct Size
+            if (ImGui::BeginTabItem("Display"))
             {
-                int w, h;
-            };
-            static const Size kSizes[] = {{640, 480}, {960, 720}, {1280, 960}, {1440, 1080}, {1280, 720},
-                                          {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
-            char current[32];
-            std::snprintf(current, sizeof(current), "%d x %d", settings.windowWidth, settings.windowHeight);
-            if (ImGui::BeginCombo("Window size", current))
-            {
-                const int monitor = GetCurrentMonitor();
-                for (const Size &size : kSizes)
+                static const char *kModes[] = {"Windowed", "Borderless fullscreen", "Fullscreen"};
+                int mode = static_cast<int>(settings.displayMode);
+                if (ImGui::Combo("Display mode", &mode, kModes, IM_ARRAYSIZE(kModes)))
                 {
-                    if (size.w > GetMonitorWidth(monitor) || size.h > GetMonitorHeight(monitor))
-                        continue;
-                    char label[32];
-                    std::snprintf(label, sizeof(label), "%d x %d", size.w, size.h);
-                    const bool selected = size.w == settings.windowWidth && size.h == settings.windowHeight;
-                    if (ImGui::Selectable(label, selected))
+                    settings.displayMode = static_cast<PS2HostSettings::DisplayMode>(mode);
+                    ps2HostSettingsRequestWindowApply();
+                    changed = true;
+                }
+
+                if (settings.displayMode == PS2HostSettings::DisplayMode::Windowed)
+                {
+                    struct Size
                     {
-                        settings.windowWidth = size.w;
-                        settings.windowHeight = size.h;
-                        ps2HostSettingsRequestWindowApply();
+                        int w, h;
+                    };
+                    static const Size kSizes[] = {{640, 480}, {960, 720}, {1280, 960}, {1440, 1080}, {1280, 720},
+                                                  {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+                    char current[32];
+                    std::snprintf(current, sizeof(current), "%d x %d", settings.windowWidth, settings.windowHeight);
+                    if (ImGui::BeginCombo("Window size", current))
+                    {
+                        const int monitor = GetCurrentMonitor();
+                        for (const Size &size : kSizes)
+                        {
+                            if (size.w > GetMonitorWidth(monitor) || size.h > GetMonitorHeight(monitor))
+                                continue;
+                            char label[32];
+                            std::snprintf(label, sizeof(label), "%d x %d", size.w, size.h);
+                            const bool selected = size.w == settings.windowWidth && size.h == settings.windowHeight;
+                            if (ImGui::Selectable(label, selected))
+                            {
+                                settings.windowWidth = size.w;
+                                settings.windowHeight = size.h;
+                                ps2HostSettingsRequestWindowApply();
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+
+                int aspect = static_cast<int>(settings.aspect);
+                ImGui::TextUnformatted("Aspect ratio");
+                changed |= ImGui::RadioButton("4:3 (original)", &aspect, 0);
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("16:9", &aspect, 1);
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("Stretch", &aspect, 2);
+                settings.aspect = static_cast<PS2HostSettings::Aspect>(aspect);
+                if (settings.aspect == PS2HostSettings::Aspect::Widescreen)
+                    ImGui::TextDisabled("Also set Widescreen ON in the game's Display options.");
+
+                changed |= ImGui::Checkbox("Smooth scaling", &settings.smoothFiltering);
+
+                const bool gpu = ps2HostSettingsGpuRenderer();
+                ImGui::BeginDisabled(!gpu);
+                static const char *kInternal[] = {"Native (640 x 448)", "2x (1280 x 896)", "3x (1920 x 1344)",
+                                                  "4x (2560 x 1792)"};
+                int internal = std::clamp(settings.internalScale, 1, 4) - 1;
+                if (ImGui::Combo("Internal resolution", &internal, kInternal, IM_ARRAYSIZE(kInternal)))
+                {
+                    settings.internalScale = internal + 1;
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+                if (!gpu)
+                    ImGui::TextDisabled("Needs the GPU renderer (PS2X_GS_GPU=1).");
+
+                changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
+                ImGui::EndTabItem();
+            }
+
+            static bool s_controlsFirst = std::getenv("PS2X_SETTINGS_TAB_CONTROLS") != nullptr; // UI checks
+            if (ImGui::BeginTabItem("Controls", nullptr,
+                                    std::exchange(s_controlsFirst, false) ? ImGuiTabItemFlags_SetSelected : 0))
+            {
+                ImGui::SeparatorText("Gamepad");
+                int layout = static_cast<int>(settings.gamepadLayout);
+                bool layoutChanged = ImGui::RadioButton("Classic (PS2)", &layout, 0);
+                ImGui::SameLine();
+                layoutChanged |= ImGui::RadioButton("Modern (triggers to drive and shoot)", &layout, 1);
+                ImGui::SameLine();
+                layoutChanged |= ImGui::RadioButton("Custom", &layout, 2);
+                if (layoutChanged)
+                {
+                    settings.gamepadLayout = static_cast<pc::GamepadLayout>(layout);
+                    if (settings.gamepadLayout != pc::GamepadLayout::Custom)
+                        pc::presetGamepad(settings.gamepadLayout, settings.gamepadMap);
+                    changed = true;
+                }
+                if (ImGui::TreeNode("Gamepad buttons"))
+                {
+                    if (ImGui::BeginTable("pad-map", 3,
+                                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit |
+                                              ImGuiTableFlags_ScrollY,
+                                          ImVec2(0.0f, 220.0f * scale)))
+                    {
+                        ImGui::TableSetupScrollFreeze(0, 1);
+                        ImGui::TableSetupColumn("Button");
+                        ImGui::TableSetupColumn("On foot", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
+                        ImGui::TableSetupColumn("In a vehicle", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
+                        ImGui::TableHeadersRow();
+                        for (int b = 0; b < pc::kHostButtonCount; ++b)
+                        {
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted(pc::hostButtonName(b));
+                            for (int context = 0; context < pc::kContextCount; ++context)
+                            {
+                                ImGui::TableNextColumn();
+                                ImGui::PushID(b * 4 + context);
+                                ImGui::SetNextItemWidth(-FLT_MIN);
+                                int &mapped = settings.gamepadMap[context][b];
+                                if (ImGui::BeginCombo("##ps2", pc::ps2ButtonName(mapped)))
+                                {
+                                    for (int ps2 = pc::kNone; ps2 < pc::kPs2ButtonCount; ++ps2)
+                                        if (ImGui::Selectable(pc::ps2ButtonName(ps2), ps2 == mapped))
+                                        {
+                                            mapped = ps2;
+                                            settings.gamepadLayout = pc::GamepadLayout::Custom;
+                                            changed = true;
+                                        }
+                                    ImGui::EndCombo();
+                                }
+                                ImGui::PopID();
+                            }
+                        }
+                        ImGui::EndTable();
+                    }
+                    ImGui::TreePop();
+                }
+
+                ImGui::SeparatorText("Keyboard and mouse");
+                // Waiting for a key / mouse button for a binding.
+                if (m_captureAction >= 0)
+                {
+                    int captured = pc::kNone;
+                    if (const int key = GetKeyPressed(); key != 0)
+                        captured = key;
+                    for (int button = MOUSE_BUTTON_LEFT; button <= MOUSE_BUTTON_EXTRA && captured == pc::kNone; ++button)
+                        if (IsMouseButtonPressed(button) && !ImGui::IsAnyItemHovered())
+                            captured = pc::kMouseBase + button;
+                    if (captured != pc::kNone)
+                    {
+                        settings.keys[m_captureAction][m_captureSlot] = captured;
+                        m_captureAction = -1;
                         changed = true;
                     }
                 }
-                ImGui::EndCombo();
+                ImGui::TextDisabled("Click a binding, then press a key or mouse button. Right-click clears it.");
+                const float tableHeight = 300.0f * scale;
+                if (ImGui::BeginTable("keys", 3,
+                                      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                                          ImGuiTableFlags_SizingFixedFit,
+                                      ImVec2(0.0f, tableHeight)))
+                {
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableSetupColumn("Action");
+                    ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
+                    ImGui::TableSetupColumn("Alternate", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
+                    ImGui::TableHeadersRow();
+                    for (int action = 0; action < pc::kActionCount; ++action)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(pc::actionName(action));
+                        for (int slot = 0; slot < 2; ++slot)
+                        {
+                            ImGui::TableNextColumn();
+                            ImGui::PushID(action * 2 + slot);
+                            const bool capturing = m_captureAction == action && m_captureSlot == slot;
+                            const std::string label =
+                                capturing ? std::string("Press a key...") : pc::bindingName(settings.keys[action][slot]);
+                            if (ImGui::Button(label.c_str(), ImVec2(-FLT_MIN, 0.0f)))
+                            {
+                                m_captureAction = capturing ? -1 : action;
+                                m_captureSlot = slot;
+                            }
+                            if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+                            {
+                                settings.keys[action][slot] = pc::kNone;
+                                m_captureAction = -1;
+                                changed = true;
+                            }
+                            ImGui::PopID();
+                        }
+                    }
+                    ImGui::EndTable();
+                }
+                if (ImGui::Button("Reset keys to defaults"))
+                {
+                    pc::defaultKeys(settings.keys);
+                    m_captureAction = -1;
+                    changed = true;
+                }
+                ImGui::TextDisabled("Mouse wheel cycles weapons. Left Alt releases the mouse.");
+
+                ImGui::SeparatorText("Mouse");
+                changed |= ImGui::SliderFloat("Sensitivity", &settings.mouseSensitivity, 0.05f, 5.0f, "%.2f",
+                                              ImGuiSliderFlags_Logarithmic);
+                changed |= ImGui::Checkbox("Invert vertical look", &settings.mouseInvertY);
+                ImGui::EndTabItem();
             }
+            else
+            {
+                m_captureAction = -1;
+            }
+            ImGui::EndTabBar();
         }
-
-        int aspect = static_cast<int>(settings.aspect);
-        ImGui::TextUnformatted("Aspect ratio");
-        changed |= ImGui::RadioButton("4:3 (original)", &aspect, 0);
-        ImGui::SameLine();
-        changed |= ImGui::RadioButton("16:9", &aspect, 1);
-        ImGui::SameLine();
-        changed |= ImGui::RadioButton("Stretch", &aspect, 2);
-        settings.aspect = static_cast<PS2HostSettings::Aspect>(aspect);
-        if (settings.aspect == PS2HostSettings::Aspect::Widescreen)
-            ImGui::TextDisabled("Also set Widescreen ON in the game's Display options.");
-
-        changed |= ImGui::Checkbox("Smooth scaling", &settings.smoothFiltering);
-
-        const bool gpu = ps2HostSettingsGpuRenderer();
-        ImGui::BeginDisabled(!gpu);
-        static const char *kInternal[] = {"Native (640 x 448)", "2x (1280 x 896)", "3x (1920 x 1344)", "4x (2560 x 1792)"};
-        int internal = std::clamp(settings.internalScale, 1, 4) - 1;
-        if (ImGui::Combo("Internal resolution", &internal, kInternal, IM_ARRAYSIZE(kInternal)))
-        {
-            settings.internalScale = internal + 1;
-            changed = true;
-        }
-        ImGui::EndDisabled();
-        if (!gpu)
-            ImGui::TextDisabled("Needs the GPU renderer (PS2X_GS_GPU=1).");
-
-        changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
-
-        ImGui::SeparatorText("Mouse");
-        changed |= ImGui::SliderFloat("Sensitivity", &settings.mouseSensitivity, 0.05f, 5.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
-        changed |= ImGui::Checkbox("Invert vertical look", &settings.mouseInvertY);
-
         ImGui::PopItemWidth();
+
         ImGui::Spacing();
         ImGui::Separator();
-        if (ImGui::Button("Close"))
-            open = false;
-        ImGui::SameLine();
-        ImGui::TextDisabled("F2 opens/closes this menu");
+        if (launch)
+        {
+            changed |= ImGui::Checkbox("Show this menu every time the game starts", &settings.showAtLaunch);
+            if (ImGui::Button("Start game"))
+            {
+                ps2HostSettingsSave(); // also marks the first launch done
+                g_ps2LaunchMenuPending.store(false, std::memory_order_relaxed);
+                open = false;
+            }
+        }
+        else
+        {
+            if (ImGui::Button("Close"))
+                open = false;
+            ImGui::SameLine();
+            ImGui::TextDisabled("F2 opens/closes this menu");
+        }
         ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize("Quit to desktop").x -
                         ImGui::GetStyle().FramePadding.x * 2.0f);
         if (ImGui::Button("Quit to desktop"))
@@ -2451,7 +2612,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
         if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
         {
             ImGui::SetWindowFontScale(scale);
-            ImGui::TextUnformatted("Quit to desktop? Progress since your last save will be lost.");
+            ImGui::TextUnformatted(launch ? "Quit to desktop?" : "Quit to desktop? Progress since your last save will be lost.");
             ImGui::Spacing();
             if (ImGui::Button("Quit"))
             {
@@ -2473,6 +2634,11 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
         ps2HostSettingsSave();
     }
     if (!open)
+    {
+        m_captureAction = -1;
         g_ps2SettingsMenuOpen.store(false, std::memory_order_relaxed);
+    }
+#else
+    (void)runtime;
 #endif
 }

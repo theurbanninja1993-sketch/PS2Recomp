@@ -4,6 +4,54 @@
 #include <atomic>
 #include <string>
 
+// Controls. PS2 buttons are indices into the pad's button word (bit i,
+// active low): 0 Select, 1 L3, 2 R3, 3 Start, 4 Up, 5 Right, 6 Down, 7 Left,
+// 8 L2, 9 R2, 10 L1, 11 R1, 12 Triangle, 13 Circle, 14 Cross, 15 Square.
+namespace ps2controls
+{
+    constexpr int kPs2ButtonCount = 16;
+    constexpr int kNone = -1;
+    const char *ps2ButtonName(int button);
+
+    // Host gamepad buttons (Xbox naming).
+    enum HostButton : int
+    {
+        PadA, PadB, PadX, PadY, PadLB, PadRB, PadLT, PadRT, PadLS, PadRS, PadBack, PadStart,
+        PadUp, PadDown, PadLeft, PadRight, kHostButtonCount
+    };
+    const char *hostButtonName(int button);
+
+    enum Context : int
+    {
+        OnFoot = 0,
+        InVehicle = 1,
+        kContextCount
+    };
+
+    enum class GamepadLayout : int
+    {
+        Classic = 0, // the PS2 controls
+        Modern = 1,  // GTA V style: triggers fire/aim on foot, gas/brake in vehicles
+        Custom = 2,
+    };
+    // Fills map[context][hostButton] = PS2 button for a preset layout.
+    void presetGamepad(GamepadLayout layout, int map[kContextCount][kHostButtonCount]);
+
+    // Keyboard / mouse actions; each has two bindings (raylib key codes, or
+    // kMouseBase + mouse button).
+    constexpr int kMouseBase = 1000;
+    enum ActionId : int
+    {
+        MoveForward, MoveBackward, MoveLeft, MoveRight, Sprint, Jump, Fire, Aim, Interact, NextWeapon,
+        EnterVehicle, Handbrake, Horn, CameraMode, LookBehind, Pause, MenuAccept, MenuBack, MenuUp,
+        MenuDown, MenuLeft, MenuRight, kActionCount
+    };
+    const char *actionName(int action);
+    void defaultKeys(int keys[kActionCount][2]);
+    // Display name of a binding ("W", "Mouse Left", "-" for none).
+    std::string bindingName(int binding);
+}
+
 // Player-facing host settings (display, mouse), edited in the in-game
 // settings menu (F2) and kept in <config>/ps2recomp/settings.ini.
 // Owned by the window thread; the game thread only reads menuOpen.
@@ -31,6 +79,14 @@ struct PS2HostSettings
     bool flickerFilter = false;  // the game's interlace flicker filter (a vertical blur)
     float mouseSensitivity = 1.0f;
     bool mouseInvertY = false;
+
+    bool showAtLaunch = false; // open the settings before the game starts, every launch (always on the first)
+
+    ps2controls::GamepadLayout gamepadLayout = ps2controls::GamepadLayout::Classic;
+    int gamepadMap[ps2controls::kContextCount][ps2controls::kHostButtonCount]{};
+    int keys[ps2controls::kActionCount][2]{};
+
+    PS2HostSettings();
 };
 
 PS2HostSettings &ps2HostSettings();
@@ -51,5 +107,10 @@ bool ps2HostSettingsGpuRenderer();
 
 // The settings menu is open: the game gets neutral input and the mouse is free.
 extern std::atomic<bool> g_ps2SettingsMenuOpen;
+// Launch menu: the settings are shown before the game starts (first launch,
+// or showAtLaunch); the game thread waits until the player starts the game.
+extern std::atomic<bool> g_ps2LaunchMenuPending;
+// No settings file existed when the settings were loaded.
+bool ps2HostSettingsFirstLaunch();
 
 #endif

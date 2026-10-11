@@ -19,6 +19,9 @@ private:
     void drawSettingsMenu(PS2Runtime &runtime);
     void drawSettingsHint();
 
+    // Key rebinding in progress (Controls tab): action and slot, -1 = none.
+    int m_captureAction = -1;
+    int m_captureSlot = 0;
     bool m_initialized = false;
     bool m_visible = false; // F1
     bool m_showRegisters = true;

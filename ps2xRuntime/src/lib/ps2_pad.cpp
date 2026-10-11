@@ -15,22 +15,6 @@ namespace
     constexpr uint8_t kPadAnalogMarker = 0x73;
     constexpr uint8_t kPadStickCenter = 0x80;
 
-    constexpr uint16_t PAD_LEFT = 0x0080u;
-    constexpr uint16_t PAD_DOWN = 0x0040u;
-    constexpr uint16_t PAD_RIGHT = 0x0020u;
-    constexpr uint16_t PAD_UP = 0x0010u;
-    constexpr uint16_t PAD_START = 0x0008u;
-    constexpr uint16_t PAD_R3 = 0x0004u;
-    constexpr uint16_t PAD_L3 = 0x0002u;
-    constexpr uint16_t PAD_SELECT = 0x0001u;
-    constexpr uint16_t PAD_SQUARE = 0x8000u;
-    constexpr uint16_t PAD_CROSS = 0x4000u;
-    constexpr uint16_t PAD_CIRCLE = 0x2000u;
-    constexpr uint16_t PAD_TRIANGLE = 0x1000u;
-    constexpr uint16_t PAD_R1 = 0x0800u;
-    constexpr uint16_t PAD_L1 = 0x0400u;
-    constexpr uint16_t PAD_R2 = 0x0200u;
-    constexpr uint16_t PAD_L2 = 0x0100u;
 }
 
 bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
@@ -48,45 +32,48 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         return true; // the settings menu has the keyboard and mouse
 
     uint16_t btns = 0xFFFFu;
-    constexpr int kGamepad = 0;
-    const bool useGamepad = IsGamepadAvailable(kGamepad);
     auto clearBit = [&btns](uint16_t mask)
     { btns &= ~mask; };
-
-    if (useGamepad)
+    auto press = [&clearBit](int ps2Button)
     {
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_UP))
-            clearBit(PAD_UP);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_DOWN))
-            clearBit(PAD_DOWN);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_LEFT))
-            clearBit(PAD_LEFT);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_RIGHT))
-            clearBit(PAD_RIGHT);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))
-            clearBit(PAD_CROSS);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT))
-            clearBit(PAD_CIRCLE);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT))
-            clearBit(PAD_SQUARE);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_UP))
-            clearBit(PAD_TRIANGLE);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_1))
-            clearBit(PAD_L1);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))
-            clearBit(PAD_R1);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_2))
-            clearBit(PAD_L2);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2))
-            clearBit(PAD_R2);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_MIDDLE_RIGHT))
-            clearBit(PAD_START);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_MIDDLE_LEFT))
-            clearBit(PAD_SELECT);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_THUMB))
-            clearBit(PAD_L3);
-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_THUMB))
-            clearBit(PAD_R3);
+        if (ps2Button >= 0 && ps2Button < ps2controls::kPs2ButtonCount)
+            clearBit(static_cast<uint16_t>(1u << ps2Button));
+    };
+
+    const bool driving = m_vehicleProbe && m_rdram && m_vehicleProbe(m_rdram);
+    static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
+    static bool s_lastDriving = false;
+    if (s_debug && driving != s_lastDriving)
+    {
+        s_lastDriving = driving;
+        std::fprintf(stderr, "[pad] driving=%d\n", driving ? 1 : 0);
+    }
+    const PS2HostSettings &settings = ps2HostSettings();
+    const int context = driving ? ps2controls::InVehicle : ps2controls::OnFoot;
+
+    // Gamepad: each host button maps to a PS2 button per context (the
+    // Classic / Modern / Custom layout in the settings), sticks as they are.
+    constexpr int kGamepad = 0;
+    if (IsGamepadAvailable(kGamepad))
+    {
+        static const int kRaylibButton[ps2controls::kHostButtonCount] = {
+            GAMEPAD_BUTTON_RIGHT_FACE_DOWN, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, GAMEPAD_BUTTON_RIGHT_FACE_LEFT,
+            GAMEPAD_BUTTON_RIGHT_FACE_UP, GAMEPAD_BUTTON_LEFT_TRIGGER_1, GAMEPAD_BUTTON_RIGHT_TRIGGER_1,
+            GAMEPAD_BUTTON_LEFT_TRIGGER_2, GAMEPAD_BUTTON_RIGHT_TRIGGER_2, GAMEPAD_BUTTON_LEFT_THUMB,
+            GAMEPAD_BUTTON_RIGHT_THUMB, GAMEPAD_BUTTON_MIDDLE_LEFT, GAMEPAD_BUTTON_MIDDLE_RIGHT,
+            GAMEPAD_BUTTON_LEFT_FACE_UP, GAMEPAD_BUTTON_LEFT_FACE_DOWN, GAMEPAD_BUTTON_LEFT_FACE_LEFT,
+            GAMEPAD_BUTTON_LEFT_FACE_RIGHT};
+        for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
+        {
+            bool down = IsGamepadButtonDown(kGamepad, kRaylibButton[b]);
+            // Analog triggers (rest at -1) on pads without trigger buttons.
+            if (b == ps2controls::PadLT)
+                down = down || GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_TRIGGER) > 0.0f;
+            else if (b == ps2controls::PadRT)
+                down = down || GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.0f;
+            if (down)
+                press(settings.gamepadMap[context][b]);
+        }
 
         float lx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_X);
         float ly = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_Y);
@@ -98,110 +85,107 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         data[5] = static_cast<uint8_t>(128 + ry * 127);
     }
 
-    // Optional modern driving on a gamepad (PS2X_MODERN_DRIVING=1): right
-    // trigger accelerates, left trigger brakes/reverses.
-    static const bool s_modernDriving = std::getenv("PS2X_MODERN_DRIVING") != nullptr;
-    const bool driving = m_vehicleProbe && m_rdram && m_vehicleProbe(m_rdram);
-    static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
-    static bool s_lastDriving = false;
-    if (s_debug && driving != s_lastDriving)
+    // Keyboard + mouse (modern GTA PC style by default, rebindable), merged
+    // with the gamepad: raylib reports any joystick device as "gamepad
+    // available" (e.g. gaming mouse dongles exposing /dev/input/js*), so the
+    // keyboard is always read.
     {
-        s_lastDriving = driving;
-        std::fprintf(stderr, "[pad] driving=%d\n", driving ? 1 : 0);
-    }
-    if (useGamepad && driving && s_modernDriving)
-    {
-        btns |= PAD_R2 | PAD_L2; // the triggers act as pedals, not look left/right
-        if (GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_TRIGGER) > -0.5f &&
-            IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2))
-            clearBit(PAD_CROSS);
-        if (GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_TRIGGER) > -0.5f &&
-            IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_2))
-            clearBit(PAD_SQUARE);
-    }
-
-    // Keyboard + mouse, modern GTA (IV/V PC) style, merged with the gamepad:
-    // raylib reports any joystick device as "gamepad available" (e.g. gaming
-    // mouse dongles exposing /dev/input/js*), so the keyboard is always read.
-    {
-        // Menus and common actions.
-        if (IsKeyDown(KEY_UP))
-            clearBit(PAD_UP);
-        if (IsKeyDown(KEY_DOWN))
-            clearBit(PAD_DOWN);
-        if (IsKeyDown(KEY_LEFT))
-            clearBit(PAD_LEFT);
-        if (IsKeyDown(KEY_RIGHT))
-            clearBit(PAD_RIGHT);
-        if (IsKeyDown(KEY_ENTER) || IsKeyDown(KEY_KP_ENTER))
-            clearBit(PAD_CROSS); // accept
-        if (IsKeyDown(KEY_BACKSPACE))
-            clearBit(PAD_TRIANGLE); // back
-        if (IsKeyDown(KEY_ESCAPE) || IsKeyDown(KEY_P))
-            clearBit(PAD_START);
-        if (IsKeyDown(KEY_E) || IsKeyDown(KEY_F))
-            clearBit(PAD_TRIANGLE); // enter / exit vehicle
-        if (IsKeyDown(KEY_V))
-            clearBit(PAD_SELECT); // camera mode
-        if (IsKeyDown(KEY_C))
-            clearBit(PAD_R3); // look behind
+        namespace pc = ps2controls;
         const bool captured = m_mouseCaptured.load(std::memory_order_relaxed);
-        if (captured && IsMouseButtonDown(MOUSE_BUTTON_LEFT))
-            clearBit(PAD_CIRCLE); // attack / fire
+        auto bindingDown = [captured](int binding)
+        {
+            if (binding == pc::kNone)
+                return false;
+            if (binding >= pc::kMouseBase)
+                return captured && IsMouseButtonDown(binding - pc::kMouseBase); // a click first captures the mouse
+            return IsKeyDown(binding);
+        };
+        auto held = [&](int action)
+        { return bindingDown(settings.keys[action][0]) || bindingDown(settings.keys[action][1]); };
 
-        // Left stick: WASD.
+        enum : int
+        {
+            Select = 0, L3, R3, Start, Up, Right, Down, Left, L2, R2, L1, R1, Triangle, Circle, Cross, Square
+        };
+        // Menus and common actions.
+        if (held(pc::MenuUp))
+            press(Up);
+        if (held(pc::MenuDown))
+            press(Down);
+        if (held(pc::MenuLeft))
+            press(Left);
+        if (held(pc::MenuRight))
+            press(Right);
+        if (held(pc::MenuAccept))
+            press(Cross);
+        if (held(pc::MenuBack))
+            press(Triangle);
+        if (held(pc::Pause))
+            press(Start);
+        if (held(pc::EnterVehicle))
+            press(Triangle);
+        if (held(pc::CameraMode))
+            press(Select);
+        if (held(pc::LookBehind))
+            press(R3);
+        if (held(pc::Fire))
+            press(Circle);
+
+        // Left stick: WASD; in vehicles forward / back are the pedals.
         float moveX = 0.0f, moveY = 0.0f;
+        if (held(pc::MoveLeft))
+            moveX -= 1.0f;
+        if (held(pc::MoveRight))
+            moveX += 1.0f;
         if (driving)
         {
-            if (IsKeyDown(KEY_W))
-                clearBit(PAD_CROSS); // accelerate
-            if (IsKeyDown(KEY_S))
-                clearBit(PAD_SQUARE); // brake / reverse
-            if (IsKeyDown(KEY_SPACE))
-                clearBit(PAD_R1); // handbrake
-            if (IsKeyDown(KEY_H))
-                clearBit(PAD_L1); // horn
-            if (IsKeyDown(KEY_A))
-                moveX -= 1.0f;
-            if (IsKeyDown(KEY_D))
-                moveX += 1.0f;
+            if (held(pc::MoveForward))
+                press(Cross);
+            if (held(pc::MoveBackward))
+                press(Square);
+            if (held(pc::Handbrake))
+                press(R1);
+            if (held(pc::Horn))
+                press(L1);
         }
         else
         {
-            if (IsKeyDown(KEY_LEFT_SHIFT))
-                clearBit(PAD_CROSS); // sprint
-            if (IsKeyDown(KEY_SPACE))
-                clearBit(PAD_SQUARE); // jump
-            if (IsKeyDown(KEY_Q))
-                clearBit(PAD_L1); // action
-            if (captured && IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
-                clearBit(PAD_R1); // target / aim
-            if (IsKeyDown(KEY_W))
+            if (held(pc::Sprint))
+                press(Cross);
+            if (held(pc::Jump))
+                press(Square);
+            if (held(pc::Interact))
+                press(L1);
+            if (held(pc::Aim))
+                press(R1);
+            if (held(pc::MoveForward))
                 moveY -= 1.0f;
-            if (IsKeyDown(KEY_S))
+            if (held(pc::MoveBackward))
                 moveY += 1.0f;
-            if (IsKeyDown(KEY_A))
-                moveX -= 1.0f;
-            if (IsKeyDown(KEY_D))
-                moveX += 1.0f;
         }
         if (moveX != 0.0f)
             data[6] = static_cast<uint8_t>(128 + moveX * 127);
         if (moveY != 0.0f)
             data[7] = static_cast<uint8_t>(128 + moveY * 127);
 
-        // Weapon cycling: mouse wheel / Tab, as short R2 (next) / L2 (previous) presses.
+        // Weapon cycling: mouse wheel / the Next weapon key, as short R2
+        // (next) / L2 (previous) presses.
         const int steps = m_wheelSteps.exchange(0, std::memory_order_relaxed);
         if (m_weaponPulse == 0 && steps != 0)
             m_weaponPulse = steps < 0 ? 4 : -4;
-        if (m_weaponPulse == 0 && IsKeyPressed(KEY_TAB))
+        auto pressedNow = [](int binding)
+        {
+            if (binding == pc::kNone || binding >= pc::kMouseBase)
+                return binding >= pc::kMouseBase && IsMouseButtonPressed(binding - pc::kMouseBase);
+            return IsKeyPressed(binding);
+        };
+        if (m_weaponPulse == 0 && (pressedNow(settings.keys[pc::NextWeapon][0]) || pressedNow(settings.keys[pc::NextWeapon][1])))
             m_weaponPulse = 4;
         if (!driving && m_weaponPulse > 0)
-            clearBit(PAD_R2);
+            press(R2);
         if (!driving && m_weaponPulse < 0)
-            clearBit(PAD_L2);
+            press(L2);
         m_weaponPulse += m_weaponPulse > 0 ? -1 : (m_weaponPulse < 0 ? 1 : 0);
-
     }
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);

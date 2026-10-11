@@ -497,7 +497,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
                                                    &sourceFbp,
                                                    &usedPreferredDisplaySource))
     {
-        Image blank = GenImageColor(tex.width, tex.height, MAGENTA); // the texture may have grown (upscaling)
+        Image blank = GenImageColor(tex.width, tex.height, BLACK); // the texture may have grown (upscaling)
         UpdateTexture(tex, blank.data);
         UnloadImage(blank);
         outWidth = FB_WIDTH;
@@ -948,6 +948,17 @@ bool PS2Runtime::initialize(const char *title)
         {
             m_debugUiInitCallback(*this, m_debugUiUserData);
             m_debugUiInitialized = true;
+#if !defined(PLATFORM_VITA)
+            // First launch (or "show at every launch"): settings before the
+            // game starts. Automated runs skip it.
+            const bool automated = std::getenv("PS2X_NO_LAUNCH_MENU") || std::getenv("PS2X_EXIT_AFTER_FRAME") ||
+                                   std::getenv("PS2X_HIDDEN_WINDOW");
+            if (!automated && (ps2HostSettingsFirstLaunch() || ps2HostSettings().showAtLaunch))
+            {
+                g_ps2LaunchMenuPending.store(true, std::memory_order_relaxed);
+                g_ps2SettingsMenuOpen.store(true, std::memory_order_relaxed);
+            }
+#endif
         }
 
         return true;
@@ -2925,9 +2936,15 @@ void PS2Runtime::run()
         ThreadNaming::SetCurrentThreadName("GameThread");
         try
         {
-            m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-            startPcSampling(this);
-            m_eeScheduler->run();
+            // The launch menu (settings before the game starts) holds the game.
+            while (g_ps2LaunchMenuPending.load(std::memory_order_relaxed) && !isStopRequested())
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if (!isStopRequested())
+            {
+                m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
+                startPcSampling(this);
+                m_eeScheduler->run();
+            }
             uint32_t pc = m_debugPc.load(std::memory_order_relaxed);
             RUNTIME_LOG("Game thread returned. PC=0x" << std::hex << pc
                       << " RA=0x" << static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[31], 0)) << std::dec << std::endl);
