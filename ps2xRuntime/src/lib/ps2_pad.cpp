@@ -255,7 +255,7 @@ void PSPadBackend::updateHostInput()
         s_sensitivity = std::clamp(s_sensitivity * (IsKeyPressed(KEY_EQUAL) ? 1.25f : 0.8f), 0.05f, 20.0f);
         std::fprintf(stderr, "[pad] mouse sensitivity %.2f (PS2X_MOUSE_SENS)\n", s_sensitivity);
     }
-    const float s_radiansPerPixel = 0.0005f * s_sensitivity;
+    const float s_radiansPerPixel = 0.001f * s_sensitivity;
     static const float s_pitchSign = std::getenv("PS2X_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     const Vector2 delta = GetMouseDelta();
     if (delta.x != 0.0f || delta.y != 0.0f)
