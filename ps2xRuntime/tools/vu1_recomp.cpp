@@ -66,17 +66,29 @@ public:
             if (isBranch(d) || d.eBit)
                 return fail(reason, pc, "branch / E-bit in a delay slot");
         }
+        m_flagless = true;
         for (uint32_t pc : all)
         {
             const Decoded d = decode(pc);
             const uint32_t op = opHi(d);
             if (op == 0x11u || op == 0x15u)
                 m_eagerFlags = true;
+            // FSEQ/FSAND/FSOR, FMEQ/FMAND/FMOR read the status / MAC flags.
+            if (op == 0x14u || op == 0x15u || op == 0x16u || op == 0x17u || op == 0x18u || op == 0x1Au || op == 0x1Bu)
+                m_flagless = false;
         }
+        static const bool s_keepFlags = std::getenv("VU1_RECOMP_KEEP_FLAGS") != nullptr;
+        if (m_eagerFlags || s_keepFlags)
+            m_flagless = false;
+        m_needFlags.clear();
+        m_skipsFlags = m_flagless;
+        if (!m_flagless && !m_eagerFlags && !s_keepFlags)
+            computeLiveFlagWriters(all, delaySet);
 
         std::ostringstream o;
         o << "static int vu1p_" << std::hex << key << std::dec << "(VU1Interpreter &vu, uint64_t budgetEnd)\n{\n"
           << "    using J = VU1Jit;\n    VU1State &S = J::st(vu);\n    uint32_t jumpTarget = 0;\n    uint64_t cyc = J::now(vu);\n"
+          << (m_skipsFlags ? "    J::noteFlagless(vu);\n" : "")
           << "    switch (S.pc)\n    {\n    case " << m_start << "u: goto L_" << m_start
           << ";\n    default: return VU1CompiledContinue;\n    }\n";
         // Entry points: reached by jumps (state before them unknown). JR/JALR
@@ -285,6 +297,110 @@ private:
     std::vector<uint32_t> m_normal, m_delay;
     std::set<uint32_t> m_normalSet;
     bool m_eagerFlags = false; // FSSET/FCSET present
+
+public:
+    // No MAC/status flag reader: FMACs queue no flags (MAC/status are then
+    // not maintained, which no VU1 program in the capture set can observe).
+    bool m_flagless = false;
+
+private:
+    // Flag liveness (programs with readers): only FMACs whose MAC/status
+    // entry a reader can observe queue flags. A reader sees the latest entry
+    // committed 4 cycles after its FMAC; every pair takes >= 1 cycle, so the
+    // candidates are all writers 1-3 pairs back plus the first writer >= 4
+    // pairs back on every path. Program exits (E-bit, JR/JALR) count as
+    // readers (the next program or a return point may read right away).
+    std::set<uint32_t> m_needFlags; // pairs whose FMAC must queue flags
+    bool m_skipsFlags = false;      // some FMAC skips its flags
+    bool m_pairFlags = true;        // current pair's FMAC queues flags
+
+    static bool upperWritesFlags(uint32_t upper)
+    {
+        if ((upper & 0x01E00000u) == 0u) // DEST = 0: no flag entry
+            return false;
+        const uint32_t funct = upper & 0x3Fu;
+        if (funct < 0x3Cu)
+            return !((funct >= 0x10u && funct <= 0x17u) || funct == 0x1Du || funct == 0x1Fu || funct == 0x2Bu ||
+                     funct == 0x2Fu || funct >= 0x30u);
+        const uint32_t op = (funct & 3u) | (((upper >> 6) & 0x1Fu) << 2);
+        return !((op >= 0x10u && op <= 0x17u) || op == 0x1Du || op == 0x1Fu || op >= 0x2Fu || op == 0x2Bu);
+    }
+
+    void computeLiveFlagWriters(const std::set<uint32_t> &all, const std::set<uint32_t> &delaySet)
+    {
+        std::map<uint32_t, std::vector<uint32_t>> preds;
+        std::vector<uint32_t> exits; // last pairs before leaving the program
+        for (uint32_t pc : all)
+        {
+            const Decoded d = decode(pc);
+            const uint32_t next = nextPc(pc);
+            if (!delaySet.count(pc) || m_normalSet.count(pc))
+            {
+                // A pair that starts a delay slot sequence.
+                if (isBranch(d) || d.eBit)
+                {
+                    preds[next].push_back(pc);
+                    if (d.eBit)
+                        exits.push_back(next);
+                    else
+                    {
+                        const uint32_t op = opHi(d);
+                        if (op == 0x24u || op == 0x25u) // JR/JALR: dynamic target
+                            exits.push_back(next);
+                        else
+                        {
+                            const uint32_t target = (pc + 8u + static_cast<uint32_t>(IMM11(d.lower) * 8)) & 0x3FFFu;
+                            preds[target].push_back(next);
+                            if (op != 0x20u && op != 0x21u) // conditional: also falls through
+                                preds[nextPc(next)].push_back(next);
+                        }
+                    }
+                }
+                else
+                {
+                    preds[next].push_back(pc);
+                }
+            }
+        }
+        std::set<std::pair<uint32_t, uint32_t>> visited;
+        std::vector<std::pair<uint32_t, uint32_t>> work; // (pair, distance before the reader)
+        auto pushPreds = [&](uint32_t pc, uint32_t distance)
+        {
+            const auto it = preds.find(pc);
+            if (it == preds.end())
+                return;
+            for (uint32_t p : it->second)
+                work.emplace_back(p, std::min(distance, 4u));
+        };
+        for (uint32_t pc : all)
+        {
+            const uint32_t op = opHi(decode(pc));
+            if (op == 0x14u || op == 0x15u || op == 0x16u || op == 0x17u || op == 0x18u || op == 0x1Au || op == 0x1Bu)
+                pushPreds(pc, 1u);
+        }
+        for (uint32_t pc : exits)
+            work.emplace_back(pc, 1u);
+        while (!work.empty())
+        {
+            const auto [pc, distance] = work.back();
+            work.pop_back();
+            if (!visited.insert({pc, distance}).second)
+                continue;
+            if (upperWritesFlags(decode(pc).upper))
+            {
+                m_needFlags.insert(pc);
+                if (distance >= 4u)
+                    continue; // the entry this path's reader sees
+            }
+            pushPreds(pc, distance + 1u);
+        }
+        for (uint32_t pc : all)
+            if (upperWritesFlags(decode(pc).upper) && !m_needFlags.count(pc))
+                m_skipsFlags = true;
+        static const bool s_verbose = std::getenv("VU1_RECOMP_VERBOSE") != nullptr;
+        if (s_verbose)
+            std::fprintf(stderr, "flag liveness: %zu of the FMACs queue flags\n", m_needFlags.size());
+    }
     // Normalization tracking for the pair being emitted.
     const History *m_hist = nullptr;
     struct NormWrite
@@ -372,6 +488,7 @@ private:
 
     void emitPair(std::ostringstream &o, uint32_t pc, const Decoded &d, Context ctx, History &h)
     {
+        m_pairFlags = !m_flagless && (m_needFlags.empty() ? !m_skipsFlags : m_needFlags.count(pc) != 0u);
         const uint32_t k = h.index;
         char comment[96];
         std::snprintf(comment, sizeof(comment), "    // 0x%04x: %08x %08x\n", pc, d.upper, d.lower);
@@ -801,8 +918,8 @@ private:
         const std::string dst = toAcc ? "S.acc" : (kind == Itof || kind == Ftoi || kind == Abs) ? "S.vf[" + std::to_string(ft) + "]"
                                                                                                   : "S.vf[" + std::to_string(fd) + "]";
         if (flags)
-            o << "            J::fmacFinish<" << dest << ">(vu, cyc, 0x" << std::hex << instr << std::dec << "u, r, " << dst
-              << ", " << (productSum ? "xs" : "0u") << ", ez);\n";
+            o << "            J::fmacFinish<" << dest << (m_pairFlags ? "" : ", false") << ">(vu, cyc, 0x" << std::hex << instr
+              << std::dec << "u, r, " << dst << ", " << (productSum && m_pairFlags ? "xs" : "0u") << ", ez);\n";
         else
             o << "            J::applyDest<" << dest << ">(" << dst << ", r);\n";
         o << "        }\n";
@@ -871,8 +988,10 @@ private:
         if (cross)
             ez += " | 8";
         const bool productSum = op == 3 || op == 4 || op == 7;
-        o << "            J::fmac4<" << dest << ">(vu, cyc, 0x" << std::hex << instr << std::dec << "u, r, " << dst << ", "
-          << (productSum ? "J::productFlags4<" + std::to_string(dest) + ">(a, b)" : std::string("0u")) << ", " << ez << ");\n        }\n";
+        o << "            J::fmac4<" << dest << (m_pairFlags ? "" : ", false") << ">(vu, cyc, 0x" << std::hex << instr << std::dec
+          << "u, r, " << dst << ", "
+          << (productSum && m_pairFlags ? "J::productFlags4<" + std::to_string(dest) + ">(a, b)" : std::string("0u")) << ", " << ez
+          << ");\n        }\n";
         m_upperNorm = {toAcc ? 32u : fd, dest, 1, 0};
     }
 
@@ -1198,6 +1317,7 @@ int main(int argc, char **argv)
         uint64_t baseKey;
         std::vector<uint32_t> roots;
         std::string text;
+        bool flagless = false;
     };
     std::map<uint64_t, Variant> generated; // by full key
     size_t skipped = 0;
@@ -1226,7 +1346,7 @@ int main(int argc, char **argv)
             ++skipped;
             continue;
         }
-        generated.emplace(fullKey, Variant{baseKey, std::move(roots), std::move(text)});
+        generated.emplace(fullKey, Variant{baseKey, std::move(roots), std::move(text), recompiler.m_flagless});
     }
     std::fprintf(stderr, "%zu program variants compiled, %zu skipped\n", generated.size(), skipped);
 
@@ -1279,9 +1399,10 @@ int main(int argc, char **argv)
     for (const auto &[key, variant] : generated)
     {
         char line[256];
-        std::snprintf(line, sizeof(line), "    {0x%016llxull, vu1p_%llx, vu1r_%llx, %zuu, 0x%016llxull},\n",
+        std::snprintf(line, sizeof(line), "    {0x%016llxull, vu1p_%llx, vu1r_%llx, %zuu, 0x%016llxull, %s},\n",
                       static_cast<unsigned long long>(variant.baseKey), static_cast<unsigned long long>(key),
-                      static_cast<unsigned long long>(key), variant.roots.size(), static_cast<unsigned long long>(key));
+                      static_cast<unsigned long long>(key), variant.roots.size(), static_cast<unsigned long long>(key),
+                      variant.flagless ? "true" : "false");
         registry += line;
     }
     registry += "};\nextern const size_t g_ps2Vu1CompiledProgramCount = " + std::to_string(generated.size()) + ";\n";

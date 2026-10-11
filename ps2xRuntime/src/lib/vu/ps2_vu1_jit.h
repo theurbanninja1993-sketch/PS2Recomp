@@ -62,6 +62,7 @@ struct VU1Jit
     // ------------------------------------------------------------ cycles
 
     __attribute__((always_inline)) static inline uint64_t now(const V &vu) { return vu.m_cycle; }
+    __attribute__((always_inline)) static inline void noteFlagless(V &vu) { vu.m_ranFlagless = true; }
 
     __attribute__((always_inline)) static inline bool atBudget(V &vu, uint64_t cyc, uint64_t budgetEnd) { return cyc >= budgetEnd || vu.m_stopRequested; }
 
@@ -382,7 +383,9 @@ struct VU1Jit
     // exactZero: lanes (component bit c) whose result is known exact, so a
     // zero there is a true zero (ADD/SUB, or MUL by a zero operand) and
     // needs no exact recomputation.
-    template <uint8_t dest>
+    // Flags = false: the program reads no MAC/status flags (generator
+    // analysis), so none are queued.
+    template <uint8_t dest, bool Flags = true>
     __attribute__((always_inline)) static inline void fmacFinish(V &vu, uint64_t cyc, uint32_t instr, float *result, float *dst,
                                                                  uint32_t extraSticky, uint32_t exactZero = 0u)
     {
@@ -419,7 +422,7 @@ struct VU1Jit
                 status |= flags;
             }
         }
-        if (dest != 0u)
+        if (Flags && dest != 0u)
         {
             if (auto *entry = allocFlags(vu, cyc))
             {
@@ -543,7 +546,7 @@ struct VU1Jit
     }
 
     // fmacFinish for a four-lane result (exactZero in component bits).
-    template <uint8_t dest>
+    template <uint8_t dest, bool Flags = true>
     __attribute__((always_inline)) static inline void fmac4(V &vu, uint64_t cyc, uint32_t instr, __m128 r, float *dst, uint32_t extraSticky,
                                                             int exactZero)
     {
@@ -559,12 +562,12 @@ struct VU1Jit
         {
             alignas(16) float tmp[4];
             _mm_store_ps(tmp, r);
-            fmacFinish<dest>(vu, cyc, instr, tmp, dst, extraSticky, static_cast<uint32_t>(exactZero));
+            fmacFinish<dest, Flags>(vu, cyc, instr, tmp, dst, extraSticky, static_cast<uint32_t>(exactZero));
             return;
         }
-        const int signBits = _mm_movemask_ps(r) & dm;
-        if constexpr (dest != 0u)
+        if constexpr (Flags && dest != 0u)
         {
+            const int signBits = _mm_movemask_ps(r) & dm;
             if (auto *entry = allocFlags(vu, cyc))
             {
                 entry->mac = laneBits(zeroBits) | (laneBits(signBits) << 4);

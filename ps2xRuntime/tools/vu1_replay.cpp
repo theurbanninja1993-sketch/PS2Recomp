@@ -48,12 +48,13 @@ namespace
         VU1State after{};
     };
 
-    bool sameState(const VU1State &a, const VU1State &b)
+    // flagless: a compiled program that maintains no MAC/status flags ran.
+    bool sameState(const VU1State &a, const VU1State &b, bool flagless)
     {
         return std::memcmp(a.vf, b.vf, sizeof(a.vf)) == 0 && std::memcmp(a.vi, b.vi, sizeof(a.vi)) == 0 &&
                std::memcmp(a.acc, b.acc, sizeof(a.acc)) == 0 && std::memcmp(&a.q, &b.q, 4) == 0 &&
                std::memcmp(&a.p, &b.p, 4) == 0 && std::memcmp(&a.i, &b.i, 4) == 0 && a.r == b.r &&
-               a.mac == b.mac && a.clip == b.clip && a.status == b.status && a.pc == b.pc;
+               (flagless || (a.mac == b.mac && a.status == b.status)) && a.clip == b.clip && a.pc == b.pc;
     }
 }
 
@@ -137,13 +138,14 @@ int main(int argc, char **argv)
             }
             std::memcpy(memory.getVU1Data(), r.dataBefore.data(), PS2_VU1_DATA_SIZE);
             vu1.state() = r.before;
+            vu1.clearRanFlagless();
 
             const auto t0 = std::chrono::steady_clock::now();
             vu1.execute(memory.getVU1Code(), PS2_VU1_CODE_SIZE, memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                         gs, &memory, r.startPC, r.top, r.itop, 65536);
             seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-            if (pass == 0 && (!sameState(vu1.state(), r.after) ||
+            if (pass == 0 && (!sameState(vu1.state(), r.after, vu1.ranFlaglessProgram()) ||
                               std::memcmp(memory.getVU1Data(), r.dataAfter.data(), PS2_VU1_DATA_SIZE) != 0))
             {
                 if (mismatches < 10)

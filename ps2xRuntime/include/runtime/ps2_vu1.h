@@ -29,6 +29,7 @@ struct VU1CompiledProgram
     const uint32_t *roots; // JR/JALR targets compiled as extra entry points
     uint32_t rootCount;
     uint64_t fullKey;      // ps2Vu1ProgramKey including the roots
+    bool flagless = false; // reads no MAC/status flags, so computes none
 };
 
 // Key of the program entered at startPC: entry, plus the address and words of
@@ -337,6 +338,13 @@ private:
         std::vector<CompiledLayout> layouts; // most recently used first
     };
     std::unordered_map<uint32_t, CompiledCacheEntry> m_compiledCache;
+    bool m_ranFlagless = false; // a flagless compiled program ran (MAC/status not maintained)
+
+public:
+    bool ranFlaglessProgram() const { return m_ranFlagless; }
+    void clearRanFlagless() { m_ranFlagless = false; }
+
+private:
     VU1CompiledFn lookupCompiled(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t startPC);
 
     uint64_t m_cycle = 0;
