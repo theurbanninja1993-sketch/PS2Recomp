@@ -397,38 +397,85 @@ namespace
         return false;
     }
 
-    // Direct mouse look. The on-foot follow camera (0x29DAB0, a0 = CCam)
-    // integrates turn speeds the right stick drives:
-    // +0x130 vertical (positive = look up), +0x140 horizontal (positive =
-    // turn left). One update moves the angle by ~0.45x the speed, which the
-    // game then damps. The hook sets the speeds for exactly this update's
-    // mouse motion and clears them afterwards, so there is no stick ramp-up,
-    // dead zone or drift.
+    // Direct mouse look on foot (follow camera 0x29DAB0, a0 = CCam). The
+    // hook converts exactly the mouse motion since the last camera update
+    // into the camera's own controls (see below), so there is no stick
+    // ramp-up, dead zone, lag or drift.
     PS2Runtime::RecompiledFunction g_vcsOrigFollowPedCam = nullptr;
     PS2Runtime::RecompiledFunction g_vcsOrigFollowCarCam = nullptr;
 
     void vcsRunCameraWithMouse(PS2Runtime::RecompiledFunction original, uint8_t *rdram, R5900Context *ctx,
                                PS2Runtime *runtime)
     {
+        // Mouse motion an update did not use (some camera calls change nothing).
+        static float s_carryYaw = 0.0f, s_carryPitch = 0.0f;
         float yaw = 0.0f, pitch = 0.0f;
         const bool captured = runtime->padBackend().consumeMouseLook(yaw, pitch);
+        yaw += s_carryYaw;
+        pitch += s_carryPitch;
+        s_carryYaw = s_carryPitch = 0.0f;
         const uint32_t cam = getRegU32(ctx, 4);
-        const bool apply = captured && (yaw != 0.0f || pitch != 0.0f) && cam >= 0x00100000u &&
-                           cam + 0x144u <= PS2_RAM_SIZE;
+        const bool valid = cam >= 0x00100000u && cam + 0x240u <= PS2_RAM_SIZE;
+        const bool apply = captured && (yaw != 0.0f || pitch != 0.0f) && valid;
+        auto readF = [&](uint32_t off)
+        {
+            float v;
+            std::memcpy(&v, rdram + cam + off, 4);
+            return v;
+        };
+        auto writeF = [&](uint32_t off, float v) { std::memcpy(rdram + cam + off, &v, 4); };
+        float frontBefore[3] = {};
+        if (valid)
+            std::memcpy(frontBefore, rdram + cam + 0x10u, 12);
         if (apply)
         {
-            constexpr float kAnglePerSpeed = 0.45f;
-            const float verticalSpeed = pitch / kAnglePerSpeed;
-            const float horizontalSpeed = -yaw / kAnglePerSpeed;
-            std::memcpy(rdram + cam + 0x130u, &verticalSpeed, 4);
-            std::memcpy(rdram + cam + 0x140u, &horizontalSpeed, 4);
+            // Horizontal: one update turns by ~1.15x the speed (+0x140,
+            // positive = left).
+            constexpr float kAnglePerSpeed = 1.15f;
+            writeF(0x140u, -yaw / kAnglePerSpeed);
+            // Vertical: the stick moves a target camera height (+0x228/+0x238)
+            // that the camera position (+0x28, copy +0x98) eases towards,
+            // which lags. Moving both by the same amount makes it immediate;
+            // looking up by a small angle lowers the camera by about its
+            // horizontal distance to the target times the angle.
+            uint32_t target = 0;
+            std::memcpy(&target, rdram + cam + 0x70u, 4);
+            if (pitch != 0.0f && target >= 0x00100000u && target + 0x40u <= PS2_RAM_SIZE)
+            {
+                float centre[3];
+                std::memcpy(centre, rdram + target + 0x30u, 12);
+                const float dx = readF(0x20u) - centre[0], dy = readF(0x24u) - centre[1];
+                const float distance = std::sqrt(dx * dx + dy * dy);
+                const float dz = -pitch * distance;
+                if (std::isfinite(dz))
+                    for (uint32_t off : {0x28u, 0x98u, 0x228u, 0x238u})
+                        writeF(off, readF(off) + dz);
+            }
         }
+        float before[2] = {};
+        static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
+        if (s_debug && valid)
+            std::memcpy(before, rdram + cam + 0x78u, 8);
         original(rdram, ctx, runtime);
+        if (!valid)
+            return;
+        if (s_debug)
+        {
+            float after[2];
+            std::memcpy(after, rdram + cam + 0x78u, 8);
+            std::fprintf(stderr, "[mouselook] f=%llu want yaw %.4f pitch %.4f got beta %.4f alpha %.4f (alpha %.4f)\n",
+                         (unsigned long long)g_ps2PresentedFrameCounter.load(), yaw, pitch, std::remainder(after[1] - before[1], 6.2831853f),
+                         after[0] - before[0], after[0]);
+        }
         if (apply)
         {
-            const float zero = 0.0f;
-            std::memcpy(rdram + cam + 0x130u, &zero, 4);
-            std::memcpy(rdram + cam + 0x140u, &zero, 4);
+            writeF(0x140u, 0.0f);
+            // A call that left the camera untouched did not turn it either.
+            if (std::memcmp(frontBefore, rdram + cam + 0x10u, 12) == 0)
+            {
+                s_carryYaw = yaw;
+                s_carryPitch = pitch;
+            }
         }
     }
 

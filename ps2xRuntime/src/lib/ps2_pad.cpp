@@ -1,5 +1,8 @@
 #include "runtime/ps2_pad.h"
 #include "ps2_host_backend.h"
+#include <atomic>
+
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -209,9 +212,13 @@ bool PSPadBackend::applyFakeMouse(float &yaw, float &pitch)
     if (!s_env)
         return false;
     static float s_yaw = 0.0f, s_pitch = 0.0f;
-    static const bool s_parsed = std::sscanf(s_env, "%f,%f", &s_yaw, &s_pitch) >= 1;
+    static unsigned long long s_from = 0, s_to = ~0ull; // optional presented-frame window
+    static const bool s_parsed = std::sscanf(s_env, "%f,%f,%llu,%llu", &s_yaw, &s_pitch, &s_from, &s_to) >= 1;
+    const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
     if (!s_parsed)
         return false;
+    if (frame < s_from || frame >= s_to)
+        return true; // captured, not moving
     yaw += s_yaw;
     pitch += s_pitch;
     return true;
