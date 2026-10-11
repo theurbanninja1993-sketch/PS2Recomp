@@ -2358,22 +2358,37 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
     const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
     const bool launch = g_ps2LaunchMenuPending.load(std::memory_order_relaxed);
 
-    ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    // Full-window screen: a backdrop (see-through in game) with the
+    // settings in a centred column.
+    const float screenW = static_cast<float>(GetScreenWidth()), screenH = static_cast<float>(GetScreenHeight());
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(screenW, screenH), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(launch ? 1.0f : 0.9f);
+    const float fontSize = ImGui::GetStyle().FontSizeBase * scale;
+    ImGui::PushFont(nullptr, fontSize);
     bool open = true;
-    if (ImGui::Begin(launch ? "Settings###settings" : "Settings###settings", launch ? nullptr : &open,
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::Begin("##settings", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar))
     {
-        ImGui::SetWindowFontScale(scale);
+        const float columnW = std::min(screenW - 32.0f * scale, 860.0f * scale);
+        const float top = 16.0f * scale;
+        ImGui::SetCursorPos(ImVec2(std::max(0.0f, (screenW - columnW) * 0.5f), top));
+        ImGui::BeginChild("column", ImVec2(columnW, screenH - top * 2.0f), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+        ImGui::PushFont(nullptr, fontSize * 1.8f);
+        ImGui::TextUnformatted("Settings");
+        ImGui::PopFont();
         if (launch)
-        {
-            ImGui::TextUnformatted("Set up the game before it starts. Everything here can be changed later with F2.");
-            ImGui::Spacing();
-        }
-        ImGui::PushItemWidth(260.0f * scale);
+            ImGui::TextDisabled("Set up the game before it starts. Everything here can be changed later with F2.");
+        ImGui::Spacing();
+        const ImGuiStyle &style = ImGui::GetStyle();
+        const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + style.ItemSpacing.y * 2.0f + 4.0f;
+        ImGui::PushItemWidth(columnW * 0.5f);
         if (ImGui::BeginTabBar("settings-tabs"))
         {
             if (ImGui::BeginTabItem("Display"))
             {
+                ImGui::BeginChild("display-scroll", ImVec2(0.0f, -footerH));
                 static const char *kModes[] = {"Windowed", "Borderless fullscreen", "Fullscreen"};
                 int mode = static_cast<int>(settings.displayMode);
                 if (ImGui::Combo("Display mode", &mode, kModes, IM_ARRAYSIZE(kModes)))
@@ -2443,6 +2458,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::TextDisabled("Needs the GPU renderer (PS2X_GS_GPU=1).");
 
                 changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
+                ImGui::EndChild();
                 ImGui::EndTabItem();
             }
 
@@ -2450,6 +2466,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
             if (ImGui::BeginTabItem("Controls", nullptr,
                                     std::exchange(s_controlsFirst, false) ? ImGuiTabItemFlags_SetSelected : 0))
             {
+                ImGui::BeginChild("controls-scroll", ImVec2(0.0f, -footerH));
                 ImGui::SeparatorText("Gamepad");
                 int layout = static_cast<int>(settings.gamepadLayout);
                 bool layoutChanged = ImGui::RadioButton("Classic (PS2)", &layout, 0);
@@ -2467,14 +2484,12 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 if (ImGui::TreeNode("Gamepad buttons"))
                 {
                     if (ImGui::BeginTable("pad-map", 3,
-                                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit |
-                                              ImGuiTableFlags_ScrollY,
-                                          ImVec2(0.0f, 220.0f * scale)))
+                                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit,
+                                          ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
                     {
-                        ImGui::TableSetupScrollFreeze(0, 1);
-                        ImGui::TableSetupColumn("Button");
-                        ImGui::TableSetupColumn("On foot", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
-                        ImGui::TableSetupColumn("In a vehicle", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
+                        ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthStretch);
+                        ImGui::TableSetupColumn("On foot", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
+                        ImGui::TableSetupColumn("In a vehicle", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
                         ImGui::TableHeadersRow();
                         for (int b = 0; b < pc::kHostButtonCount; ++b)
                         {
@@ -2524,16 +2539,12 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     }
                 }
                 ImGui::TextDisabled("Click a binding, then press a key or mouse button. Right-click clears it.");
-                const float tableHeight = 300.0f * scale;
-                if (ImGui::BeginTable("keys", 3,
-                                      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-                                          ImGuiTableFlags_SizingFixedFit,
-                                      ImVec2(0.0f, tableHeight)))
+                if (ImGui::BeginTable("keys", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit,
+                                      ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
                 {
-                    ImGui::TableSetupScrollFreeze(0, 1);
-                    ImGui::TableSetupColumn("Action");
-                    ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
-                    ImGui::TableSetupColumn("Alternate", ImGuiTableColumnFlags_WidthFixed, 150.0f * scale);
+                    ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch);
+                    ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
+                    ImGui::TableSetupColumn("Alternate", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
                     ImGui::TableHeadersRow();
                     for (int action = 0; action < pc::kActionCount; ++action)
                     {
@@ -2575,6 +2586,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 changed |= ImGui::SliderFloat("Sensitivity", &settings.mouseSensitivity, 0.05f, 5.0f, "%.2f",
                                               ImGuiSliderFlags_Logarithmic);
                 changed |= ImGui::Checkbox("Invert vertical look", &settings.mouseInvertY);
+                ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             else
@@ -2585,7 +2597,6 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
         }
         ImGui::PopItemWidth();
 
-        ImGui::Spacing();
         ImGui::Separator();
         changed |= ImGui::Checkbox("Show this menu every time the game starts", &settings.showAtLaunch);
         if (launch)
@@ -2604,14 +2615,12 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
             ImGui::SameLine();
             ImGui::TextDisabled("F2 opens/closes this menu");
         }
-        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize("Quit to desktop").x -
-                        ImGui::GetStyle().FramePadding.x * 2.0f);
+        ImGui::SameLine(columnW - ImGui::CalcTextSize("Quit to desktop").x - style.FramePadding.x * 2.0f);
         if (ImGui::Button("Quit to desktop"))
             ImGui::OpenPopup("Quit?");
         ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
         {
-            ImGui::SetWindowFontScale(scale);
             ImGui::TextUnformatted(launch ? "Quit to desktop?" : "Quit to desktop? Progress since your last save will be lost.");
             ImGui::Spacing();
             if (ImGui::Button("Quit"))
@@ -2625,8 +2634,10 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
+        ImGui::EndChild();
     }
     ImGui::End();
+    ImGui::PopFont();
 
     if (changed)
     {
