@@ -335,6 +335,7 @@ public:
     const uint8_t *getVU0Data() const { return m_vu0Data; }
 
     bool isPath3Masked() const { return m_path3Masked; }
+    void requestPath3Unmask();
     void flushMaskedPath3Packets(bool drainImmediately = true);
 
     void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false);
@@ -442,6 +443,38 @@ public:
 
     void asyncVif1WorkerLoop();
     void completeVif1Dma();
+
+    // GIF work produced on the VIF1 worker (PATH1 XGKICKs, PATH2 DIRECT,
+    // PATH3 unmask flushes) runs in order on a separate GS frontend thread so
+    // VU1 does not wait for packet parsing. A batch counts as finished (D_STAT,
+    // waitForAsyncVif1) only once its GIF work has been processed.
+    struct GsWorkItem
+    {
+        enum class Kind : uint8_t
+        {
+            Packet,
+            FlushMaskedPath3,
+            BatchEnd
+        };
+        Kind kind = Kind::Packet;
+        GifPathId path = GifPathId::Path1;
+        bool drain = true;
+        bool path2DirectHl = false;
+        std::vector<uint8_t> data;
+    };
+    void gsFrontendLoop();
+    void enqueueGsWork(GsWorkItem &&item);
+    bool deferGsWork() const;
+    void submitGifPacketNow(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl);
+    bool m_asyncGs = false;
+    std::thread m_gsThread;
+    std::mutex m_gsQueueMutex;
+    std::condition_variable m_gsQueueCv;
+    std::condition_variable m_gsSpaceCv;
+    std::deque<GsWorkItem> m_gsQueue;
+    std::vector<std::vector<uint8_t>> m_gsFreeBuffers; // guarded by m_gsQueueMutex
+    bool m_gsStop = false;
+    uint32_t m_gsPendingBatches = 0; // guarded by m_vif1QueueMutex
     void raiseDStatChannelBit(uint32_t channelBit);
     bool m_asyncVif1 = false;
     std::thread m_vif1Worker;

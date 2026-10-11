@@ -313,6 +313,9 @@ PS2Memory::PS2Memory()
     // VIF1/VU1 run asynchronously by default; PS2X_SYNC_VIF1=1 restores the
     // synchronous path (debugging).
     m_asyncVif1 = std::getenv("PS2X_SYNC_VIF1") == nullptr;
+    // ... and GIF packets produced there are parsed on their own thread
+    // (PS2X_SYNC_GS=1: on the VIF1 worker, as before).
+    m_asyncGs = m_asyncVif1 && std::getenv("PS2X_SYNC_GS") == nullptr;
 }
 
 PS2Memory::~PS2Memory()
@@ -325,6 +328,15 @@ PS2Memory::~PS2Memory()
         }
         m_vif1QueueCv.notify_all();
         m_vif1Worker.join();
+    }
+    if (m_gsThread.joinable())
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_gsQueueMutex);
+            m_gsStop = true;
+        }
+        m_gsQueueCv.notify_all();
+        m_gsThread.join();
     }
     if (m_rdram)
     {
@@ -1818,6 +1830,19 @@ void PS2Memory::asyncVif1WorkerLoop()
             if (!transfer.chainData.empty())
                 processVIF1Data(transfer.chainData.data(), static_cast<uint32_t>(transfer.chainData.size()));
         }
+        if (m_asyncGs)
+        {
+            // Finished once the GS frontend has processed this batch's packets.
+            {
+                std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
+                ++m_gsPendingBatches;
+                m_vif1WorkerActive = false;
+            }
+            GsWorkItem end;
+            end.kind = GsWorkItem::Kind::BatchEnd;
+            enqueueGsWork(std::move(end));
+            continue;
+        }
         {
             std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
             if (m_gifArbiter)
@@ -1830,6 +1855,93 @@ void PS2Memory::asyncVif1WorkerLoop()
         }
         m_vif1IdleCv.notify_all();
     }
+}
+
+bool PS2Memory::deferGsWork() const
+{
+    return m_asyncGs && t_onAsyncVif1Worker;
+}
+
+void PS2Memory::enqueueGsWork(GsWorkItem &&item)
+{
+    {
+        std::unique_lock<std::mutex> lock(m_gsQueueMutex);
+        // Bounded so the VU1 worker cannot run far ahead of the GS.
+        constexpr size_t kMaxQueued = 4096u;
+        m_gsSpaceCv.wait(lock, [this]()
+                         { return m_gsQueue.size() < kMaxQueued || m_gsStop; });
+        m_gsQueue.push_back(std::move(item));
+        if (!m_gsThread.joinable())
+            m_gsThread = std::thread([this]()
+                                     { gsFrontendLoop(); });
+    }
+    m_gsQueueCv.notify_one();
+}
+
+void PS2Memory::gsFrontendLoop()
+{
+    ThreadNaming::SetCurrentThreadName("GsFrontend");
+    for (;;)
+    {
+        GsWorkItem item;
+        {
+            std::unique_lock<std::mutex> lock(m_gsQueueMutex);
+            m_gsQueueCv.wait(lock, [this]()
+                             { return m_gsStop || !m_gsQueue.empty(); });
+            if (m_gsQueue.empty())
+                return;
+            item = std::move(m_gsQueue.front());
+            m_gsQueue.pop_front();
+        }
+        m_gsSpaceCv.notify_one();
+        switch (item.kind)
+        {
+        case GsWorkItem::Kind::Packet:
+            submitGifPacketNow(item.path, item.data.data(), static_cast<uint32_t>(item.data.size()), item.drain,
+                               item.path2DirectHl);
+            break;
+        case GsWorkItem::Kind::FlushMaskedPath3:
+        {
+            std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
+            flushMaskedPath3Packets();
+            break;
+        }
+        case GsWorkItem::Kind::BatchEnd:
+        {
+            {
+                std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
+                if (m_gifArbiter)
+                    m_gifArbiter->drain();
+            }
+            m_vif1Finished.fetch_add(1u, std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
+                --m_gsPendingBatches;
+            }
+            m_vif1IdleCv.notify_all();
+            break;
+        }
+        }
+        if (!item.data.empty() || item.data.capacity() != 0u)
+        {
+            item.data.clear();
+            std::lock_guard<std::mutex> lock(m_gsQueueMutex);
+            if (m_gsFreeBuffers.size() < 64u)
+                m_gsFreeBuffers.push_back(std::move(item.data));
+        }
+    }
+}
+
+void PS2Memory::requestPath3Unmask()
+{
+    if (deferGsWork())
+    {
+        GsWorkItem item;
+        item.kind = GsWorkItem::Kind::FlushMaskedPath3;
+        enqueueGsWork(std::move(item));
+        return;
+    }
+    flushMaskedPath3Packets();
 }
 
 namespace
@@ -1858,7 +1970,7 @@ void PS2Memory::waitForAsyncVif1(const char *why)
     {
         std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
         m_vif1IdleCv.wait(lock, [this]()
-                          { return m_vif1Batches.empty() && !m_vif1WorkerActive; });
+                          { return m_vif1Batches.empty() && !m_vif1WorkerActive && m_gsPendingBatches == 0u; });
     }
     pollAsyncVif1();
     if (s_stats)
@@ -2283,6 +2395,29 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
 {
     if (!data || sizeBytes < 16)
         return;
+    if (deferGsWork())
+    {
+        GsWorkItem item;
+        item.path = pathId;
+        item.drain = drainImmediately;
+        item.path2DirectHl = path2DirectHl;
+        {
+            std::lock_guard<std::mutex> lock(m_gsQueueMutex);
+            if (!m_gsFreeBuffers.empty())
+            {
+                item.data = std::move(m_gsFreeBuffers.back());
+                m_gsFreeBuffers.pop_back();
+            }
+        }
+        item.data.assign(data, data + sizeBytes);
+        enqueueGsWork(std::move(item));
+        return;
+    }
+    submitGifPacketNow(pathId, data, sizeBytes, drainImmediately, path2DirectHl);
+}
+
+void PS2Memory::submitGifPacketNow(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
+{
     std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
 
     if (pathId == GifPathId::Path3)

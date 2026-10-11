@@ -394,7 +394,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             const bool wasMasked = m_path3Masked;
             m_path3Masked = (imm & 0x8000u) != 0u;
             if (wasMasked && !m_path3Masked)
-                flushMaskedPath3Packets();
+                requestPath3Unmask();
             continue;
         }
         else if (opcode == VIF_MARK)
