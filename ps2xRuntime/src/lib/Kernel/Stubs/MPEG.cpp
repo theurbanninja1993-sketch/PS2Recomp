@@ -1795,6 +1795,18 @@ namespace ps2_stubs
             return g_mpegAudioQueue.size();
         }
 
+        // Audio of this movie not yet taken by the game.
+        bool audioPendingFor(uint32_t mpegAddr)
+        {
+            std::lock_guard<std::mutex> lock(g_mpegAudioMutex);
+            if (g_mpegAudioInFlight)
+                return true;
+            for (const MpegAudioPending &pending : g_mpegAudioQueue)
+                if (pending.event.mpegAddr == mpegAddr)
+                    return true;
+            return false;
+        }
+
         void clearAudioCallbacks(uint32_t mpegAddr)
         {
             std::lock_guard<std::mutex> lock(g_mpegAudioMutex);
@@ -2064,13 +2076,54 @@ namespace ps2_stubs
         }
     }
 
-    bool isMpegStreamFinished(uint32_t mpegAddr)
+    bool isMpegStreamFinished(uint32_t mpegAddr, PS2Runtime *runtime)
     {
+        // The demuxer reads the whole file well before the movie has been
+        // shown, so the producer EOF alone is not the end: the decoded pictures
+        // still queued (the VCS intro's closing logo, most of the Rockstar
+        // logos) and the audio the game has not taken yet still have to play.
+        // A stall guard keeps the old behaviour when presentation stops
+        // advancing (tail pictures owed to a decoder slot nobody frees).
+        const bool audioPending = audioPendingFor(mpegAddr);
         std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
         MpegPlaybackState &playback = getPlaybackState(mpegAddr);
-        return g_mpeg_stub_state.currentCdStreamEofSeen &&
-               playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration &&
-               (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
+        const bool streamDone = g_mpeg_stub_state.currentCdStreamEofSeen &&
+                                playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration &&
+                                (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
+        if (!streamDone)
+            return false;
+
+        const uint64_t tick = runtime ? runtime->eeScheduler().currentVSyncTick() : 0u;
+        const bool presentationComplete = playback.presentationEndTickQ32 == std::numeric_limits<uint64_t>::max() ||
+                                          (tick << 32u) >= playback.presentationEndTickQ32;
+        bool finished = playback.decodedFrames.empty() && presentationComplete && !audioPending;
+
+        static uint32_t s_lastServed = 0u;
+        static uint64_t s_lastProgressTick = 0u;
+        static uint32_t s_lastMpeg = 0u;
+        if (s_lastMpeg != mpegAddr || s_lastServed != playback.picturesServed || s_lastProgressTick > tick)
+        {
+            s_lastMpeg = mpegAddr;
+            s_lastServed = playback.picturesServed;
+            s_lastProgressTick = tick;
+        }
+        const bool stalled = !finished && runtime && tick - s_lastProgressTick > 120u;
+        finished = finished || stalled;
+
+        static const bool s_endTrace = std::getenv("PS2X_MPEG_END_TRACE") != nullptr;
+        if (s_endTrace)
+        {
+            static uint64_t s_lastLog = 0;
+            const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+            if (finished || frame >= s_lastLog + 300u)
+            {
+                s_lastLog = frame;
+                std::fprintf(stderr, "[mpeg:fin] f=%llu finished=%d stalled=%d served=%u queued=%zu audio=%d\n",
+                             (unsigned long long)frame, finished ? 1 : 0, stalled ? 1 : 0, playback.picturesServed,
+                             playback.decodedFrames.size(), audioPending ? 1 : 0);
+            }
+        }
+        return finished;
     }
 
     void notifyMpegCdStreamEof(PS2Runtime *runtime)

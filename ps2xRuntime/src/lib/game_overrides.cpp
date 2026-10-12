@@ -295,13 +295,13 @@ namespace
     // demuxer accepts data faster than the IPU would, so when the main loop stops
     // presenting, a few decoded fade-out pictures can still be owed to the decoder
     // thread, which then waits forever for a display slot nobody frees. Report done
-    // once the HLE stream itself has ended; the undelivered tail frames are dropped.
+    // once the HLE stream has ended and been shown (isMpegStreamFinished).
     PS2Runtime::RecompiledFunction g_vcsOrigMovieFinished = nullptr;
     void vcsMovieFinished(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t player = getRegU32(ctx, 4);
         g_vcsOrigMovieFinished(rdram, ctx, runtime);
-        if (getRegU32(ctx, 2) == 0u && ps2_stubs::isMpegStreamFinished(player))
+        if (getRegU32(ctx, 2) == 0u && ps2_stubs::isMpegStreamFinished(player, runtime))
         {
             setReturnS32(ctx, 1);
         }
