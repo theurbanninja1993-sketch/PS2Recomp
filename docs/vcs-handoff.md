@@ -97,6 +97,30 @@ texture packs from `mods/`, Windows build under Wine.
    generate it themselves (e.g. extract VU1 microprograms statically from the
    ELF for `vu1_recomp`). Without it VU1 is interpreted, about a third of the
    speed. Owner decides on publishing.
+
+   **The owner wants a guided builder app** (no commands for players):
+   - Wizard flow: pick disc image (.iso, later .chd), verify it's
+     SLUS_215.90 by hash, pick an install folder, Build (progress bar + ETA),
+     done. The result is a ready folder (exe, FFmpeg DLLs, `mods/`) plus a
+     shortcut.
+   - UI with raylib + ImGui like the game's settings menu. Linux + Windows.
+   - Bundled pieces:
+     - an ISO9660 reader (in-app; see `tools/bin2iso.py`);
+     - the `ps2recomp` binary + `vcs_clean.toml/.csv` (addresses only);
+     - a C++ compiler: llvm-mingw Windows-hosted build on Windows, a portable
+       clang (or Zig's bundled clang) on Linux;
+     - the runtime precompiled as a static library, so only the generated
+       game code is compiled on the player's machine (~10-30 min).
+   - VU1: generate `vcs-vu1` from the player's ELF (needs the static
+     microcode extraction above).
+   - Suggested order:
+     1. ISO reader + hash check, in a standalone library with a CLI test;
+     2. the wizard UI;
+     3. drive `ps2recomp` + the compile with progress parsing;
+     4. packaging the bundle per OS.
+
+   Test on a clean Wine prefix / Proton, and on real Windows before
+   release.
 2. **Custom radio station:** a `music` folder (MP3/OGG/FLAC/WAV) as an extra
    in-vehicle station, like the GTA III/VC PC "MP3 Player". Needs the VCS radio
    station selection + audio stream path found and decoded PCM injected.
