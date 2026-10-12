@@ -17,6 +17,58 @@ namespace
 
 }
 
+namespace
+{
+    // Select+Start together opens the settings menu, so neither reaches the
+    // game as part of the combo: a lone Select / Start is passed on once it
+    // has been held 50 ms (a shorter tap is replayed for 100 ms on release).
+    void filterMenuCombo(bool &select, bool &start)
+    {
+        struct Held
+        {
+            double since = -1.0;    // pressed at (not yet passed on)
+            bool passed = false;    // passed on to the game
+            double pulseUntil = -1.0;
+        };
+        static Held s_held[2];
+        static bool s_combo = false;
+        const double now = GetTime();
+        bool *buttons[2] = {&select, &start};
+        if (select && start)
+            s_combo = true;
+        if (s_combo)
+        {
+            if (!select && !start)
+                s_combo = false;
+            for (Held &held : s_held)
+                held = {};
+            select = start = false;
+            return;
+        }
+        constexpr double kGrace = 0.05, kPulse = 0.1;
+        for (int i = 0; i < 2; ++i)
+        {
+            Held &held = s_held[i];
+            bool &down = *buttons[i];
+            if (down)
+            {
+                if (held.since < 0.0)
+                    held.since = now;
+                held.passed = held.passed || now - held.since >= kGrace;
+                down = held.passed;
+            }
+            else
+            {
+                if (held.since >= 0.0 && !held.passed)
+                    held.pulseUntil = now + kPulse; // a quick tap
+                held.since = -1.0;
+                held.passed = false;
+                down = now < held.pulseUntil;
+            }
+        }
+    }
+}
+
 bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
 {
     if (!data || size < 32)
@@ -28,8 +80,14 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[2] = 0xFF;
     data[3] = 0xFF;
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+    // Controller buttons still held when the menu closes (Circle / Options
+    // closing it) stay with the menu until released.
+    static bool s_padHeldByMenu = false;
     if (g_ps2SettingsMenuOpen.load(std::memory_order_relaxed))
-        return true; // the settings menu has the keyboard and mouse
+    {
+        s_padHeldByMenu = true;
+        return true; // the settings menu has the keyboard, mouse and controller
+    }
 
     uint16_t btns = 0xFFFFu;
     auto clearBit = [&btns](uint16_t mask)
@@ -63,6 +121,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             GAMEPAD_BUTTON_RIGHT_THUMB, GAMEPAD_BUTTON_MIDDLE_LEFT, GAMEPAD_BUTTON_MIDDLE_RIGHT,
             GAMEPAD_BUTTON_LEFT_FACE_UP, GAMEPAD_BUTTON_LEFT_FACE_DOWN, GAMEPAD_BUTTON_LEFT_FACE_LEFT,
             GAMEPAD_BUTTON_LEFT_FACE_RIGHT};
+        bool hostDown[ps2controls::kHostButtonCount]{};
+        bool anyDown = false;
         for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
         {
             bool down = IsGamepadButtonDown(kGamepad, kRaylibButton[b]);
@@ -71,9 +131,16 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 down = down || GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_TRIGGER) > 0.0f;
             else if (b == ps2controls::PadRT)
                 down = down || GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.0f;
-            if (down)
-                press(settings.gamepadMap[context][b]);
+            hostDown[b] = down;
+            anyDown = anyDown || down;
         }
+        filterMenuCombo(hostDown[ps2controls::PadBack], hostDown[ps2controls::PadStart]);
+        if (s_padHeldByMenu && !anyDown)
+            s_padHeldByMenu = false;
+        if (!s_padHeldByMenu)
+            for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
+                if (hostDown[b])
+                    press(settings.gamepadMap[context][b]);
 
         float lx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_X);
         float ly = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_Y);

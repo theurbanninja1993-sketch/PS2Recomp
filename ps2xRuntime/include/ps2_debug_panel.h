@@ -22,6 +22,9 @@ private:
     // Key rebinding in progress (Controls tab): action and slot, -1 = none.
     int m_captureAction = -1;
     int m_captureSlot = 0;
+    int m_settingsTab = 0;        // selected settings tab (L1/R1 switch tabs)
+    int m_settingsTabRequest = -1; // tab to select on the next frame
+    bool m_padComboLatched = false; // Select+Start toggled the menu; wait for release
     bool m_initialized = false;
     bool m_visible = false; // F1
     bool m_showRegisters = true;

@@ -2185,6 +2185,7 @@ void PS2DebugPanel::initialize()
     if (!m_initialized)
     {
         rlImGuiSetup(true);
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad; // menus work with a controller
         m_initialized = true;
     }
 #endif
@@ -2214,7 +2215,17 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
         toggleVisible();
     }
     static bool s_openAtStart = std::getenv("PS2X_OPEN_SETTINGS") != nullptr; // UI checks
-    if ((IsKeyPressed(KEY_F2) && !g_ps2LaunchMenuPending.load(std::memory_order_relaxed) && m_captureAction < 0) ||
+    // Controller: Select+Start together (not the PS / Guide button, which
+    // belongs to Steam's overlay when the game is added to Steam).
+    bool padToggle = false;
+    if (IsGamepadAvailable(0))
+    {
+        const bool combo = IsGamepadButtonDown(0, GAMEPAD_BUTTON_MIDDLE_LEFT) && IsGamepadButtonDown(0, GAMEPAD_BUTTON_MIDDLE_RIGHT);
+        if (combo && !m_padComboLatched)
+            padToggle = true;
+        m_padComboLatched = combo;
+    }
+    if (((IsKeyPressed(KEY_F2) || padToggle) && !g_ps2LaunchMenuPending.load(std::memory_order_relaxed) && m_captureAction < 0) ||
         std::exchange(s_openAtStart, false))
     {
         g_ps2SettingsMenuOpen.store(!g_ps2SettingsMenuOpen.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -2344,7 +2355,7 @@ void PS2DebugPanel::drawSettingsHint()
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
     {
         ImGui::SetWindowFontScale(scale);
-        ImGui::TextUnformatted("F2: Settings");
+        ImGui::TextUnformatted(IsGamepadAvailable(0) ? "F2 / Select+Start: Settings" : "F2: Settings");
     }
     ImGui::End();
 #endif
@@ -2385,10 +2396,19 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
         const ImGuiStyle &style = ImGui::GetStyle();
         const float footerH = ImGui::GetFrameHeightWithSpacing() * 2.0f + style.ItemSpacing.y * 2.0f + 4.0f;
         ImGui::PushItemWidth(columnW * 0.5f);
+        // L1 / R1 switch tabs.
+        constexpr int kSettingsTabs = 3;
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false))
+            m_settingsTabRequest = (m_settingsTab + kSettingsTabs - 1) % kSettingsTabs;
+        else if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false))
+            m_settingsTabRequest = (m_settingsTab + 1) % kSettingsTabs;
+        auto tabFlags = [this](int tab)
+        { return m_settingsTabRequest == tab ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None; };
         if (ImGui::BeginTabBar("settings-tabs"))
         {
-            if (ImGui::BeginTabItem("Display"))
+            if (ImGui::BeginTabItem("Display", nullptr, tabFlags(0)))
             {
+                m_settingsTab = 0;
                 ImGui::BeginChild("display-scroll", ImVec2(0.0f, -footerH));
                 static const char *kModes[] = {"Windowed", "Borderless fullscreen", "Fullscreen"};
                 int mode = static_cast<int>(settings.displayMode);
@@ -2484,8 +2504,9 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
 
             static bool s_controlsFirst = std::getenv("PS2X_SETTINGS_TAB_CONTROLS") != nullptr; // UI checks
             if (ImGui::BeginTabItem("Controls", nullptr,
-                                    std::exchange(s_controlsFirst, false) ? ImGuiTabItemFlags_SetSelected : 0))
+                                    std::exchange(s_controlsFirst, false) ? ImGuiTabItemFlags_SetSelected : tabFlags(1)))
             {
+                m_settingsTab = 1;
                 ImGui::BeginChild("controls-scroll", ImVec2(0.0f, -footerH));
                 ImGui::SeparatorText("Gamepad");
                 int layout = static_cast<int>(settings.gamepadLayout);
@@ -2616,8 +2637,9 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 m_captureAction = -1;
             }
 
-            if (ImGui::BeginTabItem("Mods"))
+            if (ImGui::BeginTabItem("Mods", nullptr, tabFlags(2)))
             {
+                m_settingsTab = 2;
                 ImGui::BeginChild("mods-scroll", ImVec2(0.0f, -footerH));
                 ImGui::TextWrapped("Put each mod in its own folder inside the mods folder. PCSX2 texture packs "
                                    "for SLUS-21590 work as they are.");
@@ -2679,6 +2701,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
+            m_settingsTabRequest = -1;
         }
         ImGui::PopItemWidth();
 
@@ -2686,7 +2709,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
         changed |= ImGui::Checkbox("Show this menu every time the game starts", &settings.showAtLaunch);
         if (launch)
         {
-            if (ImGui::Button("Start game"))
+            if (ImGui::Button("Start game") || ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false))
             {
                 ps2HostSettingsSave(); // also marks the first launch done
                 g_ps2LaunchMenuPending.store(false, std::memory_order_relaxed);
@@ -2698,7 +2721,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
             if (ImGui::Button("Close"))
                 open = false;
             ImGui::SameLine();
-            ImGui::TextDisabled("F2 opens/closes this menu");
+            ImGui::TextDisabled(IsGamepadAvailable(0) ? "F2 / Select+Start opens and closes this menu; Circle goes back"
+                                                      : "F2 opens/closes this menu");
         }
         ImGui::SameLine(columnW - ImGui::CalcTextSize("Quit to desktop").x - style.FramePadding.x * 2.0f);
         if (ImGui::Button("Quit to desktop"))
@@ -2721,6 +2745,12 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
         }
         ImGui::EndChild();
     }
+    // Controller: Circle (when not backing out of a list, slider or popup) or
+    // Options closes the menu.
+    if (!launch && m_captureAction < 0 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        ((ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::IsAnyItemActive()) ||
+         ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false)))
+        open = false;
     ImGui::End();
     ImGui::PopFont();
 

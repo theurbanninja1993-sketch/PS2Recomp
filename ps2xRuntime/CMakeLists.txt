@@ -122,8 +122,22 @@ else()
 
         set(PS2X_RLIMGUI_SOURCE_DIR "${rlimgui_SOURCE_DIR}")
 
+        # rlImGui's gamepad mapping swaps Square/Circle (B and X) and Start/Back;
+        # build a corrected copy so menu navigation uses Circle to go back.
+        file(READ "${PS2X_RLIMGUI_SOURCE_DIR}/rlImGui.cpp" PS2X_RLIMGUI_CPP)
+        string(REPLACE "GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, ImGuiKey_GamepadFaceLeft" "GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, ImGuiKey_GamepadFaceRight"
+               PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        string(REPLACE "GAMEPAD_BUTTON_RIGHT_FACE_LEFT, ImGuiKey_GamepadFaceRight" "GAMEPAD_BUTTON_RIGHT_FACE_LEFT, ImGuiKey_GamepadFaceLeft"
+               PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        string(REPLACE "GAMEPAD_BUTTON_MIDDLE_LEFT, ImGuiKey_GamepadStart" "GAMEPAD_BUTTON_MIDDLE_LEFT, ImGuiKey_GamepadBack"
+               PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        string(REPLACE "GAMEPAD_BUTTON_MIDDLE_RIGHT, ImGuiKey_GamepadBack" "GAMEPAD_BUTTON_MIDDLE_RIGHT, ImGuiKey_GamepadStart"
+               PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        set(PS2X_RLIMGUI_PATCHED "${CMAKE_CURRENT_BINARY_DIR}/rlImGui_patched.cpp")
+        file(CONFIGURE OUTPUT "${PS2X_RLIMGUI_PATCHED}" CONTENT "${PS2X_RLIMGUI_CPP}" @ONLY)
+
         add_library(rlImGui STATIC
-            "${PS2X_RLIMGUI_SOURCE_DIR}/rlImGui.cpp"
+            "${PS2X_RLIMGUI_PATCHED}"
         )
         target_include_directories(rlImGui PUBLIC "${PS2X_RLIMGUI_SOURCE_DIR}")
         target_link_libraries(rlImGui PUBLIC raylib imgui)
