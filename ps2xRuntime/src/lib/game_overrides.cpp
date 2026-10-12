@@ -301,6 +301,7 @@ namespace
     {
         const uint32_t player = getRegU32(ctx, 4);
         g_vcsOrigMovieFinished(rdram, ctx, runtime);
+        ps2_stubs::pumpMpegAudio(rdram, ctx, runtime); // the soundtrack outlasts the demux calls
         if (getRegU32(ctx, 2) == 0u && ps2_stubs::isMpegStreamFinished(player, runtime))
         {
             setReturnS32(ctx, 1);
@@ -963,6 +964,9 @@ namespace
         // libmpeg sceMpegIsEnd (`return mpeg->sys->active == 0`): the HLE decoder never
         // updates that internal field, so route it to the HLE end-of-stream check.
         ps2_game_overrides::bindAddressHandler(runtime, 0x00452F68u, "sceMpegIsEnd");
+        // The movie player stops taking audio once the file has been read, so
+        // demux must not run ahead of the soundtrack (logo / intro audio tails).
+        ps2_stubs::setMpegAudioThrottle(16u);
 
         vcsInstallCallCounters(runtime);
     }

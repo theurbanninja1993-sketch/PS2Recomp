@@ -1484,6 +1484,26 @@ namespace ps2_stubs
 
         void pumpAudioCallbacks(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 
+        // Audio pacing (0 = off): demux stops while more than this many audio
+        // packets wait for the game, and takes at most kThrottledDemuxBytes per
+        // call so one call can't queue seconds of audio. Without it the whole
+        // file is demuxed seconds ahead of the soundtrack; games that stop
+        // taking audio once the file has been read (VCS) then lose its tail.
+        std::atomic<size_t> g_mpegAudioThrottle{0u};
+        constexpr uint32_t kThrottledDemuxBytes = 32u * 1024u;
+
+        size_t mpegAudioThrottle()
+        {
+            static const char *s_env = std::getenv("PS2X_MPEG_AUDIO_THROTTLE");
+            return s_env ? std::strtoul(s_env, nullptr, 10) : g_mpegAudioThrottle.load(std::memory_order_relaxed);
+        }
+
+        uint32_t throttledDemuxBytes(const MpegPlaybackState &playback, uint32_t byteCount)
+        {
+            return mpegAudioThrottle() != 0u && playback.picturesServed != 0u ? std::min(byteCount, kThrottledDemuxBytes)
+                                                                                 : byteCount;
+        }
+
         bool mpegDemuxBackpressured(const MpegPlaybackState &playback)
         {
             // Audio the game has not taken yet (its buffer was full): stop
@@ -1492,8 +1512,10 @@ namespace ps2_stubs
             constexpr size_t kMaxPendingVideoBytes = 512u * 1024u;
             if (!g_mpeg_stub_state.currentCdStreamEofSeen && playback.pendingEsBytes > kMaxPendingVideoBytes)
                 return true;
-            static const size_t s_maxQueuedAudio = std::getenv("PS2X_MPEG_AUDIO_THROTTLE") ? std::strtoul(std::getenv("PS2X_MPEG_AUDIO_THROTTLE"), nullptr, 10) : 0u;
-            if (s_maxQueuedAudio != 0u && queuedAudioCallbacks() > s_maxQueuedAudio)
+            // Only once pictures are playing: the game fills its audio buffer and
+            // waits for the first picture before it starts draining that buffer.
+            const size_t maxQueuedAudio = mpegAudioThrottle();
+            if (maxQueuedAudio != 0u && playback.picturesServed != 0u && queuedAudioCallbacks() > maxQueuedAudio)
                 return true;
             // Let EOF finalization drain any tail that is already in the guest
             // ring, otherwise bound decode lead to a handful of pictures.
@@ -2076,6 +2098,16 @@ namespace ps2_stubs
         }
     }
 
+    void setMpegAudioThrottle(size_t maxQueuedPackets)
+    {
+        g_mpegAudioThrottle.store(maxQueuedPackets, std::memory_order_relaxed);
+    }
+
+    void pumpMpegAudio(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        pumpAudioCallbacks(rdram, ctx, runtime);
+    }
+
     bool isMpegStreamFinished(uint32_t mpegAddr, PS2Runtime *runtime)
     {
         // The demuxer reads the whole file well before the movie has been
@@ -2099,12 +2131,16 @@ namespace ps2_stubs
         bool finished = playback.decodedFrames.empty() && presentationComplete && !audioPending;
 
         static uint32_t s_lastServed = 0u;
+        static size_t s_lastAudio = 0u;
         static uint64_t s_lastProgressTick = 0u;
         static uint32_t s_lastMpeg = 0u;
-        if (s_lastMpeg != mpegAddr || s_lastServed != playback.picturesServed || s_lastProgressTick > tick)
+        const size_t audioQueued = queuedAudioCallbacks();
+        if (s_lastMpeg != mpegAddr || s_lastServed != playback.picturesServed || s_lastAudio != audioQueued ||
+            s_lastProgressTick > tick)
         {
             s_lastMpeg = mpegAddr;
             s_lastServed = playback.picturesServed;
+            s_lastAudio = audioQueued;
             s_lastProgressTick = tick;
         }
         const bool stalled = !finished && runtime && tick - s_lastProgressTick > 120u;
@@ -2118,9 +2154,9 @@ namespace ps2_stubs
             if (finished || frame >= s_lastLog + 300u)
             {
                 s_lastLog = frame;
-                std::fprintf(stderr, "[mpeg:fin] f=%llu finished=%d stalled=%d served=%u queued=%zu audio=%d\n",
+                std::fprintf(stderr, "[mpeg:fin] f=%llu finished=%d stalled=%d served=%u queued=%zu audio=%zu\n",
                              (unsigned long long)frame, finished ? 1 : 0, stalled ? 1 : 0, playback.picturesServed,
-                             playback.decodedFrames.size(), audioPending ? 1 : 0);
+                             playback.decodedFrames.size(), audioQueued);
             }
         }
         return finished;
@@ -2420,7 +2456,7 @@ namespace ps2_stubs
             backpressured = mpegDemuxBackpressured(playback);
             if (!backpressured)
             {
-                consumed = appendGuestBytes(mpegAddr, playback, rdram, dataAddr, byteCount, callbackEvents);
+                consumed = appendGuestBytes(mpegAddr, playback, rdram, dataAddr, throttledDemuxBytes(playback, byteCount), callbackEvents);
                 recordCdStreamBytesDemuxedUnlocked(consumed, completedMpegIds, eofChanged);
             }
             decodedCount = playback.decodedFrames.size();
@@ -2528,7 +2564,7 @@ namespace ps2_stubs
                     playback,
                     rdram,
                     dataAddr,
-                    availableBytes,
+                    throttledDemuxBytes(playback, availableBytes),
                     ringBaseAddr,
                     ringSize,
                     callbackEvents);

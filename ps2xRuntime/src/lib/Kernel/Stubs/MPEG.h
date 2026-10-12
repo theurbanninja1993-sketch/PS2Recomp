@@ -12,6 +12,11 @@ namespace ps2_stubs
     // True once the stream feeding this MPEG has hit producer EOF and its end code
     // and every decoded picture and audio packet has been delivered (or stalled).
     bool isMpegStreamFinished(uint32_t mpegAddr, PS2Runtime *runtime);
+    // Offers the next queued audio packet to the game (normally done by demux
+    // calls, which stop once the whole movie file has been read).
+    // Pace demuxing by the audio the game has taken (0 = off; see MPEG.cpp).
+    void setMpegAudioThrottle(size_t maxQueuedPackets);
+    void pumpMpegAudio(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceMpegFlush(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceMpegAddBs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceMpegAddCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
