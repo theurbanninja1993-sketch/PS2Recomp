@@ -1,0 +1,24 @@
+# Builder / launcher manifest for one game (see docs/vcs-handoff.md).
+[game]
+id = "SLUS_215.90"
+name = "Grand Theft Auto: Vice City Stories"
+region = "NTSC-U"
+# XXH3-128 of the boot ELF on the disc (ps2x_iso hash <image>).
+boot_file = "SLUS_215.90"
+boot_hash_xxh3_128 = "7f69b961cc427e3dcfd6582e25362be8"
+
+[recompiler]
+# The builder writes a copy with absolute paths: [general] input = the
+# extracted boot ELF, ghidra_output = function_map, output = a work folder.
+config = "config/vcs_clean.toml"
+function_map = "config/vcs_clean.csv"
+
+[runtime]
+# Name passed to PS2_REGISTER_GAME_OVERRIDE (ps2xRuntime/src/lib/game_overrides.cpp).
+override = "GTA Vice City Stories (SLUS_215.90)"
+
+[vu1]
+# Automated PS2X_VU1_LEARN passes after the first build (intro + fast-boot script).
+learn_passes = 2
+learn_pad_script = "1000:cross:10;1200:cross:10;1400:cross:10;1600:cross:10;1800:cross:10;2000:cross:10;2200:cross:10"
+learn_frames = 3200

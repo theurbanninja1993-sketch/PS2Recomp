@@ -184,6 +184,19 @@ texture packs from `mods/`, Windows build under Wine.
         and runs under Wine. Known-good boot ELF hash (XXH3-128):
         `/SLUS_215.90 = 7f69b961cc427e3dcfd6582e25362be8`. The manifest
         should check this.
+        **Requested: read from a physical DVD drive** (owner's idea, like
+        PCSX2). PS2 DVDs are plain ISO9660 to a PC drive, so `IsoImage` can
+        read the device instead of a file:
+        - Linux: `/dev/sr*` works with fopen (2048-byte sectors).
+        - Windows: use `CreateFileW(L"\\.\D:")` + `ReadFile` with
+          sector-aligned offsets/lengths, not fopen.
+        - Enumerate drives: Linux `/dev/sr*`; Windows `GetLogicalDrives` +
+          `GetDriveTypeW == DRIVE_CDROM`.
+        - Offer "extract straight from the disc" and "also save an .iso
+          backup".
+        - Blue CD-ROM PS2 games would need raw mode-2 reads (ioctl /
+          `IOCTL_CDROM_RAW_READ`). Not needed for VCS/LCS (DVDs).
+        - No drive on the dev machine: needs a tester with a drive.
      2. the wizard UI;
      3. drive `ps2recomp` + the compile with progress parsing;
      4. packaging the bundle per OS.
