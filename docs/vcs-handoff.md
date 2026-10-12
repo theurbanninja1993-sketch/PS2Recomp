@@ -156,8 +156,20 @@ texture packs from `mods/`, Windows build under Wine.
 
        More passes keep closing the gap. Programs whose JR targets depend on
        co-resident code need runs under each layout.
+     - **Plugin implemented:** `-DPS2X_VU1_PLUGIN_PROGRAMS=<vu1_recomp outdir>`
+       builds `vu1_programs.so`/`.dll` next to the runner (target
+       `ps2_vu1_plugin`). The game loads it at startup (or from
+       `PS2X_VU1_PLUGIN`) and merges its programs with the built-in table.
+       The plugin links nothing from the game: the 6 interpreter methods
+       compiled code calls go through `Ps2xVu1HostApi`
+       (`ps2_vu1_plugin.h`, shim in `src/lib/vu/ps2_vu1_plugin_shim.cpp`).
+       Version + `sizeof(VU1Interpreter)` are checked, so the plugin must
+       come from the same build/headers.
+       Tested on Linux: a runner with no built-in programs + the 2-pass
+       learned plugin ran ~90% of VU1 calls compiled, 0 late frames. The
+       Windows DLL is not tested yet.
      - Next steps:
-       - a plugin library loaded at startup instead of relinking the exe;
+       - test the Windows DLL;
        - merging learned files across sessions;
        - possibly more runs per key;
        - the builder running 2-3 automated learning passes (the intro plus

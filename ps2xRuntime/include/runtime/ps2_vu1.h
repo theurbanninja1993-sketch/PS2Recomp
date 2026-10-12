@@ -102,6 +102,7 @@ public:
 
 private:
     friend struct VU1Jit;
+    friend struct VU1PluginHost; // ps2_vu1_programs.cpp: the plugin host table
     friend class VU1Recompiler;
 
     enum Pipeline : uint8_t

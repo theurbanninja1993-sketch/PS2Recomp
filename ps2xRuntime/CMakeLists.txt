@@ -731,6 +731,27 @@ if(NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
             target_link_libraries(ps2EntryRunner PRIVATE ps2_vu1_programs)
         endif()
     endif()
+
+    # PS2X_VU1_PLUGIN_PROGRAMS: vu1_recomp output built as a plugin
+    # (vu1_programs.so / .dll next to the runner) that the game loads at
+    # startup - for programs learned with PS2X_VU1_LEARN, no relink needed.
+    set(PS2X_VU1_PLUGIN_PROGRAMS "" CACHE PATH "Directory of generated VU1 programs to build as the startup plugin")
+    if(PS2X_VU1_PLUGIN_PROGRAMS AND EXISTS "${PS2X_VU1_PLUGIN_PROGRAMS}/vu1_programs.cpp")
+        file(GLOB PS2X_VU1_PLUGIN_SOURCES CONFIGURE_DEPENDS "${PS2X_VU1_PLUGIN_PROGRAMS}/*.cpp")
+        add_library(ps2_vu1_plugin SHARED ${PS2X_VU1_PLUGIN_SOURCES} src/lib/vu/ps2_vu1_plugin_shim.cpp)
+        # Headers only: the interpreter methods come from the game (shim).
+        target_include_directories(ps2_vu1_plugin PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu
+            $<TARGET_PROPERTY:ps2_runtime,INTERFACE_INCLUDE_DIRECTORIES>
+            $<TARGET_PROPERTY:ps2_runtime,INCLUDE_DIRECTORIES>)
+        target_compile_definitions(ps2_vu1_plugin PRIVATE $<TARGET_PROPERTY:ps2_runtime,INTERFACE_COMPILE_DEFINITIONS>)
+        target_compile_options(ps2_vu1_plugin PRIVATE -ffp-contract=off -frounding-math -O2)
+        set_target_properties(ps2_vu1_plugin PROPERTIES
+            OUTPUT_NAME vu1_programs PREFIX ""
+            CXX_VISIBILITY_PRESET hidden
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
 endif()
 
 # Offline GS rasterizer benchmark (see tools/gs_replay.cpp); not built by default.

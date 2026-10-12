@@ -1,5 +1,7 @@
 #include "runtime/ps2_vu1.h"
 #include "runtime/ps2_memory.h"
+#include "runtime/ps2_platform.h"
+#include "runtime/ps2_vu1_plugin.h"
 #include "ps2_vu1_jit.h"
 
 #include <algorithm>
@@ -7,6 +9,69 @@
 #include <cstring>
 #include <iostream>
 #include <unordered_map>
+#include <filesystem>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+struct VU1PluginHost
+{
+    static const Ps2xVu1HostApi &api()
+    {
+        static const Ps2xVu1HostApi s_api = {
+            kPs2xVu1PluginVersion,
+            static_cast<uint32_t>(sizeof(VU1Interpreter)),
+            [](VU1Interpreter &vu, uint32_t instr, uint8_t *data, uint32_t size, GS &gs, PS2Memory *memory, uint32_t upper)
+            { vu.execLower(instr, data, size, gs, memory, upper); },
+            [](VU1Interpreter &vu, float *result, uint8_t dest, uint8_t *laneFlags)
+            { vu.normalizeFmacResult(result, dest, laneFlags); },
+            [](VU1Interpreter &vu) { vu.commitReadyPipelines(); },
+            [](VU1Interpreter &vu, uint64_t cycle) { vu.advanceTo(cycle); },
+            [](VU1Interpreter &vu) { vu.progressXgkick(); },
+            [](VU1Interpreter &vu, bool upper, uint32_t instruction) { vu.reportReservedInstruction(upper, instruction); },
+        };
+        return s_api;
+    }
+
+    // vu1_programs.so / .dll next to the executable, or PS2X_VU1_PLUGIN.
+    static const VU1CompiledProgram *load(size_t &count)
+    {
+        count = 0;
+        std::filesystem::path path;
+        if (const char *env = std::getenv("PS2X_VU1_PLUGIN"); env && *env)
+            path = env;
+        else
+#if defined(_WIN32)
+            path = ps2ExecutableDirectory() / "vu1_programs.dll";
+#else
+            path = ps2ExecutableDirectory() / "vu1_programs.so";
+#endif
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec))
+            return nullptr;
+#if defined(_WIN32)
+        HMODULE module = LoadLibraryW(path.wstring().c_str());
+        auto entry = module ? reinterpret_cast<Ps2xVu1PluginEntry>(reinterpret_cast<void *>(GetProcAddress(module, PS2X_VU1_PLUGIN_ENTRY)))
+                            : nullptr;
+#else
+        void *module = dlopen(path.string().c_str(), RTLD_NOW | RTLD_LOCAL);
+        auto entry = module ? reinterpret_cast<Ps2xVu1PluginEntry>(dlsym(module, PS2X_VU1_PLUGIN_ENTRY)) : nullptr;
+#endif
+        const VU1CompiledProgram *programs = entry ? entry(&api(), &count) : nullptr;
+        if (programs)
+            std::cerr << "[vu1] " << count << " compiled programs from " << path.string() << std::endl;
+        else
+            std::cerr << "[vu1] ignoring " << path.string() << " (not a matching VU1 program plugin)" << std::endl;
+        return programs;
+    }
+};
 
 // Generated programs (tools/vu1_recomp.cpp) define these; without them no
 // program is compiled.
@@ -30,6 +95,10 @@ namespace
             if (&g_ps2Vu1CompiledProgramCount != nullptr && &g_ps2Vu1CompiledPrograms != nullptr)
                 for (size_t i = 0; i < g_ps2Vu1CompiledProgramCount; ++i)
                     programs.emplace(g_ps2Vu1CompiledPrograms[i].key, &g_ps2Vu1CompiledPrograms[i]);
+            size_t pluginCount = 0;
+            if (const VU1CompiledProgram *plugin = VU1PluginHost::load(pluginCount))
+                for (size_t i = 0; i < pluginCount; ++i)
+                    programs.emplace(plugin[i].key, &plugin[i]);
             if (std::getenv("PS2X_VU1_NO_COMPILED"))
                 programs.clear();
             return programs;
