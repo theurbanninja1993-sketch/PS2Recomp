@@ -2293,11 +2293,12 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     }
     if (showLogo)
     {
-        const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
-        const float logoW = 200.0f * scale;
+        // Sized/placed to match the game's own station pop-up (top-centre) so
+        // it covers the "Radio Off" logo drawn underneath.
+        const float logoW = static_cast<float>(GetScreenWidth()) * 0.26f;
         const float logoH = logoW * static_cast<float>(s_customLogo.height) / static_cast<float>(s_customLogo.width);
-        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth()) * 0.5f, 14.0f * scale), ImGuiCond_Always,
-                                ImVec2(0.5f, 0.0f));
+        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth()) * 0.5f, static_cast<float>(GetScreenHeight()) * 0.04f),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.0f));
         if (ImGui::Begin("##custom-logo", nullptr,
                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
