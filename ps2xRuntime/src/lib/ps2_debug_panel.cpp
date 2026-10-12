@@ -2716,6 +2716,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ps2HostSettingsSave();
                     ps2ModsRefresh();
                 }
+                if (ImGui::Checkbox("Apply .pnach memory patches", &settings.pnachCheats))
+                    ps2HostSettingsSave();
                 if (!ps2HostSettingsGpuRenderer())
                     ImGui::TextDisabled("Texture packs need the GPU renderer (PS2X_GS_GPU=1).");
                 ImGui::Spacing();
@@ -2751,7 +2753,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                         if (mod.textures)
                             ImGui::Text("%zu replacement textures", mod.textures);
                         if (mod.patches)
-                            ImGui::TextDisabled("%zu patch files (not supported yet)", mod.patches);
+                            ImGui::Text("%zu memory patches", mod.patches);
                         if (!mod.textures && !mod.patches)
                             ImGui::TextDisabled("nothing this version can use");
                     }

@@ -3078,6 +3078,7 @@ void PS2Runtime::run()
         if (IsKeyPressed(KEY_F10))
             ps2MusicStationNextTrack();
         ps2MusicStationUpdate(m_memory.getRDRAM());
+        ps2ModsApplyPatches(m_memory.getRDRAM());
         if (IsKeyPressed(KEY_F9))
             ps2GsRequestCapture(180u); // ~3 s of GS input for tools/gs_replay
 #if !defined(PLATFORM_VITA)

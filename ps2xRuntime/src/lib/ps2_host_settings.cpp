@@ -248,6 +248,8 @@ void ps2HostSettingsLoad()
             s.controllerName = value;
         else if (key == "texture_replacement")
             s.textureReplacement = std::atoi(v) != 0;
+        else if (key == "pnach_cheats")
+            s.pnachCheats = std::atoi(v) != 0;
         else if (key == "mods_disabled")
         {
             s.disabledMods.clear();
@@ -340,7 +342,8 @@ void ps2HostSettingsSave()
     }
     out << "# PS2Recomp host settings (also editable in game: F2)\n"
         << "show_at_launch=" << (s.showAtLaunch ? 1 : 0) << "\n"
-        << "texture_replacement=" << (s.textureReplacement ? 1 : 0) << "\n";
+        << "texture_replacement=" << (s.textureReplacement ? 1 : 0) << "\n"
+        << "pnach_cheats=" << (s.pnachCheats ? 1 : 0) << "\n";
     out << "mods_disabled=";
     for (size_t i = 0; i < s.disabledMods.size(); ++i)
         out << (i ? "|" : "") << s.disabledMods[i];

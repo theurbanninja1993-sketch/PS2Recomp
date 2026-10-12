@@ -88,6 +88,7 @@ struct PS2HostSettings
     float musicStationVolume = 0.8f;
     bool musicShuffle = true;
     bool textureReplacement = true;     // apply texture packs from the mods folder
+    bool pnachCheats = true;            // apply .pnach memory patches from enabled mods
     std::vector<std::string> disabledMods; // mod folder names switched off
     bool showAtLaunch = false; // open the settings before the game starts, every launch (always on the first)
 

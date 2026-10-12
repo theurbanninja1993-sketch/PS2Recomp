@@ -3,14 +3,18 @@
 
 #include "runtime/gs/gs_texture_replacements.h"
 #include "runtime/ps2_host_settings.h"
+#include "runtime/ps2_memory.h" // PS2_RAM_SIZE
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -18,6 +22,7 @@ namespace fs = std::filesystem;
 namespace
 {
     std::vector<PS2ModInfo> g_mods;
+    std::vector<PS2PnachEntry> g_pnach;
 
     bool lowerEndsWith(const std::string &s, const char *suffix)
     {
@@ -26,6 +31,63 @@ namespace
         const std::string tail(suffix);
         return lower.size() >= tail.size() && lower.compare(lower.size() - tail.size(), tail.size(), tail) == 0;
     }
+
+    std::string trim(std::string_view text)
+    {
+        size_t begin = 0;
+        size_t end = text.size();
+        while (begin < end && std::isspace(static_cast<unsigned char>(text[begin])))
+            ++begin;
+        while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])))
+            --end;
+        return std::string(text.substr(begin, end - begin));
+    }
+}
+
+std::vector<PS2PnachEntry> ps2PnachParse(std::string_view text)
+{
+    std::vector<PS2PnachEntry> entries;
+    std::istringstream lines{std::string(text)};
+    std::string line;
+    while (std::getline(lines, line))
+    {
+        const std::string stripped = trim(line);
+        if (stripped.size() < 6 || stripped.compare(0, 6, "patch=") != 0)
+            continue; // comments, "gametitle=...", blank lines
+        // patch=ENABLE,CPU,ADDRESS,TYPE,VALUE
+        std::string field;
+        std::vector<std::string> fields;
+        std::istringstream body(stripped.substr(6));
+        while (std::getline(body, field, ','))
+            fields.push_back(trim(field));
+        if (fields.size() < 5 || fields[0] != "1")
+            continue; // disabled patch
+        // EE physical address: strip the 0x20xxxxxx uncached / 0x80xxxxxx /
+        // 0xA0xxxxxx kernel mirrors, then require it to land in main RAM.
+        const uint32_t address = static_cast<uint32_t>(std::strtoul(fields[2].c_str(), nullptr, 16)) & 0x1FFFFFFFu;
+        if (address >= PS2_RAM_SIZE)
+            continue; // MMIO registers / scratchpad
+        uint8_t size = 0;
+        const std::string &type = fields[3];
+        if (type == "byte")
+            size = 1;
+        else if (type == "short")
+            size = 2;
+        else if (type == "word")
+            size = 4;
+        else
+            continue; // "extended" / conditional codes are not supported
+        if (address + size > PS2_RAM_SIZE)
+            continue;
+        const uint32_t value = static_cast<uint32_t>(std::strtoul(fields[4].c_str(), nullptr, 16));
+        // Conditional/pointer code words (0xD0..0xDF, 0xE0..0xEF, 0x50..0x5F)
+        // are program, not data; writing them would corrupt the game.
+        if (size == 4 && ((value & 0xF0000000u) == 0xD0000000u || (value & 0xF0000000u) == 0xE0000000u ||
+                          (value & 0xFF000000u) == 0x50000000u))
+            continue;
+        entries.push_back(PS2PnachEntry{address, size, value});
+    }
+    return entries;
 }
 
 std::string ps2ModsDirectory()
@@ -64,6 +126,7 @@ void ps2ModsRefresh()
     std::sort(mods.begin(), mods.end(), [](const PS2ModInfo &a, const PS2ModInfo &b) { return a.name < b.name; });
 
     auto index = std::make_shared<gsrepl::Index>();
+    std::vector<PS2PnachEntry> pnach;
     for (PS2ModInfo &mod : mods)
     {
         for (auto it = fs::recursive_directory_iterator(mod.path, fs::directory_options::skip_permission_denied, ec);
@@ -81,16 +144,45 @@ void ps2ModsRefresh()
                     index->files[*key] = it->path().string();
             }
             else if (lowerEndsWith(fileName, ".pnach"))
-                ++mod.patches;
+            {
+                std::ifstream file(it->path(), std::ios::binary);
+                if (!file)
+                    continue;
+                const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                std::vector<PS2PnachEntry> parsed = ps2PnachParse(text);
+                mod.patches += parsed.size();
+                if (mod.enabled)
+                    pnach.insert(pnach.end(), parsed.begin(), parsed.end());
+            }
             else
                 ++mod.otherFiles;
         }
         std::cerr << "[mods] " << mod.name << (mod.enabled ? "" : " (disabled)") << ": " << mod.textures
-                  << " replacement textures" << std::endl;
+                  << " replacement textures, " << mod.patches << " memory patches" << std::endl;
     }
     g_mods = std::move(mods);
+    g_pnach = std::move(pnach);
     gsrepl::setCurrent(settings.textureReplacement && !index->files.empty() ? std::shared_ptr<const gsrepl::Index>(index)
                                                                             : nullptr);
+}
+
+void ps2PnachApply(const std::vector<PS2PnachEntry> &entries, uint8_t *ram, size_t ramSize)
+{
+    if (ram == nullptr)
+        return;
+    for (const PS2PnachEntry &entry : entries)
+    {
+        if (entry.size == 0u || entry.address + entry.size > ramSize)
+            continue;
+        std::memcpy(ram + entry.address, &entry.value, entry.size);
+    }
+}
+
+void ps2ModsApplyPatches(uint8_t *rdram)
+{
+    if (rdram == nullptr || g_pnach.empty() || !ps2HostSettings().pnachCheats)
+        return;
+    ps2PnachApply(g_pnach, rdram, PS2_RAM_SIZE);
 }
 
 void ps2ModsSetEnabled(const std::string &name, bool enabled)
