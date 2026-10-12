@@ -17,6 +17,8 @@
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
 #include "imgui.h"
 #include "rlImGui.h"
+// Our patched rlImGui (see CMakeLists.txt) asks this which controller to read.
+extern int (*g_ps2xImGuiPadSelector)();
 #include "raylib.h"
 #endif
 
@@ -2187,6 +2189,7 @@ void PS2DebugPanel::initialize()
     {
         rlImGuiSetup(true);
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad; // menus work with a controller
+        g_ps2xImGuiPadSelector = &ps2ActiveGamepad;                     // ...the one the game uses
         m_initialized = true;
     }
 #endif

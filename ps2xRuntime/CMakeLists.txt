@@ -138,7 +138,7 @@ else()
         string(REPLACE "IsGamepadButtonPressed(0, " "IsGamepadButtonPressed(ps2xImGuiPad(), " PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
         string(REPLACE "IsGamepadButtonReleased(0, " "IsGamepadButtonReleased(ps2xImGuiPad(), " PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
         string(REPLACE "GetGamepadAxisMovement(0, " "GetGamepadAxisMovement(ps2xImGuiPad(), " PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
-        string(REPLACE "#include \"rlImGui.h\"" "#include \"rlImGui.h\"\nstatic int ps2xImGuiPad() { for (int i = 0; i < 4; ++i) if (IsGamepadAvailable(i)) return i; return 0; }"
+        string(REPLACE "#include \"rlImGui.h\"" "#include \"rlImGui.h\"\nint (*g_ps2xImGuiPadSelector)() = nullptr;\nstatic int ps2xImGuiPad() { if (g_ps2xImGuiPadSelector) { const int pad = g_ps2xImGuiPadSelector(); return pad < 0 ? 0 : pad; } for (int i = 0; i < 4; ++i) if (IsGamepadAvailable(i)) return i; return 0; }"
                PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
         set(PS2X_RLIMGUI_PATCHED "${CMAKE_CURRENT_BINARY_DIR}/rlImGui_patched.cpp")
         file(CONFIGURE OUTPUT "${PS2X_RLIMGUI_PATCHED}" CONTENT "${PS2X_RLIMGUI_CPP}" @ONLY)
