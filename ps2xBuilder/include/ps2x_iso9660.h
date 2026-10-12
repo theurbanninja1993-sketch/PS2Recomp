@@ -48,11 +48,16 @@ namespace ps2x
         bool readDirectory(const std::string &prefix, uint32_t lba, uint32_t size, int depth);
 
         std::FILE *m_file = nullptr;
+        void *m_device = nullptr;       // Windows: HANDLE of an optical drive (sector-aligned reads)
         uint32_t m_sectorSize = 2048;   // bytes per sector in the image file
         uint32_t m_dataOffset = 0;      // user data offset inside a raw sector
         std::vector<IsoEntry> m_entries;
         std::string m_volumeId;
     };
+
+    // Optical drives that can be passed to IsoImage::open: "/dev/sr0" on
+    // Linux, "D:" on Windows. A PS2 DVD in a PC drive reads as plain ISO9660.
+    std::vector<std::string> opticalDrives();
 
     // The PS2 boot file named by SYSTEM.CNF ("BOOT2 = cdrom0:\SLUS_215.90;1"),
     // or empty.

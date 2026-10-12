@@ -196,7 +196,15 @@ texture packs from `mods/`, Windows build under Wine.
           backup".
         - Blue CD-ROM PS2 games would need raw mode-2 reads (ioctl /
           `IOCTL_CDROM_RAW_READ`). Not needed for VCS/LCS (DVDs).
-        - No drive on the dev machine: needs a tester with a drive.
+        - **Implemented (untested on hardware):** `ps2x::opticalDrives()` and
+          `IsoImage::open("/dev/sr0" | "D:")`, plus `ps2x_iso drives`. The
+          owner has an external Blu-ray drive: test with `ps2x_iso drives`,
+          then `ps2x_iso info|hash /dev/sr0` (expect the boot hash above).
+        - Regeneration check (2026-10-12): `ps2_recomp` with
+          `games/vcs/config/vcs_clean.toml` (paths made absolute) takes ~2.4 s
+          and reproduces `ps2xRuntime/src/runner` (10,225 files) and both
+          headers byte-for-byte. The builder's recompile step is
+          deterministic.
      2. the wizard UI;
      3. drive `ps2recomp` + the compile with progress parsing;
      4. packaging the bundle per OS.

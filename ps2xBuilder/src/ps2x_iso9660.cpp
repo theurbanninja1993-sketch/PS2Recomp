@@ -1,3 +1,11 @@
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "ps2x_iso9660.h"
 
 #include <algorithm>
@@ -37,11 +45,29 @@ namespace ps2x
         if (m_file)
             std::fclose(m_file);
         m_file = nullptr;
+#if defined(_WIN32)
+        if (m_device)
+            CloseHandle(static_cast<HANDLE>(m_device));
+#endif
+        m_device = nullptr;
         m_entries.clear();
     }
 
     bool IsoImage::readSectors(uint32_t lba, uint32_t count, uint8_t *out)
     {
+#if defined(_WIN32)
+        if (m_device)
+        {
+            // Raw device reads must be whole, aligned sectors (out is sized in sectors).
+            LARGE_INTEGER offset;
+            offset.QuadPart = static_cast<LONGLONG>(uint64_t(lba) * 2048u);
+            if (!SetFilePointerEx(static_cast<HANDLE>(m_device), offset, nullptr, FILE_BEGIN))
+                return false;
+            DWORD read = 0;
+            const DWORD bytes = count * 2048u;
+            return ReadFile(static_cast<HANDLE>(m_device), out, bytes, &read, nullptr) && read == bytes;
+        }
+#endif
         if (m_sectorSize == 2048u)
             return seek64(m_file, uint64_t(lba) * 2048u) && std::fread(out, 2048u, count, m_file) == count;
         for (uint32_t i = 0; i < count; ++i)
@@ -56,8 +82,24 @@ namespace ps2x
     bool IsoImage::open(const std::string &imagePath, std::string &error)
     {
         close();
-        m_file = std::fopen(imagePath.c_str(), "rb");
-        if (!m_file)
+#if defined(_WIN32)
+        // "D:" (or "D:\\") names a drive: open the volume itself.
+        if ((imagePath.size() == 2 || imagePath.size() == 3) && imagePath[1] == ':')
+        {
+            const std::wstring device = L"\\\\.\\" + std::wstring(1, static_cast<wchar_t>(imagePath[0])) + L":";
+            HANDLE handle = CreateFileW(device.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle == INVALID_HANDLE_VALUE)
+            {
+                error = "can't open drive " + imagePath + " (is a disc inserted?)";
+                return false;
+            }
+            m_device = handle;
+        }
+        else
+#endif
+            m_file = std::fopen(imagePath.c_str(), "rb");
+        if (!m_file && !m_device)
         {
             error = "can't open " + imagePath;
             return false;
@@ -202,6 +244,32 @@ namespace ps2x
             if (!entry.directory)
                 total += entry.size;
         return total;
+    }
+
+    std::vector<std::string> opticalDrives()
+    {
+        std::vector<std::string> drives;
+#if defined(_WIN32)
+        const DWORD mask = GetLogicalDrives();
+        for (int i = 0; i < 26; ++i)
+        {
+            if (!(mask & (1u << i)))
+                continue;
+            const wchar_t root[] = {static_cast<wchar_t>(L'A' + i), L':', L'\\', 0};
+            if (GetDriveTypeW(root) == DRIVE_CDROM)
+                drives.push_back(std::string(1, static_cast<char>('A' + i)) + ":");
+        }
+#else
+        std::error_code ec;
+        for (const auto &entry : std::filesystem::directory_iterator("/dev", ec))
+        {
+            const std::string name = entry.path().filename().string();
+            if (name.size() > 2 && name.compare(0, 2, "sr") == 0 && std::isdigit(static_cast<unsigned char>(name[2])))
+                drives.push_back(entry.path().string());
+        }
+        std::sort(drives.begin(), drives.end());
+#endif
+        return drives;
     }
 
     std::string isoBootFile(IsoImage &image)

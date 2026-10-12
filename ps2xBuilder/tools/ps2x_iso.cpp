@@ -1,4 +1,5 @@
 // ps2x_iso: inspect / extract a PS2 disc image (test tool for the builder).
+//   ps2x_iso drives                    optical drives (/dev/sr0, D:) usable as <image>
 //   ps2x_iso info <image>              volume, boot file, file count, size
 //   ps2x_iso list <image>              every entry
 //   ps2x_iso hash <image> [path]       XXH3-128 of the boot file (or path)
@@ -15,6 +16,12 @@
 
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && std::string(argv[1]) == "drives")
+    {
+        for (const std::string &drive : ps2x::opticalDrives())
+            std::printf("%s\n", drive.c_str());
+        return 0;
+    }
     if (argc < 3)
     {
         std::fprintf(stderr, "usage: %s info|list|hash|extract <image> [path|outdir]\n", argv[0]);
