@@ -401,13 +401,30 @@ namespace
     }
 
     // The current in-vehicle radio station: 0..8 = the nine real stations,
-    // 9 = the game's leftover/unused station slot (see the music station).
-    // It is not byte 0x4E4755 (which is overloaded with radio *modes* 9..30);
-    // it is the station field at +0x2BA of the audio/vehicle entity. FUN_0018aad8
-    // (called every frame with a1 = that entity) applies and clamps it, so the
-    // wrapper below snapshots it each frame. 0xFF = not set yet.
+    // 9 = the game's silent "Radio Off" slot. The station field is at +0x2BA
+    // of the audio/vehicle entity (not byte 0x4E4755, which is overloaded with
+    // radio *modes* 9..30). FUN_0018aad8 (every frame, a1 = that entity) keeps
+    // the field; FUN_0018b8d8 (on each L1/R1 change) applies and wraps it.
+    // 0xFF = not set yet.
     std::atomic<uint32_t> g_vcsRadioStation{0xFFu};
-    PS2Runtime::RecompiledFunction g_vcsOrigRadioUpdate = nullptr;
+    // True when the player is on the injected "Custom Soundtracks" stop. The
+    // game has no spare station value (its field is clamped to 0..8 + 9), so
+    // the custom stop and Radio Off share value 9 and this flag says which one
+    // is selected. The music folder plays while it is set (in a vehicle).
+    std::atomic<bool> g_vcsCustomStation{false};
+    PS2Runtime::RecompiledFunction g_vcsOrigRadioUpdate = nullptr;     // FUN_0018aad8
+    PS2Runtime::RecompiledFunction g_vcsOrigRadioStationGet = nullptr; // FUN_0018b8d8
+    PS2Runtime::RecompiledFunction g_vcsFnRadioEntity = nullptr;       // FUN_1B5768(0x514A90)
+
+    uint32_t vcsRadioEntity(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!g_vcsFnRadioEntity)
+            return 0u;
+        R5900Context tmp = *ctx;
+        tmp.r[4] = _mm_set_epi64x(0, 0x00514A90); // a0 = the radio/vehicle global
+        g_vcsFnRadioEntity(rdram, &tmp, runtime);
+        return getRegU32(&tmp, 2);
+    }
 
     void vcsRadioUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -427,6 +444,61 @@ namespace
                 }
                 g_vcsRadioStation.store(station, std::memory_order_relaxed);
             }
+        }
+    }
+
+    // Runs when the game applies a station change (L1 = next, R1-like = prev).
+    // The custom stop is inserted after the last real station:
+    //   ... 6 7 8 [Custom Soundtracks] [Radio Off] 0 ...  and the reverse.
+    void vcsRadioStationGet(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        uint32_t delta = 0u;
+        std::memcpy(&delta, rdram + 0x0048613Cu, sizeof(delta));
+        const uint32_t previous = g_vcsRadioStation.load(std::memory_order_relaxed);
+        const bool custom = g_vcsCustomStation.load(std::memory_order_relaxed);
+        g_vcsOrigRadioStationGet(rdram, ctx, runtime);
+        uint32_t result = getRegU32(ctx, 2) & 0xFFu;
+        bool wantCustom = false;
+        bool override = false;
+        if (delta == 1u) // next
+        {
+            if (previous == 8u && !custom)
+            {
+                wantCustom = true; // 8 -> Custom
+                override = true;
+            }
+            else if (previous == 9u && custom)
+            {
+                override = true; // Custom -> off (the game went 9 -> 0)
+            }
+        }
+        else if (delta == 9u) // previous
+        {
+            if (previous == 0u)
+                override = true; // 0 -> off
+            else if (previous == 9u && !custom)
+            {
+                wantCustom = true; // off -> Custom
+                override = true;
+            }
+        }
+        if (override)
+        {
+            result = 9u; // the shared silent slot; the flag distinguishes them
+            const uint32_t entity = vcsRadioEntity(rdram, ctx, runtime);
+            if (entity >= 0x00100000u && entity + 0x2BAu < PS2_RAM_SIZE)
+                rdram[entity + 0x2BAu] = static_cast<uint8_t>(result);
+        }
+        setReturnU32(ctx, result);
+        g_vcsRadioStation.store(result, std::memory_order_relaxed);
+        g_vcsCustomStation.store(wantCustom, std::memory_order_relaxed);
+        static const bool s_trace = std::getenv("PS2X_RADIO_TRACE") != nullptr;
+        if (s_trace)
+        {
+            std::ostringstream out;
+            out << "[radio] change prev=" << previous << " delta=" << delta << " -> " << result
+                << (wantCustom ? " (custom)" : "");
+            std::cerr << out.str() << std::endl;
         }
     }
 
@@ -978,17 +1050,16 @@ namespace
             runtime.replaceFunction(0x0018F400u, &vcsSetFarClip);
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
+        g_vcsFnRadioEntity = runtime.lookupFunction(0x001B5768u);
         if ((g_vcsOrigRadioUpdate = runtime.lookupFunction(0x0018AAD8u)))
             runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);
-        // Custom Soundtracks station: play the music folder on the game's
-        // leftover/unused 10th station slot (the station field's value 9),
-        // while in a vehicle. That slot is the PC/PSP "custom tracks" station
-        // (GXT FEA_CSS = "CUSTOM SOUNDTRACKS:", HOOK_USE_CUSTOM_TRACKS, the
-        // CUSTOM_ITEM_TRACKS audio page), disabled on PS2. g_vcsRadioStation is
-        // the real station (entity +0x2BA), not byte 0x4E4755 which is
-        // overloaded with radio modes 9..30.
+        if ((g_vcsOrigRadioStationGet = runtime.lookupFunction(0x0018B8D8u)))
+            runtime.replaceFunction(0x0018B8D8u, &vcsRadioStationGet);
+        // Custom Soundtracks: the injected station stop between the last real
+        // station and Radio Off (see vcsRadioStationGet); the music folder plays
+        // there while in a vehicle.
         ps2MusicStationSetQuery([](const uint8_t *rdram)
-                                { return g_vcsRadioStation.load(std::memory_order_relaxed) == 9u && vcsPlayerInVehicle(rdram); });
+                                { return g_vcsCustomStation.load(std::memory_order_relaxed) && vcsPlayerInVehicle(rdram); });
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);
