@@ -33,6 +33,7 @@
 #include <ucontext.h>
 #endif
 #include <ctime>
+#include <filesystem>
 #if defined(__linux__)
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -869,15 +870,47 @@ bool PS2Runtime::syncCoreSubsystems()
                                          return true;
                                      }();
                                      (void)s_captureInit;
-                                     const bool capture = s_capture && s_captureLeft > 0u &&
-                                                          g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) >= s_captureStart;
-                                     if (capture)
+                                     bool capture = s_capture && s_captureLeft > 0u &&
+                                                    g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) >= s_captureStart;
+                                     // PS2X_VU1_LEARN=<dir>: record MSCALs of programs that have
+                                     // no compiled version (up to 4 runs per program, enough for
+                                     // vu1_recomp to trace their jump targets) to
+                                     // <dir>/vu1_learn_<time>.bin, in the PS2X_VU1_CAPTURE format.
+                                     static FILE *s_learn = nullptr;
+                                     static std::unordered_map<uint64_t, uint32_t> s_learned;
+                                     static const bool s_learnInit = [&]()
+                                     {
+                                         if (const char *dir = std::getenv("PS2X_VU1_LEARN"); dir && *dir)
+                                         {
+                                             std::error_code ec;
+                                             std::filesystem::create_directories(dir, ec);
+                                             const auto path = std::filesystem::path(dir) /
+                                                               ("vu1_learn_" + std::to_string(static_cast<long long>(std::time(nullptr))) + ".bin");
+                                             s_learn = std::fopen(path.string().c_str(), "wb");
+                                             if (s_learn)
+                                                 std::cerr << "[vu1:learn] recording uncompiled programs to " << path.string() << std::endl;
+                                         }
+                                         return true;
+                                     }();
+                                     (void)s_learnInit;
+                                     FILE *recordTo = capture ? s_capture : nullptr;
+                                     if (!recordTo && s_learn &&
+                                         !m_vu1.lookupCompiled(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, &m_memory, startPC))
+                                     {
+                                         uint32_t &runs = s_learned[ps2Vu1ProgramKey(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC & 0x3FF8u)];
+                                         if (runs < 4u)
+                                         {
+                                             ++runs;
+                                             recordTo = s_learn;
+                                         }
+                                     }
+                                     if (recordTo)
                                      {
                                          const uint32_t header[4] = {0x31555643u /* 'CVU1' */, startPC, top, itop};
-                                         std::fwrite(header, sizeof(header), 1, s_capture);
-                                         std::fwrite(&m_vu1.state(), sizeof(VU1State), 1, s_capture);
-                                         std::fwrite(m_memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, s_capture);
-                                         std::fwrite(m_memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, s_capture);
+                                         std::fwrite(header, sizeof(header), 1, recordTo);
+                                         std::fwrite(&m_vu1.state(), sizeof(VU1State), 1, recordTo);
+                                         std::fwrite(m_memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, recordTo);
+                                         std::fwrite(m_memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, recordTo);
                                      }
                                      {
                                          VuStatsScope statsScope(1, m_vu1.state().cycles);
@@ -885,10 +918,15 @@ bool PS2Runtime::syncCoreSubsystems()
                                                        m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                        m_gs, &m_memory, startPC, top, itop, 65536);
                                      }
+                                     if (recordTo)
+                                     {
+                                         std::fwrite(&m_vu1.state(), sizeof(VU1State), 1, recordTo);
+                                         std::fwrite(m_memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, recordTo);
+                                         if (recordTo == s_learn)
+                                             std::fflush(s_learn);
+                                     }
                                      if (capture)
                                      {
-                                         std::fwrite(&m_vu1.state(), sizeof(VU1State), 1, s_capture);
-                                         std::fwrite(m_memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, s_capture);
                                          if (--s_captureLeft == 0u)
                                          {
                                              std::fclose(s_capture);

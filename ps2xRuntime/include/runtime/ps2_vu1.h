@@ -343,9 +343,11 @@ private:
 public:
     bool ranFlaglessProgram() const { return m_ranFlagless; }
     void clearRanFlagless() { m_ranFlagless = false; }
+    // The compiled program for the code at startPC, or null (cached per code
+    // generation; also used by PS2X_VU1_LEARN to spot uncompiled programs).
+    VU1CompiledFn lookupCompiled(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t startPC);
 
 private:
-    VU1CompiledFn lookupCompiled(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t startPC);
 
     uint64_t m_cycle = 0;
     uint64_t m_nextWriteSequence = 0;

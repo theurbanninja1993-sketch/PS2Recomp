@@ -148,6 +148,20 @@ texture packs from `mods/`, Windows build under Wine.
 
    Test on a clean Wine prefix / Proton, and on real Windows before
    release.
+
+   **Future: "GTA Stories Collection" launcher.** The owner wants the
+   builder to grow into one frontend that builds and launches both VCS and
+   LCS (an LCS port is in progress separately). Design the builder around a
+   **per-game manifest** from the start:
+   - disc ID + hash;
+   - recompiler TOML + function map;
+   - the game's runtime overrides;
+   - display name and art;
+   - the default boot ELF.
+
+   UI: a library screen showing each game as Build (no disc yet) or Play,
+   with per-game mods and settings. Both games use the PS2Recomp runtime;
+   keep game-specific code behind `PS2_REGISTER_GAME_OVERRIDE`.
 2. **Custom radio station:** a `music` folder (MP3/OGG/FLAC/WAV) as an extra
    in-vehicle station, like the GTA III/VC PC "MP3 Player". Needs the VCS radio
    station selection + audio stream path found and decoded PCM injected.
