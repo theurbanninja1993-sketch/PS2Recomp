@@ -1,6 +1,9 @@
 #include "runtime/gs/gs_threaded_backend.h"
 
+#if defined(__linux__)
 #include <sys/syscall.h>
+#include <unistd.h>
+#endif
 #include <unistd.h>
 
 #include <algorithm>
@@ -272,8 +275,10 @@ std::atomic<int> g_ps2GsWorkerTid{0};
 
 void GSThreadedBackend::workerLoop(uint32_t index)
 {
+#if defined(__linux__)
     if (index == 0u)
-        g_ps2GsWorkerTid.store(static_cast<int>(syscall(SYS_gettid)));
+        g_ps2GsWorkerTid.store(static_cast<int>(syscall(SYS_gettid))); // PS2X_PC_SAMPLE_GS
+#endif
     Worker &self = *m_workers[index];
     GSRasterBackend &backend = *self.backend;
     uint64_t knownSlowest = 0; // see waitForFence

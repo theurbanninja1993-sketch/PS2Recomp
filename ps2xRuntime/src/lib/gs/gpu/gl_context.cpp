@@ -1,4 +1,145 @@
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h> // before gl_context.h, which otherwise defines APIENTRY itself
+#endif
+
 #include "runtime/gs/gpu/gl_context.h"
+
+#if defined(_WIN32)
+
+namespace gsgpu
+{
+    namespace
+    {
+        // WGL_ARB_create_context / _profile
+        constexpr int WGL_CONTEXT_MAJOR_VERSION_ARB = 0x2091;
+        constexpr int WGL_CONTEXT_MINOR_VERSION_ARB = 0x2092;
+        constexpr int WGL_CONTEXT_PROFILE_MASK_ARB = 0x9126;
+        constexpr int WGL_CONTEXT_CORE_PROFILE_BIT_ARB = 0x00000001;
+        using CreateContextAttribsFn = HGLRC(WINAPI *)(HDC, HGLRC, const int *);
+
+        const wchar_t *kWindowClass = L"ps2x-gsgpu";
+
+        // Extension functions come from wglGetProcAddress; the GL 1.1 core
+        // ones only from opengl32.dll itself.
+        void *glProc(const char *name)
+        {
+            PROC proc = wglGetProcAddress(name);
+            const auto value = reinterpret_cast<intptr_t>(proc);
+            if (value == 0 || value == 1 || value == 2 || value == 3 || value == -1)
+            {
+                static HMODULE s_opengl = LoadLibraryW(L"opengl32.dll");
+                proc = s_opengl ? GetProcAddress(s_opengl, name) : nullptr;
+            }
+            return reinterpret_cast<void *>(proc);
+        }
+    }
+
+    GLContext::~GLContext()
+    {
+        destroy();
+    }
+
+    bool GLContext::create(std::string &error)
+    {
+        // A hidden window only provides a pixel format; rendering goes to
+        // framebuffer objects.
+        HINSTANCE instance = GetModuleHandleW(nullptr);
+        static const bool s_registered = [instance]()
+        {
+            WNDCLASSW wc{};
+            wc.style = CS_OWNDC;
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = instance;
+            wc.lpszClassName = kWindowClass;
+            return RegisterClassW(&wc) != 0;
+        }();
+        (void)s_registered;
+        HWND window = CreateWindowExW(0, kWindowClass, L"", WS_OVERLAPPED, 0, 0, 16, 16, nullptr, nullptr, instance, nullptr);
+        if (!window)
+        {
+            error = "CreateWindowEx failed";
+            return false;
+        }
+        HDC dc = GetDC(window);
+        PIXELFORMATDESCRIPTOR pfd{};
+        pfd.nSize = sizeof(pfd);
+        pfd.nVersion = 1;
+        pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+        pfd.iPixelType = PFD_TYPE_RGBA;
+        pfd.cColorBits = 32;
+        pfd.cDepthBits = 24;
+        pfd.cStencilBits = 8;
+        const int format = ChoosePixelFormat(dc, &pfd);
+        if (format == 0 || !SetPixelFormat(dc, format, &pfd))
+        {
+            ReleaseDC(window, dc);
+            DestroyWindow(window);
+            error = "no OpenGL pixel format";
+            return false;
+        }
+        HGLRC legacy = wglCreateContext(dc);
+        if (!legacy || !wglMakeCurrent(dc, legacy))
+        {
+            if (legacy)
+                wglDeleteContext(legacy);
+            ReleaseDC(window, dc);
+            DestroyWindow(window);
+            error = "wglCreateContext failed";
+            return false;
+        }
+        auto createContextAttribs = reinterpret_cast<CreateContextAttribsFn>(wglGetProcAddress("wglCreateContextAttribsARB"));
+        const int attributes[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, 6,
+                                  WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
+        HGLRC context = createContextAttribs ? createContextAttribs(dc, nullptr, attributes) : nullptr;
+        wglMakeCurrent(nullptr, nullptr);
+        wglDeleteContext(legacy);
+        if (!context || !wglMakeCurrent(dc, context))
+        {
+            if (context)
+                wglDeleteContext(context);
+            ReleaseDC(window, dc);
+            DestroyWindow(window);
+            error = "wglCreateContextAttribsARB (GL 4.6 core) failed";
+            return false;
+        }
+        m_display = window;
+        m_dc = dc;
+        m_context = context;
+
+#define GSGPU_LOAD(type, name)                                                            \
+    gl.name = reinterpret_cast<type>(glProc(#name));                                      \
+    if (!gl.name)                                                                         \
+    {                                                                                     \
+        error = "missing GL function " #name;                                             \
+        destroy();                                                                        \
+        return false;                                                                     \
+    }
+        GSGPU_GL_FUNCTIONS(GSGPU_LOAD)
+#undef GSGPU_LOAD
+        return true;
+    }
+
+    void GLContext::destroy()
+    {
+        if (!m_display)
+            return;
+        wglMakeCurrent(nullptr, nullptr);
+        if (m_context)
+            wglDeleteContext(static_cast<HGLRC>(m_context));
+        if (m_dc)
+            ReleaseDC(static_cast<HWND>(m_display), static_cast<HDC>(m_dc));
+        DestroyWindow(static_cast<HWND>(m_display));
+        m_context = nullptr;
+        m_dc = nullptr;
+        m_display = nullptr;
+    }
+}
+
+#else
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -92,3 +233,5 @@ namespace gsgpu
         m_display = nullptr;
     }
 }
+
+#endif

@@ -29,10 +29,14 @@
 #include <thread>
 #include <unordered_map>
 #include <csignal>
+#if defined(__linux__)
 #include <ucontext.h>
+#endif
 #include <ctime>
+#if defined(__linux__)
 #include <sys/syscall.h>
 #include <unistd.h>
+#endif
 #include <sstream>
 
 static void ps2Vu1TraceMscal(const uint8_t *vu1Data, uint32_t startPC, uint32_t top, uint32_t itop);
@@ -1356,6 +1360,7 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
 }
 
 
+#if defined(__linux__)
 // PS2X_PC_SAMPLE=<file>[,<startFrame>]: SIGPROF-based sampling of the guest PC on
 // the game thread (every 100 us of game-thread CPU time, from startFrame on),
 // written as raw little-endian u32 PCs. Unlike PS2X_COUNT_CALLS this also sees
@@ -1482,6 +1487,15 @@ namespace
         }
     }
 }
+#else
+// The PC sampler uses Linux per-thread CPU timers and SIGPROF.
+namespace
+{
+    void startPcSampling(PS2Runtime *) {}
+    void writePcSamples() {}
+}
+void ps2PcSampleCurrentThread() {}
+#endif
 
 // PS2X_VU1_TRACE=<frame>[,<count>]: from that presented frame on, log <count> (default 8)
 // VU1 microprogram starts with the input buffer at TOP, plus the GIF packets they XGKICK.

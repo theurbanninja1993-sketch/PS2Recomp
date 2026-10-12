@@ -3,6 +3,7 @@
 #endif
 #include <cstdlib>
 #include "ps2_runtime.h"
+#include "runtime/ps2_platform.h"
 #include "games_database.h"
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
 #include "ps2_debug_panel.h"
@@ -151,6 +152,22 @@ namespace
             std::cout << "Using argv boot path" << std::endl;
             return std::filesystem::path(argv[1]);
         }
+        // No argument: the disc's files in a "game" folder next to the
+        // executable (the boot file is the SLUS_/SLES_/SCUS_... one).
+        {
+            std::error_code ec;
+            const std::filesystem::path gameDir = ps2ExecutableDirectory() / "game";
+            for (const auto &entry : std::filesystem::directory_iterator(gameDir, ec))
+            {
+                const std::string name = entry.path().filename().string();
+                if (entry.is_regular_file(ec) && name.size() == 11 && name[4] == '_' && name[8] == '.' &&
+                    (name[0] == 'S' || name[0] == 's'))
+                {
+                    std::cout << "Using " << entry.path().string() << std::endl;
+                    return entry.path();
+                }
+            }
+        }
 #if defined(PS2X_DEFAULT_BOOT_ELF)
         std::cout << "Using default boot file" << std::endl;
         const std::filesystem::path configuredPath = std::filesystem::path(PS2X_DEFAULT_BOOT_ELF);
@@ -163,7 +180,9 @@ namespace
         }
         return (std::filesystem::current_path() / configuredPath).lexically_normal();
 #else
-        throw std::runtime_error("Unable to determine executable path. Pass the guest ELF as argv[1] or define PS2X_DEFAULT_BOOT_ELF.");
+        throw std::runtime_error("Game files not found.\n\nCopy the contents of your game disc into a folder named \"game\" "
+                                 "next to this program, or pass the path of the disc's boot file (e.g. SLUS_215.90) "
+                                 "as the first argument.");
 #endif
     }
 }
@@ -246,7 +265,7 @@ int main(int argc, char *argv[])
     }
     catch (const std::exception &e)
     {
-        std::cerr << "[main] fatal exception: " << e.what() << std::endl;
+        ps2ShowFatalError(std::string("[main] fatal exception: ") + e.what());
     }
     catch (...)
     {

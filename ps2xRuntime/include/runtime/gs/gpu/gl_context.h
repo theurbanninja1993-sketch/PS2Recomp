@@ -1,8 +1,14 @@
 #pragma once
 
-// Headless OpenGL 4.6 core context for the GPU GS renderer (EGL surfaceless,
-// usable from any thread, no window), plus the GL entry points it uses.
+// Headless OpenGL 4.6 core context for the GPU GS renderer (EGL surfaceless
+// on Linux, a hidden window's WGL context on Windows), plus the GL entry
+// points it uses.
 
+#if defined(_WIN32) && !defined(APIENTRY)
+// glcorearb.h would pull in <windows.h> for these, which clashes with raylib.
+#define APIENTRY __stdcall
+#define GSGPU_DEFINED_APIENTRY
+#endif
 #include <GL/glcorearb.h>
 
 #include <string>
@@ -102,8 +108,8 @@ namespace gsgpu
 #undef GSGPU_DECLARE
     };
 
-    // Owns an EGL display/context. create() makes it current on the calling
-    // thread and loads `gl`; all GL use must stay on that thread.
+    // Owns the context. create() makes it current on the calling thread and
+    // loads `gl`; all GL use must stay on that thread.
     class GLContext
     {
     public:
@@ -119,7 +125,8 @@ namespace gsgpu
         GL gl;
 
     private:
-        void *m_display = nullptr; // EGLDisplay
-        void *m_context = nullptr; // EGLContext
+        void *m_display = nullptr; // EGLDisplay (Windows: the hidden HWND)
+        void *m_context = nullptr; // EGLContext (Windows: HGLRC)
+        void *m_dc = nullptr;      // Windows: the window's HDC
     };
 }

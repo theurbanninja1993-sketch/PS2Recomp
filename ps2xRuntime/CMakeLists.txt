@@ -398,6 +398,7 @@ function(ps2x_stage_ffmpeg_runtime_dlls target_name)
 endfunction()
 
 add_library(ps2_runtime STATIC
+    src/lib/ps2_platform.cpp
     src/lib/game_overrides.cpp
     src/lib/gs/ps2_gif_arbiter.cpp
     src/lib/ps2_audio.cpp
@@ -599,9 +600,11 @@ endif()
 target_include_directories(ps2_runtime PRIVATE "${xxhash_SOURCE_DIR}")
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
-# GPU GS renderer: headless GL 4.6 via EGL (Linux).
+# GPU GS renderer: headless GL 4.6 via EGL (Linux) / a hidden window's WGL context (Windows).
 if(UNIX AND NOT APPLE AND NOT PS2X_IS_ANDROID)
     target_link_libraries(ps2_runtime PUBLIC EGL)
+elseif(WIN32)
+    target_link_libraries(ps2_runtime PUBLIC opengl32 gdi32)
 endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE

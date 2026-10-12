@@ -1,4 +1,5 @@
 #include "runtime/ps2_mods.h"
+#include "runtime/ps2_platform.h"
 
 #include "runtime/gs/gs_texture_replacements.h"
 #include "runtime/ps2_host_settings.h"
@@ -8,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <system_error>
 
@@ -16,17 +18,6 @@ namespace fs = std::filesystem;
 namespace
 {
     std::vector<PS2ModInfo> g_mods;
-
-    fs::path executableDirectory()
-    {
-        std::error_code ec;
-#if defined(_WIN32)
-        return fs::current_path(ec);
-#else
-        const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
-        return ec ? fs::current_path(ec) : exe.parent_path();
-#endif
-    }
 
     bool lowerEndsWith(const std::string &s, const char *suffix)
     {
@@ -41,7 +32,7 @@ std::string ps2ModsDirectory()
 {
     static const std::string s_dir = []()
     {
-        fs::path dir = std::getenv("PS2X_MODS_DIR") ? fs::path(std::getenv("PS2X_MODS_DIR")) : executableDirectory() / "mods";
+        fs::path dir = std::getenv("PS2X_MODS_DIR") ? fs::path(std::getenv("PS2X_MODS_DIR")) : ps2ExecutableDirectory() / "mods";
         std::error_code ec;
         fs::create_directories(dir, ec);
         return dir.string();
