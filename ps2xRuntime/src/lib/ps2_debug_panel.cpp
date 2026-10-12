@@ -2709,7 +2709,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
         changed |= ImGui::Checkbox("Show this menu every time the game starts", &settings.showAtLaunch);
         if (launch)
         {
-            if (ImGui::Button("Start game") || ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false))
+            if (ImGui::Button("Start game") ||
+                (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) && !ImGui::IsKeyDown(ImGuiKey_GamepadBack)))
             {
                 ps2HostSettingsSave(); // also marks the first launch done
                 g_ps2LaunchMenuPending.store(false, std::memory_order_relaxed);
@@ -2749,8 +2750,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
     // Options closes the menu.
     if (!launch && m_captureAction < 0 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
         ((ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::IsAnyItemActive()) ||
-         ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false)))
-        open = false;
+         (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) && !ImGui::IsKeyDown(ImGuiKey_GamepadBack))))
+        open = false; // (Start with Select held is the open combo itself)
     ImGui::End();
     ImGui::PopFont();
 
