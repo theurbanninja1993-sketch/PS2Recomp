@@ -250,7 +250,15 @@ texture packs from `mods/`, Windows build under Wine.
      - the game's radio volume;
      - next-track and shuffle controls;
      - a settings toggle.
-   - **Station variable not found yet.** In the fast-boot mission (Fort
+   - **Station variable FOUND (2026-10-12, owner's F8 session in a car):**
+     u8 at **0x4E4755** (static data; same values at 0x4E475B and in heap
+     copies 0x1D859BA / 0x1FB5834). Values: 0 Flash FM, 1 V Rock, 2
+     Paradise, 3 VCPR, 4 VCFL Radio, 5 The Wave 103, 6 Fresh 105, 7
+     Espantoso, 8 Emotion 98.3, **9 Radio Off**. 0x4E4756 lags one step at
+     one point (probably the station actually playing vs the one selected).
+     Next: confirm with `PS2X_WATCH_WRITE=0x4E4755`, then play the music
+     folder while it reads 9 in a vehicle.
+   - (Earlier attempt:) In the fast-boot mission (Fort
      Baxter bike) D-pad Up/Down/Left/Right showed no station name. That
      mission's bike probably has no radio. A scripted RAM diff found nothing.
    - **F8 now saves `ram_f8_<frame>.bin`** (EE RAM, in the working dir). Way
