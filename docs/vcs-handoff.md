@@ -175,7 +175,15 @@ texture packs from `mods/`, Windows build under Wine.
        - the builder running 2-3 automated learning passes (the intro plus
          the fast-boot pad script) before handing over.
    - Suggested order:
-     1. ISO reader + hash check, in a standalone library with a CLI test;
+     1. ISO reader + hash check, in a standalone library with a CLI test.
+        **Done:** `ps2xBuilder/` (`ps2x_builder` library: `ps2x::IsoImage`,
+        `isoBootFile`) and the `ps2x_iso info|list|hash|extract` CLI. It
+        reads 2048-byte .iso and raw 2352-byte .bin images. A full
+        extraction of `iso/vcs.iso` (341 files, 2.16 GB) is byte-identical
+        to `iso/extracted` (empty dirs included). It cross-builds for Windows
+        and runs under Wine. Known-good boot ELF hash (XXH3-128):
+        `/SLUS_215.90 = 7f69b961cc427e3dcfd6582e25362be8`. The manifest
+        should check this.
      2. the wizard UI;
      3. drive `ps2recomp` + the compile with progress parsing;
      4. packaging the bundle per OS.

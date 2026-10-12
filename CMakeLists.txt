@@ -93,6 +93,7 @@ endif()
 if(PS2X_BUILD_RUNTIME)
     add_subdirectory("ps2xIOP")
     add_subdirectory("ps2xRuntime")
+    add_subdirectory("ps2xBuilder")
 endif()
 
 if(PS2X_BUILD_ANALYZER)
