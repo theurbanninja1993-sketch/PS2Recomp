@@ -206,6 +206,10 @@ texture packs from `mods/`, Windows build under Wine.
           - It read at ~4 MB/s (a 4 GB disc takes ~17 min). Show progress +
             ETA, and extract straight from the disc rather than
             image-then-extract.
+          - **Verified:** `ps2x_iso extract /dev/sr0` (559 s, 17 files,
+            3.9 GB) is byte-identical to extracting a `dd` image of the same
+            disc (dd: 532 s, 7.8 MB/s). Disc reading works on Linux. The
+            Windows drive path (`\\.\D:`) is still untested on hardware.
         - **Implemented:** `ps2x::opticalDrives()` and
           `IsoImage::open("/dev/sr0" | "D:")`, plus `ps2x_iso drives`. The
           owner has an external Blu-ray drive: test with `ps2x_iso drives`,
