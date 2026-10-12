@@ -1,6 +1,6 @@
 # GTA Vice City Stories (SLUS_215.90) recomp: handoff notes
 
-State as of 2026-10-12 (last commit `be626b9`). Read this before changing
+State as of 2026-10-12 (last commit `1e0dec8`). Read this before changing
 anything. A reviewer will check work against it.
 
 ## Ground rules
@@ -256,46 +256,49 @@ texture packs from `mods/`, Windows build under Wine.
      Paradise, 3 VCPR, 4 VCFL Radio, 5 The Wave 103, 6 Fresh 105, 7
      Espantoso, 8 Emotion 98.3, **9 Radio Off**. 0x4E4756 lags one step at
      one point (probably the station actually playing vs the one selected).
-   - **Implemented (2347e89):** `ps2_music_station.cpp`, plus the VCS query in
-     `applyGtaVcsUs`: station byte == 9 && in a vehicle. F10 skips a track.
-     The Mods tab has on/off, volume, shuffle, open folder and rescan.
-     A "now playing" overlay shows for 4 s.
+   - **Implemented (2347e89, tightened in 1e0dec8):** `ps2_music_station.cpp`,
+     plus the VCS query in `applyGtaVcsUs`. F10 skips a track. The Mods tab has
+     on/off, volume, shuffle, open folder and rescan. A "now playing" overlay
+     shows the station name for 4 s.
      - **The radio button is L1** (PS2 layout). D-pad does nothing; that
        was why the first scripted test saw no station change.
-     - On the Fort Baxter bike the byte cycles 8 → **10** → 0. In the
-       owner's car, Radio Off read 9. Both count as off for now; confirm
-       what 10 is (maybe a vehicle-type variant, or the police-scanner
-       slot as in VC).
-     - Tested by script: L1 cycling on the bike reaches off, and the
-       music starts ("[music] playing ...").
-   - **Next (owner wants): a real extra station** instead of reusing Radio
-     Off.
-     1. Find the station-cycling code: `PS2X_WATCH_WRITE=0x4E4755`, press
-        L1 on the bike. **Done.** L1 enters 0x2FA8C8
-        (`FUN_002fa8c8` → `FUN_0018b610`), which only invalidates the
-        playing station (0x4E4755 = 0x71) so the per-frame radio update
-        re-tunes. Map of the radio singleton at **0x4E41E0**:
-        +0x575 = station playing (u8), +0x576 = desired (a frame behind),
-        +0x577/+0x578 = lock flags, +0x57B = last playing, +0x564/+0x568 =
-        owning vehicle (set by `FUN_00189310`), +0x2BA(vehicle) mirrors it.
-        Codes: 0..8 are real stations, **9..30 are special** (off/DJ/ad —
-        the update tests `(x - 9) < 0x16`), 0x71 = uninitialised. The
-        station list is built by a 9-iteration loop in `FUN_00188cc0`
-        (`sltiu ..., 9`). Other command entries: 0x2FA870/930/978/8C8/8E8
-        wrap `FUN_0018b638` / `FUN_0018b358` / `FUN_0018b4b8` /
-        `FUN_0018b610` / `FUN_002a6cb0`. Still to find: the next/prev
-        selection itself (inside the 0x189xxx radio update,
-        `FUN_00189ad0` / `FUN_0018aad8`) to insert a slot.
-     2. Patch its order to 8 → 9 "Music Folder" → off → 0. VC PC had its
-        MP3 slot at 9; on the bike VCS skips 9 (8 → 10), so the slot may
-        still exist in the code.
-     3. Make sure the game plays silence for slot 9 (no stream).
-     4. Show the name through our overlay (the HUD name would need a GXT
-        text edit).
-
-     Then change the music query to "== 9" and make off silent again.
-     Untangle first which value means off per vehicle type (car: 9; bike:
-     10).
+     - 0x4E4755 read 10 on the Fort Baxter bike and 9 in the owner's car
+       because it is overloaded (station 0..9, or a radio *mode* 9..30 when
+       the slot is unset). The bike has no radio, so it sits on a mode. The
+       fix now matches 9 only (see "Real extra station" below).
+     - Verified (1e0dec8): forcing the byte to 9 with a `.pnach` mod makes the
+       runtime log "[music] playing ..." in a vehicle; the bike (byte 10) stays
+       silent.
+   - **Real extra station: DONE (1e0dec8).** The music folder now plays only
+     on the game's one spare station slot (byte 0x4E4755 == 9) and is named
+     "Custom Soundtracks". Findings:
+     - The station index cycles **mod 10**: the pending change at 0x48613C is
+       +1 (next) or +9 (prev), written in `FUN_00189ad0` at 0x189c7c/0x189c90
+       (the button check is `func_2852A8`/`func_286328`), applied by
+       `FUN_0018b8d8`, and `FUN_0018aad8` clamps values >= 9 to 9. So the
+       index is 0..9 and **9 is the only spare slot** (0..8 = the nine
+       stations). L1 enters 0x2FA8C8 (`FUN_002fa8c8` -> `FUN_0018b610`), which
+       invalidates the playing station so the update re-tunes. The radio
+       singleton is at **0x4E41E0** (+0x575 playing, +0x576 desired, +0x577/
+       +0x578 lock flags, +0x57B last, +0x564/+0x568 owning vehicle).
+     - Slot 9 is the leftover PC/PSP **"custom tracks" station**, disabled on
+       PS2 (no custom source): GXT `FEA_CSS` = "CUSTOM SOUNDTRACKS:" and
+       `FEA_NON` = "PLACEHOLDER STATION NAME"; the frontend audio page
+       `FRONTEND/DEFAULT/AUDPG.PSP` defines the selector (RADIO_STATION_MI,
+       states S0..S9 = FEA_FM0..8 + FEA_NON) plus CUSTOM_TRACKS_EDIT_MI
+       (CUSTOM_ITEM_TRACKS) and CUSTOM_RADIO_ICONS_MI; the ELF option list has
+       HOOK_USE_CUSTOM_TRACKS (index 12 in `FUN_003e2530`). GXT text is
+       **UTF-16LE** - plain `strings` misses it.
+     - 0x4E4755 (radio+0x575) is **overloaded**: `FUN_00189ad0` stores the
+       station 0..9 there (0x18a02c, from `FUN_0018b8d8`) but `FUN_0018a248`
+       writes radio *modes* 9..30 when it is 0x71/unset. On the Fort Baxter
+       bike it holds mode 10 for most frames - that is why the previous query
+       matched 9 *or* 10 and played on a bike that has no radio. Do not treat
+       0x4E4755 as a reliable station value; the station field is +0x2BA of
+       the entity from `FUN_1B5768(0x514A90)`.
+     - Remaining, if wanted: make the frontend show the name (patch AUDPG.PSP
+       state S9 "FEA_NON" -> "FEA_CSS"; needs file overrides), a controller
+       next-track button, pause with the game.
    - Todo:
      - owner test in a car;
      - pause while the game itself is paused (pause-state address
