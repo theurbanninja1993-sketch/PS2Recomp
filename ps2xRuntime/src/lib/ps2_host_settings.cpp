@@ -238,6 +238,12 @@ void ps2HostSettingsLoad()
             s.mouseTurnsPlayer = std::atoi(v) != 0;
         else if (key == "mouse_invert_y")
             s.mouseInvertY = std::atoi(v) != 0;
+        else if (key == "music_station")
+            s.musicStation = std::atoi(v) != 0;
+        else if (key == "music_station_volume")
+            s.musicStationVolume = std::clamp(std::strtof(v, nullptr), 0.0f, 1.0f);
+        else if (key == "music_shuffle")
+            s.musicShuffle = std::atoi(v) != 0;
         else if (key == "controller")
             s.controllerName = value;
         else if (key == "texture_replacement")
@@ -352,6 +358,9 @@ void ps2HostSettingsSave()
         << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << "\n"
         << "mouse_turns_player=" << (s.mouseTurnsPlayer ? 1 : 0) << "\n"
         << "controller=" << s.controllerName << "\n"
+        << "music_station=" << (s.musicStation ? 1 : 0) << "\n"
+        << "music_station_volume=" << s.musicStationVolume << "\n"
+        << "music_shuffle=" << (s.musicShuffle ? 1 : 0) << "\n"
         << "gamepad_layout=" << static_cast<int>(s.gamepadLayout) << "\n";
     // Load sees the layout before the per-button lines.
     if (s.gamepadLayout == ps2controls::GamepadLayout::Custom)

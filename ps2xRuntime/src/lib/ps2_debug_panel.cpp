@@ -5,6 +5,8 @@
 #include "runtime/ee_scheduler.h"
 #include "runtime/ps2_host_settings.h"
 #include "runtime/ps2_pad.h"
+#include "runtime/ps2_music_station.h"
+#include "runtime/ps2_platform.h"
 #include "runtime/ps2_mods.h"
 
 #include <unordered_set>
@@ -2238,7 +2240,11 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     // "F2: Settings" hint for the first seconds of a run.
     const bool showHint = GetTime() < 10.0;
     const bool settingsOpen = g_ps2SettingsMenuOpen.load(std::memory_order_relaxed);
-    if (!m_visible && !settingsOpen && !showHint)
+    // Music folder station: the track title for a few seconds when it starts.
+    double trackStarted = 0.0;
+    const std::string track = ps2MusicStationNowPlaying(trackStarted);
+    const bool showTrack = !track.empty() && GetTime() - trackStarted < 4.0;
+    if (!m_visible && !settingsOpen && !showHint && !showTrack)
     {
         return;
     }
@@ -2248,6 +2254,21 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
         drawSettingsMenu(runtime);
     else if (showHint)
         drawSettingsHint();
+    if (showTrack && !settingsOpen)
+    {
+        const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
+        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth()) - 16.0f * scale, 16.0f * scale), ImGuiCond_Always,
+                                ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowBgAlpha(0.55f);
+        if (ImGui::Begin("##now-playing", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
+        {
+            ImGui::SetWindowFontScale(scale);
+            ImGui::Text("Music folder: %s", track.c_str());
+        }
+        ImGui::End();
+    }
     if (m_visible)
         drawDebugger(runtime);
     rlImGuiEnd();
@@ -2737,6 +2758,31 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::EndTable();
                     if (!toggle.empty())
                         ps2ModsSetEnabled(toggle, toggleTo); // after drawing: rebuilds the list
+                }
+                if (ps2MusicStationSupported())
+                {
+                    ImGui::SeparatorText("Music folder radio station");
+                    ImGui::TextWrapped("Your own music as a radio station, like the PC versions of GTA III and Vice "
+                                       "City: tune to \"Radio Off\" in a vehicle to hear it. F10 skips a track.");
+                    changed |= ImGui::Checkbox("Play the music folder on \"Radio Off\"", &settings.musicStation);
+                    float volume = settings.musicStationVolume * 100.0f;
+                    if (ImGui::SliderFloat("Music volume", &volume, 0.0f, 100.0f, "%.0f%%"))
+                    {
+                        settings.musicStationVolume = volume / 100.0f;
+                        changed = true;
+                    }
+                    if (ImGui::Checkbox("Shuffle", &settings.musicShuffle))
+                    {
+                        changed = true;
+                        ps2MusicStationRescan();
+                    }
+                    ImGui::Text("%zu tracks (MP3, OGG, FLAC, WAV)", ps2MusicStationTrackCount());
+                    ImGui::TextDisabled("%s", ps2MusicStationDirectory().c_str());
+                    if (ImGui::Button("Open music folder"))
+                        ps2OpenFolder(ps2MusicStationDirectory());
+                    ImGui::SameLine();
+                    if (ImGui::Button("Rescan"))
+                        ps2MusicStationRescan();
                 }
                 ImGui::EndChild();
                 ImGui::EndTabItem();

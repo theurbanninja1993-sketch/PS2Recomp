@@ -106,14 +106,5 @@ void ps2ModsSetEnabled(const std::string &name, bool enabled)
 
 void ps2ModsOpenFolder()
 {
-    const std::string dir = ps2ModsDirectory();
-#if defined(_WIN32)
-    const std::string command = "explorer \"" + dir + "\"";
-#elif defined(__APPLE__)
-    const std::string command = "open \"" + dir + "\" &";
-#else
-    const std::string command = "xdg-open \"" + dir + "\" >/dev/null 2>&1 &";
-#endif
-    if (std::system(command.c_str()) != 0)
-        std::cerr << "[mods] could not open " << dir << std::endl;
+    ps2OpenFolder(ps2ModsDirectory());
 }

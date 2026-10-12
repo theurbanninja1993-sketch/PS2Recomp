@@ -1,3 +1,4 @@
+#include "runtime/ps2_music_station.h"
 #include "game_overrides.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
@@ -947,6 +948,10 @@ namespace
             runtime.replaceFunction(0x0018F400u, &vcsSetFarClip);
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
+        // Music folder station: the "Radio Off" slot (station byte 0x4E4755:
+        // 0 Flash FM .. 8 Emotion 98.3, 9 off) while in a vehicle.
+        ps2MusicStationSetQuery([](const uint8_t *rdram)
+                                { return rdram[0x004E4755u] == 9u && vcsPlayerInVehicle(rdram); });
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);

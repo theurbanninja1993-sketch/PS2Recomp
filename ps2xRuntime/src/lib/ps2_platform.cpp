@@ -4,11 +4,13 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 #include "runtime/ps2_platform.h"
 #include "ThreadNaming.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <iterator>
 #include <system_error>
@@ -27,6 +29,21 @@ std::filesystem::path ps2ExecutableDirectory()
     return ec ? std::filesystem::current_path(ec) : exe.parent_path();
 #else
     return std::filesystem::current_path(ec);
+#endif
+}
+
+void ps2OpenFolder(const std::string &path)
+{
+#if defined(_WIN32)
+    ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+#if defined(__APPLE__)
+    const std::string command = "open \"" + path + "\" &";
+#else
+    const std::string command = "xdg-open \"" + path + "\" >/dev/null 2>&1 &";
+#endif
+    if (std::system(command.c_str()) != 0)
+        std::cerr << "could not open " << path << std::endl;
 #endif
 }
 

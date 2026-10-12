@@ -399,6 +399,7 @@ endfunction()
 
 add_library(ps2_runtime STATIC
     src/lib/ps2_platform.cpp
+    src/lib/ps2_music_station.cpp
     src/lib/game_overrides.cpp
     src/lib/gs/ps2_gif_arbiter.cpp
     src/lib/ps2_audio.cpp

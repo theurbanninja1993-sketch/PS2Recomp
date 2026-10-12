@@ -84,6 +84,9 @@ struct PS2HostSettings
     bool mouseInvertY = false;
     bool mouseTurnsPlayer = true; // on foot, mouse turns also turn a moving player (no skid stops)
 
+    bool musicStation = true;          // play the music folder as a radio station (VCS: the "Radio Off" slot)
+    float musicStationVolume = 0.8f;
+    bool musicShuffle = true;
     bool textureReplacement = true;     // apply texture packs from the mods folder
     std::vector<std::string> disabledMods; // mod folder names switched off
     bool showAtLaunch = false; // open the settings before the game starts, every launch (always on the first)
