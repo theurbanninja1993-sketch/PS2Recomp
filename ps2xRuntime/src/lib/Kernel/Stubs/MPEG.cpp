@@ -1500,8 +1500,20 @@ namespace ps2_stubs
 
         uint32_t throttledDemuxBytes(const MpegPlaybackState &playback, uint32_t byteCount)
         {
-            return mpegAudioThrottle() != 0u && playback.picturesServed != 0u ? std::min(byteCount, kThrottledDemuxBytes)
-                                                                                 : byteCount;
+            if (mpegAudioThrottle() == 0u || playback.picturesServed == 0u)
+                return byteCount;
+            byteCount = std::min(byteCount, kThrottledDemuxBytes);
+            // Once the whole file has been read, keep its last packs back until
+            // the game has taken all queued audio: the player leaves its main
+            // loop (the only place that feeds the SPU) as soon as every byte
+            // is demuxed, and the audio still queued would be lost while the
+            // SPU repeats its buffer (skipping at the end of the logos). The
+            // ring's last sector is mostly padding past the file end, so hold
+            // back more than one sector.
+            constexpr uint32_t kHeldBackBytes = 6144u;
+            if ((g_mpeg_stub_state.currentCdStreamEofSeen || g_mpeg_stub_state.cdStreamEofPending) && queuedAudioCallbacks() != 0u)
+                byteCount = byteCount > kHeldBackBytes ? byteCount - kHeldBackBytes : 0u;
+            return byteCount;
         }
 
         bool mpegDemuxBackpressured(const MpegPlaybackState &playback)
