@@ -1,0 +1,118 @@
+# GTA Vice City Stories (SLUS_215.90) recomp: handoff notes
+
+State as of 2026-10-12 (last commit `f3e4ec0`). Read this before changing
+anything. A reviewer will check work against it.
+
+## Ground rules
+
+- **Never `git push`** without the owner's explicit OK. Commit locally on
+  `main` in `PS2Recomp/`, one logical change per commit, with a message that
+  says what changed, why, and how it was verified.
+- **Never commit `ps2xRuntime/src/runner/register_functions.cpp`.** It's the
+  generated function registry (240k lines), and the tracked file is upstream's
+  stub. Stage files explicitly; never `git add -A`.
+- Never commit game code or data: generated `FUN_*.cpp`, `vcs-vu1/`, VU1/GS
+  captures, ISO contents, texture packs.
+- Test runs must use a **visible window** (no `PS2X_HIDDEN_WINDOW`). The owner
+  watches them. Run one game instance at a time, and don't leave runs behind.
+- Don't touch the owner's settings: use `XDG_CONFIG_HOME=<tmp dir>` for test
+  runs. `PS2X_EXIT_AFTER_FRAME=N` skips the launch menu and quits at frame N.
+- Don't ask the owner what to do next. Pick the most important open item.
+
+## Layout (project root `/mnt/2TBSSD/projects/Vice City Stories Recomp`)
+
+| Path | What |
+|---|---|
+| `PS2Recomp/` | git repo (fork of ran-j/PS2Recomp, GPLv3): recompiler + runtime |
+| `PS2Recomp/ps2xRuntime/src/lib/game_overrides.cpp` | VCS-specific fixes and features (bottom of the file) |
+| `iso/extracted/` | the disc (boot ELF `SLUS_215.90`) |
+| `vcs-configs/vcs_clean.toml`, `vcs_clean.csv` | recompiler config + function map. **Not in git: back these up** |
+| `tools/` | map generator (`rebuild_function_map.py`), disassemblers, profilers. **Not in git** |
+| `vcs-vu1/` | AOT-compiled VU1 microprograms (generated, linked when configured) |
+| `scratch/` | captures, logs, screenshots, `ext/` (llvm-mingw, PCSX2 source) |
+| `GTA Vice City Stories Texture Pack/` | owner's HD pack, symlinked as `build/ps2xRuntime/mods/HD Textures for VCS` |
+
+## Build and run
+
+Linux (main dev build; PGO profile in `build/pgo`):
+
+    cd PS2Recomp/build && cmake --build . --target ps2EntryRunner -j 14
+    cd scratch/shots && env PS2X_GS_GPU=1 ../../PS2Recomp/build/ps2xRuntime/ps2EntryRunner ../../iso/extracted/SLUS_215.90
+
+Windows (cross-compiled, tested under Wine 11 / Proton):
+
+    cmake -B build-win -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/llvm-mingw-x86_64.cmake \
+      -DLLVM_MINGW_ROOT=<root>/scratch/ext/llvm-mingw-dl/llvm-mingw-20241217-ucrt-ubuntu-20.04-x86_64 \
+      -DPS2X_VU1_PROGRAMS=<root>/vcs-vu1
+    make -C build-win -j14 ps2EntryRunner
+    wine build-win/ps2xRuntime/ps2EntryRunner.exe   # boots ./game/SLUS_215.90 next to the exe
+
+Regenerating game code (only needed after recompiler/map changes, about 25 min
+full build): see the `vcs-recomp-function-map` notes. `ps2recomp
+vcs-configs/vcs_clean.toml` writes `vcs-port/generated_clean/`, which is copied
+into `ps2xRuntime/src/runner/` + `include/`.
+
+## Testing recipes
+
+- **Fast boot to gameplay** (skips intro/cutscene, gameplay at ~frame 2400, the
+  bike is next to the player; Triangle at ~2800 to mount):
+  `PS2X_PAD_SCRIPT="1000:cross:10;1200:cross:10;1400:cross:10;1600:cross:10;1800:cross:10;2000:cross:10;2200:cross:10"`.
+  Don't use it when testing the intro, cutscenes or logos.
+- **Intro cutscene ~frames 6000-9000** (no script) is a good streaming-heavy
+  scene for renderer perf.
+- **Screenshots:** `PS2X_SCREENSHOT_EVERY=N` (PNG in cwd). Check them, don't
+  assume.
+- **Per-thread load:** `PS2X_PERF_LOG=<file>` (every 600 frames: late frames,
+  audio, % per thread, VU1 compiled/interpreted counts).
+- **Profiling:** no `perf` on this box. Run with `PS2X_ALLOW_PTRACE=1`, then
+  `eu-stack -p <tid>` repeatedly (it dumps all threads; split on `TID n:`).
+  The `ScopeTimer` numbers in the GPU renderer proved unreliable. Trust
+  sampled stacks and A/B runs instead.
+- **Pitfall:** `pgrep -f` / `pkill -f` match their own shell command. Use
+  `pgrep -x ps2EntryRunner`.
+- More env vars: `PS2X_PAD_DEBUG`, `PS2X_TEXREPL_STATS`,
+  `PS2X_TEXREPL_LOG_MISSES`, `PS2X_MPEG_END_TRACE`, `PS2X_MPEG_AUDIO_TRACE`,
+  `PS2X_GS_SCALE`, `PS2X_OPEN_SETTINGS`, `PS2X_MODS_DIR`,
+  `PS2X_DUMP_RAM_FRAME`, `PS2X_WATCH_WRITE`, F9 = GS capture, F7 = log marker.
+
+## What works (owner-confirmed)
+
+Full speed in gameplay (GPU renderer + compiled VU1), audio, intro/logo
+movies with full audio, cutscene lip sync, F2 settings menu (display,
+resolution scale 1-4x, aspect, FOV, draw distance, controls/remapping,
+classic/modern gamepad layouts, mods), first-launch menu, controller support
+(Select+Start opens the menu; last-used controller, or one chosen in the
+menu), mouse look on foot and in vehicles (wall/ground collision), PCSX2
+texture packs from `mods/`, Windows build under Wine.
+
+## Open work, in rough priority
+
+1. **Release packaging (source-only).** A prebuilt exe would distribute
+   Rockstar's (translated) code, and Take-Two DMCA'd re3/reVC. Plan: publish
+   the runtime + VCS overrides + configs + scripts; users point a script at
+   their own disc, which extracts it, runs `ps2recomp` with
+   `vcs_clean.toml/.csv` and builds (Linux + Windows). Blocker: `vcs-vu1`
+   comes from runtime captures (game microcode), so users need a way to
+   generate it themselves (e.g. extract VU1 microprograms statically from the
+   ELF for `vu1_recomp`). Without it VU1 is interpreted, about a third of the
+   speed. Owner decides on publishing.
+2. **Custom radio station:** a `music` folder (MP3/OGG/FLAC/WAV) as an extra
+   in-vehicle station, like the GTA III/VC PC "MP3 Player". Needs the VCS radio
+   station selection + audio stream path found and decoded PCM injected.
+3. **Texture-pack overhead:** the CPU mirror of texture uploads
+   (`GSCpuBackend::UploadImage` → `GSMem::WriteRow`) still costs the render
+   thread ~+15 pts in streaming scenes. Next lever: a lazy mirror keyed by
+   upload content hash. Owner to re-test the airport area first.
+4. Mods: `.pnach` patches (counted by the mod loader, not applied), file
+   overrides (replace disc files from a mod folder).
+5. Controllers: PlayStation button names in the menu, rumble.
+6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
+   regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
+
+## Where past fixes live
+
+Read the `vcs-recomp-progress` memory notes (owner's Claude memory) or `git log`
+before re-investigating a bug. Most VCS-specific behaviour is hooked in
+`applyGtaVcsUs()` at the end of `game_overrides.cpp`, and movie playback in
+`Kernel/Stubs/MPEG.cpp`.
