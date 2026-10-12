@@ -1,4 +1,6 @@
 #include "runtime/ps2_pad.h"
+
+extern std::atomic<bool> g_ps2DumpRamRequest; // ps2_runtime.cpp
 #include "runtime/ps2_host_settings.h"
 #include "ps2_host_backend.h"
 #include <atomic>
@@ -360,6 +362,10 @@ bool PSPadBackend::applyFakeMouse(float &yaw, float &pitch)
 void PSPadBackend::updateHostInput()
 {
     // F7: a marker in the log (playtest notes: "it happened here").
+    // F8: snapshot EE RAM to ram_f8_<frame>.bin (memory diffing while playing,
+    // e.g. finding the radio station variable).
+    if (IsKeyPressed(KEY_F8))
+        g_ps2DumpRamRequest.store(true, std::memory_order_relaxed);
     if (IsKeyPressed(KEY_F7))
         std::fprintf(stderr, "[mark] frame=%llu\n", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()));
     // Click in the window to capture the mouse for mouse look; Left Alt (or

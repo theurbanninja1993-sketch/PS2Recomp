@@ -240,8 +240,26 @@ texture packs from `mods/`, Windows build under Wine.
    with per-game mods and settings. Both games use the PS2Recomp runtime;
    keep game-specific code behind `PS2_REGISTER_GAME_OVERRIDE`.
 2. **Custom radio station:** a `music` folder (MP3/OGG/FLAC/WAV) as an extra
-   in-vehicle station, like the GTA III/VC PC "MP3 Player". Needs the VCS radio
-   station selection + audio stream path found and decoded PCM injected.
+   in-vehicle station, like the GTA III/VC PC "MP3 Player".
+   - Plan (owner agreed): make the "Radio Off" slot play the music folder
+     through raylib music streams (raylib decodes all four formats), so the
+     game's own audio path doesn't change. Needed:
+     - the current-station variable;
+     - in-vehicle (the existing vehicle probe);
+     - paused / menu state;
+     - the game's radio volume;
+     - next-track and shuffle controls;
+     - a settings toggle.
+   - **Station variable not found yet.** In the fast-boot mission (Fort
+     Baxter bike) D-pad Up/Down/Left/Right showed no station name. That
+     mission's bike probably has no radio. A scripted RAM diff found nothing.
+   - **F8 now saves `ram_f8_<frame>.bin`** (EE RAM, in the working dir). Way
+     forward: the owner (or a tester) gets in a civilian car outside a
+     mission and presses F8. Then change station + F8, 4-5 times, noting
+     the station names. Diff for a byte that steps with the stations (see
+     the numpy diff idea: bytes changing at every snapshot, value < 16).
+     Then find the code writing it (`PS2X_WATCH_WRITE=<addr>`) to read
+     the "off" value and the station count.
 3. **Texture-pack overhead:** the CPU mirror of texture uploads
    (`GSCpuBackend::UploadImage` → `GSMem::WriteRow`) still costs the render
    thread ~+15 pts in streaming scenes. Next lever: a lazy mirror keyed by
