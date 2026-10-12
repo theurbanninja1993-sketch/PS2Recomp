@@ -4,6 +4,7 @@
 #include "ps2_log.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/ps2_host_settings.h"
+#include "runtime/ps2_pad.h"
 #include "runtime/ps2_mods.h"
 
 #include <unordered_set>
@@ -2218,9 +2219,9 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     // Controller: Select+Start together (not the PS / Guide button, which
     // belongs to Steam's overlay when the game is added to Steam).
     bool padToggle = false;
-    if (IsGamepadAvailable(0))
+    if (const int pad = ps2ActiveGamepad(); pad >= 0)
     {
-        const bool combo = IsGamepadButtonDown(0, GAMEPAD_BUTTON_MIDDLE_LEFT) && IsGamepadButtonDown(0, GAMEPAD_BUTTON_MIDDLE_RIGHT);
+        const bool combo = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_MIDDLE_LEFT) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_MIDDLE_RIGHT);
         if (combo && !m_padComboLatched)
             padToggle = true;
         m_padComboLatched = combo;
@@ -2355,7 +2356,7 @@ void PS2DebugPanel::drawSettingsHint()
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
     {
         ImGui::SetWindowFontScale(scale);
-        ImGui::TextUnformatted(IsGamepadAvailable(0) ? "F2 / Select+Start: Settings" : "F2: Settings");
+        ImGui::TextUnformatted(ps2ActiveGamepad() >= 0 ? "F2 / Select+Start: Settings" : "F2: Settings");
     }
     ImGui::End();
 #endif
@@ -2509,6 +2510,43 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 m_settingsTab = 1;
                 ImGui::BeginChild("controls-scroll", ImVec2(0.0f, -footerH));
                 ImGui::SeparatorText("Gamepad");
+                {
+                    // Which controller to use when several are connected
+                    // (e.g. a DualSense plus Steam's virtual pad for it).
+                    const int activePad = ps2ActiveGamepad();
+                    const std::string current = settings.controllerName.empty()
+                                                    ? std::string("Automatic (first connected)")
+                                                    : settings.controllerName;
+                    if (ImGui::BeginCombo("Controller", current.c_str()))
+                    {
+                        if (ImGui::Selectable("Automatic (first connected)", settings.controllerName.empty()))
+                        {
+                            settings.controllerName.clear();
+                            changed = true;
+                        }
+                        for (int i = 0; i < 4; ++i)
+                        {
+                            if (!IsGamepadAvailable(i))
+                                continue;
+                            const std::string name = GetGamepadName(i);
+                            ImGui::PushID(i);
+                            if (ImGui::Selectable(name.c_str(), settings.controllerName == name))
+                            {
+                                settings.controllerName = name;
+                                changed = true;
+                            }
+                            ImGui::PopID();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (changed)
+                        ps2SetPreferredGamepad(settings.controllerName);
+                    ImGui::SameLine();
+                    if (activePad >= 0)
+                        ImGui::TextDisabled("using: %s", GetGamepadName(activePad));
+                    else
+                        ImGui::TextDisabled("none connected");
+                }
                 int layout = static_cast<int>(settings.gamepadLayout);
                 bool layoutChanged = ImGui::RadioButton("Classic (PS2)", &layout, 0);
                 ImGui::SameLine();
@@ -2722,7 +2760,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
             if (ImGui::Button("Close"))
                 open = false;
             ImGui::SameLine();
-            ImGui::TextDisabled(IsGamepadAvailable(0) ? "F2 / Select+Start opens and closes this menu; Circle goes back"
+            ImGui::TextDisabled(ps2ActiveGamepad() >= 0 ? "F2 / Select+Start opens and closes this menu; Circle goes back"
                                                       : "F2 opens/closes this menu");
         }
         ImGui::SameLine(columnW - ImGui::CalcTextSize("Quit to desktop").x - style.FramePadding.x * 2.0f);

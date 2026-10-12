@@ -2,6 +2,7 @@
 #include "runtime/ps2_host_settings.h"
 #include "ps2_host_backend.h"
 #include <atomic>
+#include <mutex>
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 #include <algorithm>
@@ -69,6 +70,84 @@ namespace
     }
 }
 
+namespace
+{
+    std::mutex g_preferredPadMutex;
+    std::string g_preferredPad;
+}
+
+void ps2SetPreferredGamepad(const std::string &name)
+{
+    std::lock_guard lock(g_preferredPadMutex);
+    g_preferredPad = name;
+}
+
+int ps2ActiveGamepad()
+{
+    int active = -1;
+    {
+        std::lock_guard lock(g_preferredPadMutex);
+        if (!g_preferredPad.empty())
+            for (int i = 0; i < 4 && active < 0; ++i)
+                if (IsGamepadAvailable(i) && g_preferredPad == GetGamepadName(i))
+                    active = i;
+    }
+    if (active < 0)
+    {
+        // Automatic: the controller last used. Other devices can claim the
+        // low slots (a gaming keyboard with analog keys poses as a gamepad).
+        static std::atomic<int> s_auto{-1};
+        // Sticks count as used when moved from where they rested when first
+        // seen (some devices rest at -1).
+        static float s_rest[4][4];
+        static bool s_restKnown[4]{};
+        auto used = [](int pad)
+        {
+            if (!s_restKnown[pad])
+            {
+                for (int axis = 0; axis < 4; ++axis)
+                    s_rest[pad][axis] = GetGamepadAxisMovement(pad, axis);
+                s_restKnown[pad] = true;
+            }
+            for (int button = GAMEPAD_BUTTON_LEFT_FACE_UP; button <= GAMEPAD_BUTTON_RIGHT_THUMB; ++button)
+                if (IsGamepadButtonDown(pad, button))
+                    return true;
+            for (int axis = 0; axis < 4; ++axis)
+                if (std::fabs(GetGamepadAxisMovement(pad, axis) - s_rest[pad][axis]) > 0.5f)
+                    return true;
+            return false;
+        };
+        int current = s_auto.load(std::memory_order_relaxed);
+        if (current < 0 || !IsGamepadAvailable(current) || !used(current))
+            for (int i = 0; i < 4; ++i)
+                if (i != current && IsGamepadAvailable(i) && used(i))
+                {
+                    current = i;
+                    break;
+                }
+        if (current >= 0 && !IsGamepadAvailable(current))
+            current = -1;
+        for (int i = 0; i < 4 && current < 0; ++i)
+            if (IsGamepadAvailable(i))
+                current = i;
+        s_auto.store(current, std::memory_order_relaxed);
+        active = current;
+    }
+    static std::atomic<int> s_logged{-2};
+    if (s_logged.exchange(active, std::memory_order_relaxed) != active)
+    {
+        std::string all;
+        for (int i = 0; i < 4; ++i)
+            if (IsGamepadAvailable(i))
+                all += " [" + std::to_string(i) + "] " + GetGamepadName(i);
+        if (active >= 0)
+            std::fprintf(stderr, "[pad] using controller %d: %s (connected:%s)\n", active, GetGamepadName(active), all.c_str());
+        else
+            std::fprintf(stderr, "[pad] no controller\n");
+    }
+    return active;
+}
+
 bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
 {
     if (!data || size < 32)
@@ -111,8 +190,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
 
     // Gamepad: each host button maps to a PS2 button per context (the
     // Classic / Modern / Custom layout in the settings), sticks as they are.
-    constexpr int kGamepad = 0;
-    if (IsGamepadAvailable(kGamepad))
+    const int kGamepad = ps2ActiveGamepad();
+    if (kGamepad >= 0)
     {
         static const int kRaylibButton[ps2controls::kHostButtonCount] = {
             GAMEPAD_BUTTON_RIGHT_FACE_DOWN, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, GAMEPAD_BUTTON_RIGHT_FACE_LEFT,

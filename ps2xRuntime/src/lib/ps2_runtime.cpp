@@ -1,5 +1,6 @@
 #include "ps2_runtime.h"
 #include "runtime/ps2_host_settings.h"
+#include "runtime/ps2_pad.h"
 #include "runtime/ps2_mods.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -938,6 +939,7 @@ bool PS2Runtime::initialize(const char *title)
         // PS2X_HIDDEN_WINDOW keeps headless test runs off the desktop.
         SetConfigFlags(FLAG_WINDOW_RESIZABLE | (std::getenv("PS2X_HIDDEN_WINDOW") ? FLAG_WINDOW_HIDDEN : 0));
         ps2HostSettingsLoad(); // window mode/size applied by the first presented frame
+        ps2SetPreferredGamepad(ps2HostSettings().controllerName);
         ps2ModsRefresh();
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
         SetWindowMinSize(320, 240);

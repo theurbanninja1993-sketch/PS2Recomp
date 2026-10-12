@@ -88,6 +88,7 @@ struct PS2HostSettings
     std::vector<std::string> disabledMods; // mod folder names switched off
     bool showAtLaunch = false; // open the settings before the game starts, every launch (always on the first)
 
+    std::string controllerName; // controller to use when several are connected ("" = the first)
     ps2controls::GamepadLayout gamepadLayout = ps2controls::GamepadLayout::Classic;
     int gamepadMap[ps2controls::kContextCount][ps2controls::kHostButtonCount]{};
     int keys[ps2controls::kActionCount][2]{};

@@ -4,6 +4,14 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+
+// The raylib gamepad slot to read (-1: none). The first slot holding a real
+// gamepad: slot 0 can be a non-gamepad joystick (a DualSense's motion
+// sensors) or one of several pads (Steam Input adds a virtual one).
+// The settings' chosen controller (by name) wins when it is connected.
+int ps2ActiveGamepad();
+void ps2SetPreferredGamepad(const std::string &name);
 
 class PSPadBackend
 {

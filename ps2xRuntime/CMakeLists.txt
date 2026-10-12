@@ -133,6 +133,13 @@ else()
                PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
         string(REPLACE "GAMEPAD_BUTTON_MIDDLE_RIGHT, ImGuiKey_GamepadBack" "GAMEPAD_BUTTON_MIDDLE_RIGHT, ImGuiKey_GamepadStart"
                PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        # ...and read the first slot holding a real gamepad, not always slot 0.
+        string(REPLACE "IsGamepadAvailable(0)" "IsGamepadAvailable(ps2xImGuiPad())" PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        string(REPLACE "IsGamepadButtonPressed(0, " "IsGamepadButtonPressed(ps2xImGuiPad(), " PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        string(REPLACE "IsGamepadButtonReleased(0, " "IsGamepadButtonReleased(ps2xImGuiPad(), " PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        string(REPLACE "GetGamepadAxisMovement(0, " "GetGamepadAxisMovement(ps2xImGuiPad(), " PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
+        string(REPLACE "#include \"rlImGui.h\"" "#include \"rlImGui.h\"\nstatic int ps2xImGuiPad() { for (int i = 0; i < 4; ++i) if (IsGamepadAvailable(i)) return i; return 0; }"
+               PS2X_RLIMGUI_CPP "${PS2X_RLIMGUI_CPP}")
         set(PS2X_RLIMGUI_PATCHED "${CMAKE_CURRENT_BINARY_DIR}/rlImGui_patched.cpp")
         file(CONFIGURE OUTPUT "${PS2X_RLIMGUI_PATCHED}" CONTENT "${PS2X_RLIMGUI_CPP}" @ONLY)
 
