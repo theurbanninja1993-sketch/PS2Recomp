@@ -948,11 +948,17 @@ namespace
             runtime.replaceFunction(0x0018F400u, &vcsSetFarClip);
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
-        // Music folder station: the "Radio Off" slot (station byte 0x4E4755:
-        // 0 Flash FM .. 8 Emotion 98.3; off read 9 in a car and 10 on the
-        // Fort Baxter bike, which cycles 8 -> 10 -> 0) while in a vehicle.
+        // Custom Soundtracks station: the game's leftover 10th station slot
+        // (station byte 0x4E4755: 0 Flash FM .. 8 Emotion 98.3, 9 the unused
+        // slot) while in a vehicle. It is the PC/PSP "custom tracks" station
+        // (GXT FEA_CSS = "CUSTOM SOUNDTRACKS:", the option HOOK_USE_CUSTOM_TRACKS
+        // and the CUSTOM_ITEM_TRACKS audio page), disabled on PS2: the frontend
+        // radio selector's 10th state is the FEA_NON placeholder and no stream
+        // is loaded. The station field cycles mod 10 (FUN_0018b8d8) and values
+        // >= 9 are forced to 9 (FUN_0018aad8), so 9 is the only spare slot; 10
+        // is a transient radio *mode*, not a station.
         ps2MusicStationSetQuery([](const uint8_t *rdram)
-                                { return rdram[0x004E4755u] >= 9u && rdram[0x004E4755u] <= 10u && vcsPlayerInVehicle(rdram); });
+                                { return rdram[0x004E4755u] == 9u && vcsPlayerInVehicle(rdram); });
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);

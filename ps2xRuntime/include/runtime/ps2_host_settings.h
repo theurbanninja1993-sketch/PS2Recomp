@@ -84,7 +84,7 @@ struct PS2HostSettings
     bool mouseInvertY = false;
     bool mouseTurnsPlayer = true; // on foot, mouse turns also turn a moving player (no skid stops)
 
-    bool musicStation = true;          // play the music folder as a radio station (VCS: the "Radio Off" slot)
+    bool musicStation = true;          // play the music folder as a radio station (VCS: the unused 10th station slot)
     float musicStationVolume = 0.8f;
     bool musicShuffle = true;
     bool textureReplacement = true;     // apply texture packs from the mods folder

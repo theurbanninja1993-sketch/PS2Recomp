@@ -99,6 +99,13 @@ bool ps2MusicStationSupported()
     return g_query != nullptr;
 }
 
+const char *ps2MusicStationName()
+{
+    // The name the game itself uses for this slot (GXT key FEA_CSS,
+    // "CUSTOM SOUNDTRACKS:"), left over from the PC/PSP custom-tracks feature.
+    return "Custom Soundtracks";
+}
+
 std::string ps2MusicStationDirectory()
 {
     if (const char *env = std::getenv("PS2X_MUSIC_DIR"); env && *env)

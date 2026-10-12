@@ -2265,7 +2265,8 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
         {
             ImGui::SetWindowFontScale(scale);
-            ImGui::Text("Music folder: %s", track.c_str());
+            ImGui::Text("%s", ps2MusicStationName());
+            ImGui::TextDisabled("%s", track.c_str());
         }
         ImGui::End();
     }
@@ -2763,10 +2764,11 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 }
                 if (ps2MusicStationSupported())
                 {
-                    ImGui::SeparatorText("Music folder radio station");
+                    ImGui::SeparatorText("Custom Soundtracks (music folder)");
                     ImGui::TextWrapped("Your own music as a radio station, like the PC versions of GTA III and Vice "
-                                       "City: tune to \"Radio Off\" in a vehicle to hear it. F10 skips a track.");
-                    changed |= ImGui::Checkbox("Play the music folder on \"Radio Off\"", &settings.musicStation);
+                                       "City. It plays on the game's leftover \"CUSTOM SOUNDTRACKS\" station slot -- the "
+                                       "unused one past the nine real stations -- while in a vehicle. F10 skips a track.");
+                    changed |= ImGui::Checkbox("Play the music folder on the unused station", &settings.musicStation);
                     float volume = settings.musicStationVolume * 100.0f;
                     if (ImGui::SliderFloat("Music volume", &volume, 0.0f, 100.0f, "%.0f%%"))
                     {
