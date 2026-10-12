@@ -26,8 +26,8 @@ anything. A reviewer will check work against it.
 | `PS2Recomp/` | git repo (fork of ran-j/PS2Recomp, GPLv3): recompiler + runtime |
 | `PS2Recomp/ps2xRuntime/src/lib/game_overrides.cpp` | VCS-specific fixes and features (bottom of the file) |
 | `iso/extracted/` | the disc (boot ELF `SLUS_215.90`) |
-| `vcs-configs/vcs_clean.toml`, `vcs_clean.csv` | recompiler config + function map. **Not in git: back these up** |
-| `tools/` | map generator (`rebuild_function_map.py`), disassemblers, profilers. **Not in git** |
+| `vcs-configs/vcs_clean.toml`, `vcs_clean.csv` | recompiler config + function map (copy in git: `PS2Recomp/games/vcs/config/`, keep in sync) |
+| `tools/` | map generator (`rebuild_function_map.py`), disassemblers, profilers (copy in git: `PS2Recomp/games/vcs/tools/`) |
 | `vcs-vu1/` | AOT-compiled VU1 microprograms (generated, linked when configured) |
 | `scratch/` | captures, logs, screenshots, `ext/` (llvm-mingw, PCSX2 source) |
 | `GTA Vice City Stories Texture Pack/` | owner's HD pack, symlinked as `build/ps2xRuntime/mods/HD Textures for VCS` |
