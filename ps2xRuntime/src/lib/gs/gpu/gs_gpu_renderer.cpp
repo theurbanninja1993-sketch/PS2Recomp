@@ -1903,6 +1903,7 @@ void main()
             m_replResults.clear();
             m_replResultCount.store(0u, std::memory_order_relaxed);
         }
+        m_replPendingUploads.clear();
         for (auto &entry : m_replacements)
             if (entry.second.texture != 0)
                 gl.glDeleteTextures(1, &entry.second.texture);
@@ -1969,21 +1970,31 @@ void main()
 
     void Renderer::uploadLoadedReplacements()
     {
-        if (m_replResultCount.load(std::memory_order_acquire) == 0u)
-            return;
-        std::deque<std::pair<gsrepl::Key, std::unique_ptr<gsrepl::Image>>> results;
+        // At most this much texture data per frame: entering a new area can
+        // finish dozens of replacements at once, and uploading them all in one
+        // frame is a visible hitch (the originals show a few frames longer).
+        constexpr size_t kUploadBytesPerFrame = 6u * 1024u * 1024u;
+        if (m_replResultCount.load(std::memory_order_acquire) != 0u)
         {
             std::lock_guard lock(m_replMutex);
-            results.swap(m_replResults);
+            for (auto &result : m_replResults)
+                m_replPendingUploads.push_back(std::move(result));
+            m_replResults.clear();
             m_replResultCount.store(0u, std::memory_order_relaxed);
         }
+        if (m_replPendingUploads.empty() || m_replUploadedThisFrame >= kUploadBytesPerFrame)
+            return;
         GL &gl = m_context.gl;
-        for (auto &result : results)
+        while (!m_replPendingUploads.empty() && m_replUploadedThisFrame < kUploadBytesPerFrame)
         {
+            auto result = std::move(m_replPendingUploads.front());
+            m_replPendingUploads.pop_front();
             auto it = m_replacements.find(result.first);
             if (it == m_replacements.end() || !result.second || result.second->levels.empty())
                 continue; // index changed meanwhile, or the file failed (stays "requested")
             const gsrepl::Image &image = *result.second;
+            for (const auto &l : image.levels)
+                m_replUploadedThisFrame += l.data.size();
             GLuint texture = 0;
             gl.glCreateTextures(GL_TEXTURE_2D, 1, &texture);
             gl.glTextureStorage2D(texture, static_cast<GLsizei>(image.levels.size()), image.glFormat,
@@ -2167,6 +2178,7 @@ void main()
     {
         // Presentation reads local memory (both circuits, preferred source).
         m_syncReason = "present";
+        m_replUploadedThisFrame = 0;
         updateReplacements();
         if (replacementsActive())
         {
@@ -2175,7 +2187,8 @@ void main()
             if (s_stats && ++s_presents % 300u == 0u)
                 std::cerr << "[texrepl] draws=" << m_statReplDraws << " hits=" << m_statReplHits << " misses=" << m_statReplMisses
                           << " loaded=" << m_statReplLoaded << " hashed=" << m_statReplHashes
-                          << " textures=" << m_textureHashes.size() << std::endl;
+                          << " textures=" << m_textureHashes.size() << " pendingUploads=" << m_replPendingUploads.size()
+                          << std::endl;
         }
         PresentationFrame frame;
         if (m_gpu && m_scale > 1u)

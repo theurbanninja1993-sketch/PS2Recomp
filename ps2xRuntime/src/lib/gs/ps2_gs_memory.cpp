@@ -348,6 +348,31 @@ namespace GSMem
         PixelStorageTraits<P4HH>::Write(PageTableC32, data, bp, bw, x, y, value);
     }
 
+    template <PixelStorageMode P, typename Table>
+    static void WriteRowT(const Table& table, u8* data, u32 bp, u32 bw, u32 x, u32 y, const u32* values, u32 count)
+    {
+        for (u32 i = 0; i < count; ++i)
+            PixelStorageTraits<P>::Write(table, data, bp, bw, x + i, y,
+                                         static_cast<typename PixelStorageTraits<P>::PackedT>(values[i]));
+    }
+
+    bool WriteRow(u32 psm, u8* data, u32 bp, u32 bw, u32 x, u32 y, const u32* values, u32 count)
+    {
+        switch (static_cast<PixelStorageMode>(psm & 0x3Fu))
+        {
+        case C32: WriteRowT<C32>(PageTableC32, data, bp, bw, x, y, values, count); return true;
+        case C24: WriteRowT<C24>(PageTableC32, data, bp, bw, x, y, values, count); return true;
+        case C16: WriteRowT<C16>(PageTableC16, data, bp, bw, x, y, values, count); return true;
+        case C16S: WriteRowT<C16S>(PageTableC16S, data, bp, bw, x, y, values, count); return true;
+        case P8: WriteRowT<P8>(PageTableP8, data, bp, bw, x, y, values, count); return true;
+        case P4: WriteRowT<P4>(PageTableP4, data, bp, bw, x, y, values, count); return true;
+        case P8H: WriteRowT<P8H>(PageTableC32, data, bp, bw, x, y, values, count); return true;
+        case P4HL: WriteRowT<P4HL>(PageTableC32, data, bp, bw, x, y, values, count); return true;
+        case P4HH: WriteRowT<P4HH>(PageTableC32, data, bp, bw, x, y, values, count); return true;
+        default: return false;
+        }
+    }
+
     void WriteNull(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value)
     {
     }

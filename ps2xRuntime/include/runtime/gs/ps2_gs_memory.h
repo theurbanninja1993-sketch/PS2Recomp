@@ -565,6 +565,11 @@ namespace GSMem
 
 	void WriteNull(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value);
 
+	// Writes count pixels of one row, (x, y) to (x + count - 1, y), in one
+	// call (the per-pixel writer inlined). Returns false for a psm without a
+	// row writer (use the per-pixel functions).
+	bool WriteRow(u32 psm, u8* data, u32 bp, u32 bw, u32 x, u32 y, const u32* values, u32 count);
+
 	u32 ReadCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
 	u32 ReadZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
 

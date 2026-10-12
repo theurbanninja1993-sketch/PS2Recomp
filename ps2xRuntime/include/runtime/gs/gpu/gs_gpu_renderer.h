@@ -204,6 +204,10 @@ namespace gsgpu
         std::deque<std::pair<gsrepl::Key, std::string>> m_replRequests;
         std::deque<std::pair<gsrepl::Key, std::unique_ptr<gsrepl::Image>>> m_replResults;
         std::atomic<uint32_t> m_replResultCount{0};
+        // Loaded replacements waiting for their GPU upload (render thread only),
+        // and the bytes uploaded this frame (a burst is spread over frames).
+        std::deque<std::pair<gsrepl::Key, std::unique_ptr<gsrepl::Image>>> m_replPendingUploads;
+        size_t m_replUploadedThisFrame = 0;
         uint64_t m_statReplDraws = 0, m_statReplHits = 0, m_statReplMisses = 0, m_statReplLoaded = 0, m_statReplHashes = 0;
 
         uint32_t m_scale = 1;

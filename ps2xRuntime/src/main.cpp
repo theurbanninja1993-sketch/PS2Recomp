@@ -1,3 +1,7 @@
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
+#include <cstdlib>
 #include "ps2_runtime.h"
 #include "games_database.h"
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
@@ -166,6 +170,11 @@ namespace
 
 int main(int argc, char *argv[])
 {
+#if defined(__linux__)
+    // PS2X_ALLOW_PTRACE: let a non-parent profiler (eu-stack, gdb -p) attach.
+    if (std::getenv("PS2X_ALLOW_PTRACE"))
+        prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+#endif
 #if defined(__ANDROID__)
     redirectStdioToLogcat();
 #endif
