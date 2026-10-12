@@ -25,3 +25,10 @@ size_t ps2MusicStationTrackCount();
 // Title of the current track and the time it started (GetTime()); for the
 // "now playing" overlay.
 std::string ps2MusicStationNowPlaying(double &startedAt);
+// Whether the custom station is currently selected (in a vehicle, radio on),
+// and the time (GetTime()) it became selected - for the station-logo overlay.
+bool ps2MusicStationActive();
+double ps2MusicStationActiveSince();
+// Path of the custom station logo image (PNG next to the executable, or
+// PS2X_CUSTOM_LOGO); empty when absent.
+std::string ps2MusicStationLogoPath();

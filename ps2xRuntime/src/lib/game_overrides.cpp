@@ -502,6 +502,26 @@ namespace
         }
     }
 
+    // FUN_002a69e0 enqueues HUD messages; a2 = 0xB2 is the radio-station pop-up
+    // (the baked station logo, "Radio Off" for the silent slot). On the custom
+    // stop the game would show "Radio Off"; skip it so the runtime draws the
+    // owner's custom logo instead (ps2_music_station).
+    PS2Runtime::RecompiledFunction g_vcsOrigHudMessage = nullptr;
+    void vcsHudMessage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t id = getRegU32(ctx, 6) & 0xFFFFu;
+        static const bool s_trace = std::getenv("PS2X_RADIO_TRACE") != nullptr;
+        if (s_trace && id == 0xB2u)
+            std::cerr << "[radio] hud f=" << g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) << " id=0xB2 custom="
+                      << g_vcsCustomStation.load(std::memory_order_relaxed) << std::endl;
+        if (id == 0xB2u && g_vcsCustomStation.load(std::memory_order_relaxed))
+        {
+            setReturnU32(ctx, 0u);
+            return;
+        }
+        g_vcsOrigHudMessage(rdram, ctx, runtime);
+    }
+
     // Direct mouse look on foot (follow camera 0x29DAB0, a0 = CCam). The
     // hook converts exactly the mouse motion since the last camera update
     // into the camera's own controls (see below), so there is no stick
@@ -1055,6 +1075,8 @@ namespace
             runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);
         if ((g_vcsOrigRadioStationGet = runtime.lookupFunction(0x0018B8D8u)))
             runtime.replaceFunction(0x0018B8D8u, &vcsRadioStationGet);
+        if ((g_vcsOrigHudMessage = runtime.lookupFunction(0x002A69E0u)))
+            runtime.replaceFunction(0x002A69E0u, &vcsHudMessage);
         // Custom Soundtracks: the injected station stop between the last real
         // station and Radio Off (see vcsRadioStationGet); the music folder plays
         // there while in a vehicle.

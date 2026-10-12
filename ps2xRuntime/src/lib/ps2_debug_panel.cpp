@@ -2244,7 +2244,28 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     double trackStarted = 0.0;
     const std::string track = ps2MusicStationNowPlaying(trackStarted);
     const bool showTrack = !track.empty() && GetTime() - trackStarted < 4.0;
-    if (!m_visible && !settingsOpen && !showHint && !showTrack)
+    // Custom station logo: the game's "Radio Off" pop-up is suppressed on the
+    // custom stop (game override), so draw the owner's logo instead, for about
+    // as long as the game would have shown its own.
+    static Texture2D s_customLogo{};
+    static bool s_logoLoaded = false;
+    if (!s_logoLoaded)
+    {
+        s_logoLoaded = true;
+        const std::string logoPath = ps2MusicStationLogoPath();
+        if (!logoPath.empty() && FileExists(logoPath.c_str()))
+        {
+            s_customLogo = LoadTexture(logoPath.c_str());
+            if (s_customLogo.id != 0u)
+            {
+                GenTextureMipmaps(&s_customLogo);
+                SetTextureFilter(s_customLogo, TEXTURE_FILTER_BILINEAR); // smooth downscale
+            }
+        }
+    }
+    const bool showLogo = !settingsOpen && s_customLogo.id != 0u && ps2MusicStationActive() &&
+                          GetTime() - ps2MusicStationActiveSince() < 2.5;
+    if (!m_visible && !settingsOpen && !showHint && !showTrack && !showLogo)
     {
         return;
     }
@@ -2267,6 +2288,22 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
             ImGui::SetWindowFontScale(scale);
             ImGui::Text("%s", ps2MusicStationName());
             ImGui::TextDisabled("%s", track.c_str());
+        }
+        ImGui::End();
+    }
+    if (showLogo)
+    {
+        const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
+        const float logoW = 200.0f * scale;
+        const float logoH = logoW * static_cast<float>(s_customLogo.height) / static_cast<float>(s_customLogo.width);
+        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth()) * 0.5f, 14.0f * scale), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.0f));
+        if (ImGui::Begin("##custom-logo", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+                             ImGuiWindowFlags_NoBackground))
+        {
+            rlImGuiImageSize(&s_customLogo, static_cast<int>(logoW), static_cast<int>(logoH));
         }
         ImGui::End();
     }

@@ -25,6 +25,8 @@ namespace
     bool g_skip = false;
     std::string g_title;
     double g_startedAt = -100.0;
+    bool g_active = false;
+    double g_activeSince = -100.0;
 
     bool isAudioFile(const fs::path &path)
     {
@@ -124,6 +126,23 @@ std::string ps2MusicStationNowPlaying(double &startedAt)
     return g_title;
 }
 
+bool ps2MusicStationActive()
+{
+    return g_active;
+}
+
+double ps2MusicStationActiveSince()
+{
+    return g_activeSince;
+}
+
+std::string ps2MusicStationLogoPath()
+{
+    if (const char *env = std::getenv("PS2X_CUSTOM_LOGO"); env && *env)
+        return env;
+    return (ps2ExecutableDirectory() / "custom_logo.png").string();
+}
+
 void ps2MusicStationNextTrack()
 {
     g_skip = true;
@@ -143,6 +162,12 @@ void ps2MusicStationUpdate(const uint8_t *rdram)
         scan();
     const bool active = settings.musicStation && !g_tracks.empty() && rdram && g_query(rdram) &&
                         !g_ps2SettingsMenuOpen.load(std::memory_order_relaxed);
+    if (active != g_active)
+    {
+        g_active = active;
+        if (active)
+            g_activeSince = GetTime();
+    }
     if (!active)
     {
         if (g_playing)
