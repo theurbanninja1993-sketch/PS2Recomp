@@ -256,8 +256,16 @@ texture packs from `mods/`, Windows build under Wine.
      Paradise, 3 VCPR, 4 VCFL Radio, 5 The Wave 103, 6 Fresh 105, 7
      Espantoso, 8 Emotion 98.3, **9 Radio Off**. 0x4E4756 lags one step at
      one point (probably the station actually playing vs the one selected).
-     Next: confirm with `PS2X_WATCH_WRITE=0x4E4755`, then play the music
-     folder while it reads 9 in a vehicle.
+   - **Implemented (2347e89):** `ps2_music_station.cpp`, plus the VCS query in
+     `applyGtaVcsUs`: station byte == 9 && in a vehicle. F10 skips a track.
+     The Mods tab has on/off, volume, shuffle, open folder and rescan.
+     A "now playing" overlay shows for 4 s. Tested: scan works; it stays
+     silent on the mission bike (station 6).
+   - Todo:
+     - owner test in a car;
+     - pause while the game itself is paused (pause-state address
+       unknown);
+     - a controller button for next track.
    - (Earlier attempt:) In the fast-boot mission (Fort
      Baxter bike) D-pad Up/Down/Left/Right showed no station name. That
      mission's bike probably has no radio. A scripted RAM diff found nothing.
