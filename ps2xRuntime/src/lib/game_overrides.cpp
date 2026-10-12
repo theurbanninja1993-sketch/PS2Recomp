@@ -400,6 +400,36 @@ namespace
         return false;
     }
 
+    // The current in-vehicle radio station: 0..8 = the nine real stations,
+    // 9 = the game's leftover/unused station slot (see the music station).
+    // It is not byte 0x4E4755 (which is overloaded with radio *modes* 9..30);
+    // it is the station field at +0x2BA of the audio/vehicle entity. FUN_0018aad8
+    // (called every frame with a1 = that entity) applies and clamps it, so the
+    // wrapper below snapshots it each frame. 0xFF = not set yet.
+    std::atomic<uint32_t> g_vcsRadioStation{0xFFu};
+    PS2Runtime::RecompiledFunction g_vcsOrigRadioUpdate = nullptr;
+
+    void vcsRadioUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t entity = getRegU32(ctx, 5);
+        g_vcsOrigRadioUpdate(rdram, ctx, runtime);
+        if (entity >= 0x00100000u && entity + 0x2BAu < PS2_RAM_SIZE)
+        {
+            const uint32_t station = rdram[entity + 0x2BAu];
+            if (station != g_vcsRadioStation.load(std::memory_order_relaxed))
+            {
+                static const bool s_trace = std::getenv("PS2X_RADIO_TRACE") != nullptr;
+                if (s_trace)
+                {
+                    std::ostringstream out;
+                    out << "[radio] station=" << station;
+                    std::cerr << out.str() << std::endl;
+                }
+                g_vcsRadioStation.store(station, std::memory_order_relaxed);
+            }
+        }
+    }
+
     // Direct mouse look on foot (follow camera 0x29DAB0, a0 = CCam). The
     // hook converts exactly the mouse motion since the last camera update
     // into the camera's own controls (see below), so there is no stick
@@ -948,17 +978,17 @@ namespace
             runtime.replaceFunction(0x0018F400u, &vcsSetFarClip);
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
-        // Custom Soundtracks station: the game's leftover 10th station slot
-        // (station byte 0x4E4755: 0 Flash FM .. 8 Emotion 98.3, 9 the unused
-        // slot) while in a vehicle. It is the PC/PSP "custom tracks" station
-        // (GXT FEA_CSS = "CUSTOM SOUNDTRACKS:", the option HOOK_USE_CUSTOM_TRACKS
-        // and the CUSTOM_ITEM_TRACKS audio page), disabled on PS2: the frontend
-        // radio selector's 10th state is the FEA_NON placeholder and no stream
-        // is loaded. The station field cycles mod 10 (FUN_0018b8d8) and values
-        // >= 9 are forced to 9 (FUN_0018aad8), so 9 is the only spare slot; 10
-        // is a transient radio *mode*, not a station.
+        if ((g_vcsOrigRadioUpdate = runtime.lookupFunction(0x0018AAD8u)))
+            runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);
+        // Custom Soundtracks station: play the music folder on the game's
+        // leftover/unused 10th station slot (the station field's value 9),
+        // while in a vehicle. That slot is the PC/PSP "custom tracks" station
+        // (GXT FEA_CSS = "CUSTOM SOUNDTRACKS:", HOOK_USE_CUSTOM_TRACKS, the
+        // CUSTOM_ITEM_TRACKS audio page), disabled on PS2. g_vcsRadioStation is
+        // the real station (entity +0x2BA), not byte 0x4E4755 which is
+        // overloaded with radio modes 9..30.
         ps2MusicStationSetQuery([](const uint8_t *rdram)
-                                { return rdram[0x004E4755u] == 9u && vcsPlayerInVehicle(rdram); });
+                                { return g_vcsRadioStation.load(std::memory_order_relaxed) == 9u && vcsPlayerInVehicle(rdram); });
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);
