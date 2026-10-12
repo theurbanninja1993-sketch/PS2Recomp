@@ -112,7 +112,15 @@ texture packs from `mods/`, Windows build under Wine.
      - the runtime precompiled as a static library, so only the generated
        game code is compiled on the player's machine (~10-30 min).
    - VU1: generate `vcs-vu1` from the player's ELF (needs the static
-     microcode extraction above).
+     microcode extraction above). Feasibility check (2026-10-12): of 14
+     distinct program starts in `scratch/vu1_capture.bin` (record = 16-byte
+     header 'CVU1' + VU1State (664 B) + 16 KB code + 16 KB data + VU1State +
+     16 KB data), 13 appear verbatim in the ELF (e.g. 0x1ad2b0, 0x2acaa0,
+     0x382470). Check what `ps2Vu1ProgramKey` hashes: the program alone, or
+     the whole micro-memory layout. If the latter, the extractor must also
+     reproduce which programs are co-resident (follow the VIF MPG uploads in
+     the game's DMA chains). Find the 14th (runtime-patched, or loaded from
+     another disc file).
    - Suggested order:
      1. ISO reader + hash check, in a standalone library with a CLI test;
      2. the wizard UI;
