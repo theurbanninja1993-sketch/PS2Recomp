@@ -1353,6 +1353,10 @@ int main(int argc, char **argv)
     // <outDir>/vu1p_<key>.cpp per program (compiled in parallel) plus the
     // registry; files whose content is unchanged are left alone.
     const std::string dir = argv[1];
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec); // a fresh output folder is fine
+    }
     auto writeIfChanged = [](const std::string &path, const std::string &content)
     {
         if (FILE *in = std::fopen(path.c_str(), "rb"))

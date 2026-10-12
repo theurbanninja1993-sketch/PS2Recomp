@@ -140,6 +140,28 @@ texture packs from `mods/`, Windows build under Wine.
        intro + PS2X_PAD_SCRIPT fast boot + some frames of gameplay. This
        works for any game, ships no game code, and coverage grows as the
        player plays.
+     - **Implemented (e6027eb): `PS2X_VU1_LEARN=<dir>`** records up to 4 MSCAL
+       runs per program that has no compiled version
+       (`<dir>/vu1_learn_<time>.bin`, capture format). Then
+       `vu1_recomp <outdir> <dir>/*.bin`, and build with
+       `-DPS2X_VU1_PROGRAMS=<outdir>`.
+       Measured on the fast-boot run, starting from nothing
+       (`PS2X_VU1_NO_COMPILED=1` for pass 1):
+
+       | Learned set | Recorded | VU1 calls compiled | Late frames / 600 |
+       |---|---|---|---|
+       | Pass 1 | 13 programs, 2.6 MB | ~75% | – |
+       | Pass 1 + pass 2 (built with the pass-1 set) | 15 variants | ~88% | 0-2 |
+       | Full `vcs-vu1` (hand-made captures) | – | 100% | 0 |
+
+       More passes keep closing the gap. Programs whose JR targets depend on
+       co-resident code need runs under each layout.
+     - Next steps:
+       - a plugin library loaded at startup instead of relinking the exe;
+       - merging learned files across sessions;
+       - possibly more runs per key;
+       - the builder running 2-3 automated learning passes (the intro plus
+         the fast-boot pad script) before handing over.
    - Suggested order:
      1. ISO reader + hash check, in a standalone library with a CLI test;
      2. the wizard UI;
