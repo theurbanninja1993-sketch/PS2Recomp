@@ -1,6 +1,6 @@
 # GTA Vice City Stories (SLUS_215.90) recomp: handoff notes
 
-State as of 2026-10-12 (last commit `f3e4ec0`). Read this before changing
+State as of 2026-10-12 (last commit `be626b9`). Read this before changing
 anything. A reviewer will check work against it.
 
 ## Ground rules
@@ -271,7 +271,21 @@ texture packs from `mods/`, Windows build under Wine.
    - **Next (owner wants): a real extra station** instead of reusing Radio
      Off.
      1. Find the station-cycling code: `PS2X_WATCH_WRITE=0x4E4755`, press
-        L1 on the bike.
+        L1 on the bike. **Done.** L1 enters 0x2FA8C8
+        (`FUN_002fa8c8` → `FUN_0018b610`), which only invalidates the
+        playing station (0x4E4755 = 0x71) so the per-frame radio update
+        re-tunes. Map of the radio singleton at **0x4E41E0**:
+        +0x575 = station playing (u8), +0x576 = desired (a frame behind),
+        +0x577/+0x578 = lock flags, +0x57B = last playing, +0x564/+0x568 =
+        owning vehicle (set by `FUN_00189310`), +0x2BA(vehicle) mirrors it.
+        Codes: 0..8 are real stations, **9..30 are special** (off/DJ/ad —
+        the update tests `(x - 9) < 0x16`), 0x71 = uninitialised. The
+        station list is built by a 9-iteration loop in `FUN_00188cc0`
+        (`sltiu ..., 9`). Other command entries: 0x2FA870/930/978/8C8/8E8
+        wrap `FUN_0018b638` / `FUN_0018b358` / `FUN_0018b4b8` /
+        `FUN_0018b610` / `FUN_002a6cb0`. Still to find: the next/prev
+        selection itself (inside the 0x189xxx radio update,
+        `FUN_00189ad0` / `FUN_0018aad8`) to insert a slot.
      2. Patch its order to 8 → 9 "Music Folder" → off → 0. VC PC had its
         MP3 slot at 9; on the bike VCS skips 9 (8 → 10), so the slot may
         still exist in the code.
@@ -301,8 +315,12 @@ texture packs from `mods/`, Windows build under Wine.
    (`GSCpuBackend::UploadImage` → `GSMem::WriteRow`) still costs the render
    thread ~+15 pts in streaming scenes. Next lever: a lazy mirror keyed by
    upload content hash. Owner to re-test the airport area first.
-4. Mods: `.pnach` patches (counted by the mod loader, not applied), file
-   overrides (replace disc files from a mod folder).
+4. Mods: file overrides (replace disc files from a mod folder). `.pnach`
+   memory patches are now applied (be626b9): PCSX2 `patch=1,EE,ADDR,TYPE,VALUE`
+   byte/short/word lines from enabled mod folders are written to EE RAM each
+   frame. New setting "Apply .pnach memory patches" (`pnach_cheats`, default
+   on; Mods tab). `extended` writes and conditional/pointer code words are
+   skipped. Unit tests in `ps2xTest/src/ps2_mods_tests.cpp`.
 5. Controllers: PlayStation button names in the menu, rumble.
 6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
    regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
