@@ -268,6 +268,20 @@ texture packs from `mods/`, Windows build under Wine.
        slot as in VC).
      - Tested by script: L1 cycling on the bike reaches off, and the
        music starts ("[music] playing ...").
+   - **Next (owner wants): a real extra station** instead of reusing Radio
+     Off.
+     1. Find the station-cycling code: `PS2X_WATCH_WRITE=0x4E4755`, press
+        L1 on the bike.
+     2. Patch its order to 8 → 9 "Music Folder" → off → 0. VC PC had its
+        MP3 slot at 9; on the bike VCS skips 9 (8 → 10), so the slot may
+        still exist in the code.
+     3. Make sure the game plays silence for slot 9 (no stream).
+     4. Show the name through our overlay (the HUD name would need a GXT
+        text edit).
+
+     Then change the music query to "== 9" and make off silent again.
+     Untangle first which value means off per vehicle type (car: 9; bike:
+     10).
    - Todo:
      - owner test in a car;
      - pause while the game itself is paused (pause-state address
