@@ -301,16 +301,23 @@ texture packs from `mods/`, Windows build under Wine.
        matched 9 *or* 10 and played on a bike that has no radio. Do not treat
        0x4E4755 as a reliable station value; the station field is +0x2BA of
        the entity from `FUN_1B5768(0x514A90)`.
-     - **Frontend (c81bf35):** a CD read patch renames the audio page's 10th
-       selector state key `FEA_NON` -> `FEA_CSS` in the read buffer (no disc
-       file redistributed). But the menu's RADIO STATION selector only cycles
-       the nine real stations (S9 is unreachable); next step is to add an 11th
-       state (`S10="FEA_CSS"`) and carry the choice to the runtime flag. The
-       station logos on the audio page are code-drawn
-       (CUSTOM_ITEM_RADIO_ICONS); the art source and whether a 10th "custom"
-       logo exists are still to find.
-     - Remaining: frontend menu entry for the custom stop, a controller
-       next-track button, pause with the game.
+     - **HUD station logo (owner wants the custom art there).** On each station
+       change the HUD shows the station's baked logo *sprite* top-centre (blue
+       script art, e.g. "Radio Off"); the custom stop shares value 9, so it
+       draws the "Radio Off" logo. The logos are not individual named textures
+       (no per-logo key in `PS2X_TEXREPL_LOG_MISSES`, so texture replacement
+       can't target one); the station-change path calls the sprite helper
+       `FUN_002a69e0` (from `FUN_00189ad0` 0x18a068, a1 = entity+0x70E0,
+       a2 = 0xB2). Next step: hook that sprite draw (or its source) and use the
+       custom logo when `g_vcsCustomStation` is set. The owner's art is
+       `vcs-port/assets/custom_logo.png` (1500x384, transparent; made from
+       "Custom Sountrack.png" with the checkerboard keyed out).
+     - Frontend (c81bf35): a CD read patch renames the audio page's 10th
+       selector state key `FEA_NON` -> `FEA_CSS` in the read buffer. The menu's
+       RADIO STATION selector only cycles the nine real stations (S9 is
+       unreachable); next step is to add an 11th state and carry the choice.
+     - Remaining: frontend menu entry for the custom stop, HUD logo swap, a
+       controller next-track button, pause with the game.
    - Todo:
      - owner test in a car;
      - pause while the game itself is paused (pause-state address
