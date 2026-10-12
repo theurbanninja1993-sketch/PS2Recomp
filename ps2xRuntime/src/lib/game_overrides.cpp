@@ -416,6 +416,40 @@ namespace
     PS2Runtime::RecompiledFunction g_vcsOrigRadioStationGet = nullptr; // FUN_0018b8d8
     PS2Runtime::RecompiledFunction g_vcsFnRadioEntity = nullptr;       // FUN_1B5768(0x514A90)
 
+    // The station pop-up draws the GXT name of the current station slot. The
+    // custom stop and Radio Off share slot 9, so both would read "Radio Off";
+    // rename that string in guest RAM while the custom stop is active and put it
+    // back for Radio Off. The GXT is loaded lazily, so rescan until it is found.
+    uint32_t vcsRadioOffNameAddr(uint8_t *rdram)
+    {
+        static uint32_t s_addr = 0;
+        if (s_addr != 0u)
+            return s_addr;
+        const char needle[] = "Radio Off";
+        uint8_t pat[sizeof(needle) * 2] = {};
+        for (size_t i = 0; i + 1 < sizeof(needle); ++i)
+            pat[i * 2] = static_cast<uint8_t>(needle[i]);
+        for (uint32_t a = 0x00100000u; a + sizeof(pat) < PS2_RAM_SIZE; ++a)
+        {
+            if (std::memcmp(rdram + a, pat, sizeof(pat)) == 0)
+            {
+                s_addr = a;
+                break;
+            }
+        }
+        return s_addr;
+    }
+
+    void vcsSetRadioOffName(uint8_t *rdram, bool custom)
+    {
+        const uint32_t addr = vcsRadioOffNameAddr(rdram);
+        if (addr == 0u)
+            return;
+        static const uint16_t kCustom[10] = {'C', 'u', 's', 't', 'o', 'm', 0, 0, 0, 0};
+        static const uint16_t kOff[10] = {'R', 'a', 'd', 'i', 'o', ' ', 'O', 'f', 'f', 0};
+        std::memcpy(rdram + addr, custom ? kCustom : kOff, sizeof(kOff));
+    }
+
     uint32_t vcsRadioEntity(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         if (!g_vcsFnRadioEntity)
@@ -456,8 +490,6 @@ namespace
         std::memcpy(&delta, rdram + 0x0048613Cu, sizeof(delta));
         const uint32_t previous = g_vcsRadioStation.load(std::memory_order_relaxed);
         const bool custom = g_vcsCustomStation.load(std::memory_order_relaxed);
-        g_vcsOrigRadioStationGet(rdram, ctx, runtime);
-        uint32_t result = getRegU32(ctx, 2) & 0xFFu;
         bool wantCustom = false;
         bool override = false;
         if (delta == 1u) // next
@@ -467,7 +499,7 @@ namespace
                 wantCustom = true; // 8 -> Custom
                 override = true;
             }
-            else if (previous == 9u && custom)
+            else if (previous >= 9u && custom)
             {
                 override = true; // Custom -> off (the game went 9 -> 0)
             }
@@ -476,22 +508,30 @@ namespace
         {
             if (previous == 0u)
                 override = true; // 0 -> off
-            else if (previous == 9u && !custom)
+            else if (previous >= 9u && !custom)
             {
                 wantCustom = true; // off -> Custom
                 override = true;
             }
         }
+        // The pop-up reads the station name when the change is applied, so set
+        // the shared slot-9 name before running the original.
+        if (override)
+            vcsSetRadioOffName(rdram, wantCustom);
+
+        g_vcsOrigRadioStationGet(rdram, ctx, runtime);
+        uint32_t result = getRegU32(ctx, 2) & 0xFFu;
         if (override)
         {
-            result = 9u; // the shared silent slot; the flag distinguishes them
+            result = 9u; // the shared silent slot (Radio Off / Custom)
             const uint32_t entity = vcsRadioEntity(rdram, ctx, runtime);
             if (entity >= 0x00100000u && entity + 0x2BAu < PS2_RAM_SIZE)
-                rdram[entity + 0x2BAu] = static_cast<uint8_t>(result);
+                rdram[entity + 0x2BAu] = 9u;
         }
         setReturnU32(ctx, result);
         g_vcsRadioStation.store(result, std::memory_order_relaxed);
-        g_vcsCustomStation.store(wantCustom, std::memory_order_relaxed);
+        if (override)
+            g_vcsCustomStation.store(wantCustom, std::memory_order_relaxed);
         static const bool s_trace = std::getenv("PS2X_RADIO_TRACE") != nullptr;
         if (s_trace)
         {
@@ -502,25 +542,40 @@ namespace
         }
     }
 
-    // FUN_002a69e0 enqueues HUD messages; a2 = 0xB2 is the radio-station pop-up
-    // (the baked station logo, "Radio Off" for the silent slot). On the custom
-    // stop the game would show "Radio Off"; skip it so the runtime draws the
-    // owner's custom logo instead (ps2_music_station).
-    PS2Runtime::RecompiledFunction g_vcsOrigHudMessage = nullptr;
-    void vcsHudMessage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    // FUN_0018b610 is called when the pending station change is initiated (it
+    // marks radio+0x575 = 0x71). The pop-up reads the station name during this
+    // frame, before the getter runs, so set the shared slot-9 name here for the
+    // upcoming transition - otherwise the game shows "Radio Off" for one frame.
+    PS2Runtime::RecompiledFunction g_vcsOrigRadioChangeBegin = nullptr; // FUN_0018b610
+    void vcsRadioChangeBegin(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t id = getRegU32(ctx, 6) & 0xFFFFu;
-        static const bool s_trace = std::getenv("PS2X_RADIO_TRACE") != nullptr;
-        if (s_trace && id == 0xB2u)
-            std::cerr << "[radio] hud f=" << g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) << " id=0xB2 custom="
-                      << g_vcsCustomStation.load(std::memory_order_relaxed) << std::endl;
-        if (id == 0xB2u && g_vcsCustomStation.load(std::memory_order_relaxed))
+        g_vcsOrigRadioChangeBegin(rdram, ctx, runtime);
+        uint32_t delta = 0u;
+        std::memcpy(&delta, rdram + 0x0048613Cu, sizeof(delta));
+        const uint32_t previous = g_vcsRadioStation.load(std::memory_order_relaxed);
+        const bool custom = g_vcsCustomStation.load(std::memory_order_relaxed);
+        bool nextCustom = custom;
+        if (delta == 1u)
         {
-            setReturnU32(ctx, 0u);
-            return;
+            if (previous == 8u && !custom)
+                nextCustom = true; // 8 -> Custom
+            else if (previous >= 9u && custom)
+                nextCustom = false; // Custom -> off
         }
-        g_vcsOrigHudMessage(rdram, ctx, runtime);
+        else if (delta == 9u)
+        {
+            if (previous == 0u)
+                nextCustom = false; // 0 -> off
+            else if (previous >= 9u && !custom)
+                nextCustom = true; // off -> Custom
+        }
+        vcsSetRadioOffName(rdram, nextCustom);
     }
+
+    // (FUN_002a69e0 / HUD message 0xB2 was checked as the station pop-up; it is
+    // not - suppressing it did not remove the logo. The pop-up is avoided by
+    // keeping the station value unchanged on the custom stop instead; see
+    // vcsRadioStationGet.)
 
     // Direct mouse look on foot (follow camera 0x29DAB0, a0 = CCam). The
     // hook converts exactly the mouse motion since the last camera update
@@ -1025,6 +1080,9 @@ namespace
 
     void vcsFrameUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // Keep the shared slot-9 station name in sync with the custom flag (the
+        // game derives the pop-up name each frame, so this must run every frame).
+        vcsSetRadioOffName(rdram, g_vcsCustomStation.load(std::memory_order_relaxed));
         if (getRegU32(ctx, 31) == 0x0037AE5Cu)
         {
             vcsScaleLodDistance(rdram);
@@ -1075,8 +1133,8 @@ namespace
             runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);
         if ((g_vcsOrigRadioStationGet = runtime.lookupFunction(0x0018B8D8u)))
             runtime.replaceFunction(0x0018B8D8u, &vcsRadioStationGet);
-        if ((g_vcsOrigHudMessage = runtime.lookupFunction(0x002A69E0u)))
-            runtime.replaceFunction(0x002A69E0u, &vcsHudMessage);
+        if ((g_vcsOrigRadioChangeBegin = runtime.lookupFunction(0x0018B610u)))
+            runtime.replaceFunction(0x0018B610u, &vcsRadioChangeBegin);
         // Custom Soundtracks: the injected station stop between the last real
         // station and Radio Off (see vcsRadioStationGet); the music folder plays
         // there while in a vehicle.
