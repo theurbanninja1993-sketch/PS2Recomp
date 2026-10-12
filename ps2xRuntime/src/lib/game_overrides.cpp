@@ -560,7 +560,7 @@ namespace
     };
     VcsCamBackup g_vcsCamBackup[3];
 
-    void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam);
+    void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam, R5900Context *ctx, PS2Runtime *runtime);
 
     void vcsRestoreCamBackups(uint8_t *rdram)
     {
@@ -621,7 +621,7 @@ namespace
         const uint32_t cam = getRegU32(ctx, 4);
         if (cam == g_vcsCarLook.vehicleCam &&
             g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) <= g_vcsCarLook.vehicleFrame + 1u)
-            vcsRotateVehicleCam(rdram, cam);
+            vcsRotateVehicleCam(rdram, cam, ctx, runtime);
         g_vcsOrigAfterCamProcess(rdram, ctx, runtime);
     }
 
@@ -642,7 +642,47 @@ namespace
     // the unrotated camera: grey sky, missing world.) The unrotated result is
     // put back before the next update, so the camera logic never builds on
     // the offset.
-    void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam)
+    // CWorld::ProcessLineOfSight(p1, p2, colPoint&, entity*&, buildings,
+    // vehicles, peds, objects, dummies, ignoreSeeThrough, ignoreSomeObjects,
+    // ...) (0x1908C0, as the vehicle camera calls it; ignores the entity at
+    // CWorld::pIgnoreEntity, 0x4CD184). Called from a hook on the game
+    // thread with a scratch stack frame; true and the hit point when blocked.
+    bool vcsLineOfSightBlocked(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, const float from[3], const float to[3],
+                               uint32_t ignoreEntity, float hit[3])
+    {
+        static PS2Runtime::RecompiledFunction s_lineOfSight = runtime->lookupFunction(0x001908C0u);
+        if (!s_lineOfSight)
+            return false;
+        const R5900Context saved = *ctx;
+        const uint32_t sp = (getRegU32(ctx, 29) - 0x100u) & ~0xFu;
+        uint32_t oldIgnore = 0;
+        std::memcpy(&oldIgnore, rdram + 0x004CD184u, 4);
+        std::memcpy(rdram + 0x004CD184u, &ignoreEntity, 4);
+        std::memset(rdram + sp, 0, 0xC0u);
+        std::memcpy(rdram + sp + 0x40u, from, 12);
+        std::memcpy(rdram + sp + 0x50u, to, 12);
+        const uint32_t one = 1u;
+        std::memcpy(rdram + sp + 0x08u, &one, 4); // ignoreSeeThrough
+        std::memcpy(rdram + sp + 0x10u, &one, 4); // ignoreSomeObjects
+        SET_GPR_U32(ctx, 29, sp);
+        SET_GPR_U32(ctx, 4, sp + 0x40u);
+        SET_GPR_U32(ctx, 5, sp + 0x50u);
+        SET_GPR_U32(ctx, 6, sp + 0x60u); // CColPoint
+        SET_GPR_U32(ctx, 7, sp + 0xA0u); // CEntity *
+        SET_GPR_U32(ctx, 8, 1u);         // buildings
+        SET_GPR_U32(ctx, 9, 1u);         // vehicles
+        SET_GPR_U32(ctx, 10, 0u);        // peds
+        SET_GPR_U32(ctx, 11, 1u);        // objects
+        s_lineOfSight(rdram, ctx, runtime);
+        const bool blocked = (getRegU32(ctx, 2) & 0xFFu) != 0u;
+        if (blocked)
+            std::memcpy(hit, rdram + sp + 0x60u, 12);
+        std::memcpy(rdram + 0x004CD184u, &oldIgnore, 4);
+        *ctx = saved;
+        return blocked && std::isfinite(hit[0] + hit[1] + hit[2]);
+    }
+
+    void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam, R5900Context *ctx, PS2Runtime *runtime)
     {
         VcsCarLook &look = g_vcsCarLook;
         if (look.yaw == 0.0f && look.pitch == 0.0f)
@@ -714,6 +754,55 @@ namespace
             rotate(o, look.pitch);
             for (int i = 0; i < 3; ++i)
                 v[i] = pivot[i] + o[i];
+        }
+
+        // The game's own wall check ran before the offset: swinging the
+        // camera around could put it inside a wall. Pull it in front of
+        // whatever is between the vehicle and the new position.
+        float hit[3];
+        if (vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, c + 8, target, hit))
+        {
+            float toPivot[3] = {pivot[0] - hit[0], pivot[1] - hit[1], pivot[2] - hit[2]};
+            const float length = std::sqrt(toPivot[0] * toPivot[0] + toPivot[1] * toPivot[1] + toPivot[2] * toPivot[2]);
+            constexpr float kWallGap = 0.3f;
+            const float pull = length > kWallGap ? kWallGap / length : 0.0f;
+            float position[3];
+            for (int i = 0; i < 3; ++i)
+                position[i] = hit[i] + toPivot[i] * pull;
+            // Too little room (a wall right beside the vehicle): rise above
+            // the vehicle and look down at it instead of ending up inside
+            // it - unless that is blocked too (a low ceiling).
+            constexpr float kMinDistance = 1.6f;
+            const float dx = position[0] - pivot[0], dy = position[1] - pivot[1], dz = position[2] - pivot[2];
+            const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (distance < kMinDistance)
+            {
+                float raised[3] = {position[0], position[1], position[2] + (kMinDistance - distance) * 1.5f};
+                float ceiling[3];
+                if (!vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, raised, target, ceiling))
+                {
+                    std::memcpy(position, raised, sizeof(position));
+                    const float lookAt[3] = {pivot[0], pivot[1], pivot[2] + 0.3f};
+                    float f[3] = {lookAt[0] - position[0], lookAt[1] - position[1], lookAt[2] - position[2]};
+                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                    if (fl > 1.0e-3f)
+                    {
+                        for (float &x : f)
+                            x /= fl;
+                        // Up: world Z made perpendicular to Front.
+                        float u[3] = {-f[2] * f[0], -f[2] * f[1], 1.0f - f[2] * f[2]};
+                        const float ul = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+                        if (ul > 1.0e-3f)
+                        {
+                            std::memcpy(c + 4, f, sizeof(f));
+                            for (int i = 0; i < 3; ++i)
+                                c[0x60 / 4 + i] = u[i] / ul;
+                        }
+                    }
+                }
+            }
+            for (uint32_t off : {0x20u, 0x50u})
+                std::memcpy(c + off / 4u, position, sizeof(position));
         }
     }
 
