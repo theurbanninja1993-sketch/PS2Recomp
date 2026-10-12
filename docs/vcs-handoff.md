@@ -167,9 +167,9 @@ texture packs from `mods/`, Windows build under Wine.
        come from the same build/headers.
        Tested on Linux: a runner with no built-in programs + the 2-pass
        learned plugin ran ~90% of VU1 calls compiled, 0 late frames. The
-       Windows DLL is not tested yet.
+       Windows DLL also loads under Wine (15 programs; the table is built on the
+       first VU1 call, after the intro movie).
      - Next steps:
-       - test the Windows DLL;
        - merging learned files across sessions;
        - possibly more runs per key;
        - the builder running 2-3 automated learning passes (the intro plus
