@@ -1,4 +1,6 @@
 #include <chrono>
+#include <cctype>
+#include <cstring>
 #include "Common.h"
 #include "CD.h"
 #include "MPEG.h"
@@ -381,6 +383,38 @@ namespace ps2_stubs
             return false;
         }
         const bool ok = readCdSectors(lbn, sectors, dst, static_cast<size_t>(sectors) * kCdSectorSize, false);
+        // Custom Soundtracks: the PS2 audio page still names the 10th radio
+        // station with the dev placeholder key ("FEA_NON"); rename it to the
+        // leftover PC/PSP custom-tracks key ("FEA_CSS" = "CUSTOM SOUNDTRACKS:")
+        // so the frontend lists the music-folder station. Same length, so it is
+        // patched in place in the read buffer (no disc file is redistributed).
+        if (ok)
+        {
+            CdFileEntry patched{};
+            if (findRegisteredCdFileForLbn(lbn, patched))
+            {
+                std::string name = patched.hostPath.filename().string();
+                for (char &c : name)
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                if (name == "AUDPG.PSP")
+                {
+                    const size_t bytes = static_cast<size_t>(sectors) * kCdSectorSize;
+                    bool changed = false;
+                    for (size_t off = 0; off + 7u <= bytes; ++off)
+                        if (std::memcmp(dst + off, "FEA_NON", 7u) == 0)
+                        {
+                            std::memcpy(dst + off, "FEA_CSS", 7u);
+                            changed = true;
+                        }
+                    static bool s_logged = false;
+                    if (changed && !s_logged)
+                    {
+                        s_logged = true;
+                        std::cerr << "[cdpatch] AUDPG.PSP: 10th radio station FEA_NON -> FEA_CSS" << std::endl;
+                    }
+                }
+            }
+        }
         // PS2X_CD_TRACE=1 logs every IOP-side sector read with its backing file.
         static const bool s_trace = std::getenv("PS2X_CD_TRACE") != nullptr;
         if (s_trace)
