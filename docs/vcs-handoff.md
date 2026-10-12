@@ -259,8 +259,15 @@ texture packs from `mods/`, Windows build under Wine.
    - **Implemented (2347e89):** `ps2_music_station.cpp`, plus the VCS query in
      `applyGtaVcsUs`: station byte == 9 && in a vehicle. F10 skips a track.
      The Mods tab has on/off, volume, shuffle, open folder and rescan.
-     A "now playing" overlay shows for 4 s. Tested: scan works; it stays
-     silent on the mission bike (station 6).
+     A "now playing" overlay shows for 4 s.
+     - **The radio button is L1** (PS2 layout). D-pad does nothing; that
+       was why the first scripted test saw no station change.
+     - On the Fort Baxter bike the byte cycles 8 → **10** → 0. In the
+       owner's car, Radio Off read 9. Both count as off for now; confirm
+       what 10 is (maybe a vehicle-type variant, or the police-scanner
+       slot as in VC).
+     - Tested by script: L1 cycling on the bike reaches off, and the
+       music starts ("[music] playing ...").
    - Todo:
      - owner test in a car;
      - pause while the game itself is paused (pause-state address

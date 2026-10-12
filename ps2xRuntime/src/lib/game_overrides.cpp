@@ -949,9 +949,10 @@ namespace
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
         // Music folder station: the "Radio Off" slot (station byte 0x4E4755:
-        // 0 Flash FM .. 8 Emotion 98.3, 9 off) while in a vehicle.
+        // 0 Flash FM .. 8 Emotion 98.3; off read 9 in a car and 10 on the
+        // Fort Baxter bike, which cycles 8 -> 10 -> 0) while in a vehicle.
         ps2MusicStationSetQuery([](const uint8_t *rdram)
-                                { return rdram[0x004E4755u] == 9u && vcsPlayerInVehicle(rdram); });
+                                { return rdram[0x004E4755u] >= 9u && rdram[0x004E4755u] <= 10u && vcsPlayerInVehicle(rdram); });
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);
