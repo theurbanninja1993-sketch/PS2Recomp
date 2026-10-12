@@ -29,6 +29,11 @@ public:
         return m_mouseCaptured.load(std::memory_order_relaxed) || applyFakeMouse(yaw, pitch);
     }
 
+    // The left stick the game last read (keyboard WASD, gamepad, script)
+    // is pushed: the player is being moved.
+    bool movingInput() const { return m_movingInput.load(std::memory_order_relaxed); }
+    void setMovingInput(bool moving) { m_movingInput.store(moving, std::memory_order_relaxed); }
+
     using VehicleProbe = bool (*)(const uint8_t *rdram);
     void setVehicleProbe(VehicleProbe probe, const uint8_t *rdram)
     {
@@ -43,6 +48,7 @@ private:
     std::atomic<bool> m_mouseCaptured{false};
     std::atomic<float> m_lookYaw{0.0f}, m_lookPitch{0.0f}; // radians not yet applied
     std::atomic<int> m_wheelSteps{0};
+    std::atomic<bool> m_movingInput{false};
     int m_weaponPulse = 0; // pad reads left on a scripted weapon-cycle press (+ next, - previous)
 };
 

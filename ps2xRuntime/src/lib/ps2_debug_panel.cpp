@@ -2606,6 +2606,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 changed |= ImGui::SliderFloat("Sensitivity", &settings.mouseSensitivity, 0.05f, 5.0f, "%.2f",
                                               ImGuiSliderFlags_Logarithmic);
                 changed |= ImGui::Checkbox("Invert vertical look", &settings.mouseInvertY);
+                changed |= ImGui::Checkbox("Player turns with the camera while moving", &settings.mouseTurnsPlayer);
+                ImGui::TextDisabled("On: no skid stop when the mouse turns you while running (pressing back still skids).");
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }

@@ -408,13 +408,8 @@ namespace
     void vcsRunCameraWithMouse(PS2Runtime::RecompiledFunction original, uint8_t *rdram, R5900Context *ctx,
                                PS2Runtime *runtime)
     {
-        // Mouse motion an update did not use (some camera calls change nothing).
-        static float s_carryYaw = 0.0f, s_carryPitch = 0.0f;
         float yaw = 0.0f, pitch = 0.0f;
         const bool captured = runtime->padBackend().consumeMouseLook(yaw, pitch);
-        yaw += s_carryYaw;
-        pitch += s_carryPitch;
-        s_carryYaw = s_carryPitch = 0.0f;
         const uint32_t cam = getRegU32(ctx, 4);
         const bool valid = cam >= 0x00100000u && cam + 0x240u <= PS2_RAM_SIZE;
         const bool apply = captured && (yaw != 0.0f || pitch != 0.0f) && valid;
@@ -425,9 +420,6 @@ namespace
             return v;
         };
         auto writeF = [&](uint32_t off, float v) { std::memcpy(rdram + cam + off, &v, 4); };
-        float frontBefore[3] = {};
-        if (valid)
-            std::memcpy(frontBefore, rdram + cam + 0x10u, 12);
         if (apply)
         {
             // Horizontal: one update turns by ~1.15x the speed (+0x140,
@@ -453,30 +445,84 @@ namespace
                         writeF(off, readF(off) + dz);
             }
         }
-        float before[2] = {};
+        float before[2] = {}; // alpha, beta (+0x78, +0x7C)
         static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
-        if (s_debug && valid)
+        if (valid)
             std::memcpy(before, rdram + cam + 0x78u, 8);
         original(rdram, ctx, runtime);
         if (!valid)
             return;
+        if (apply)
+        {
+            writeF(0x140u, 0.0f);
+            // Some updates ignore the turn speed altogether (about one in
+            // 15-20, more while running); carrying the motion to the next one
+            // made the view stop, then jump. Turn the result instead: the
+            // camera position (+0x20, copy +0x90), its eased targets
+            // (+0x220, +0x230) and direction (+0x10) about the player, and
+            // the angle beta (+0x7C, increasing = counter-clockwise).
+            const float want = -yaw, got = std::remainder(readF(0x7Cu) - before[1], 6.2831853f);
+            uint32_t target = 0;
+            std::memcpy(&target, rdram + cam + 0x70u, 4);
+            if (want != 0.0f && std::fabs(got) < 0.25f * std::fabs(want) && target >= 0x00100000u &&
+                target + 0x40u <= PS2_RAM_SIZE)
+            {
+                const float missing = want - got;
+                const float c = std::cos(missing), sn = std::sin(missing);
+                float centre[2];
+                std::memcpy(centre, rdram + target + 0x30u, 8);
+                for (uint32_t off : {0x20u, 0x90u, 0x220u, 0x230u})
+                {
+                    const float x = readF(off) - centre[0], y = readF(off + 4u) - centre[1];
+                    writeF(off, centre[0] + x * c - y * sn);
+                    writeF(off + 4u, centre[1] + x * sn + y * c);
+                }
+                const float fx = readF(0x10u), fy = readF(0x14u);
+                writeF(0x10u, fx * c - fy * sn);
+                writeF(0x14u, fx * sn + fy * c);
+                writeF(0x7Cu, std::remainder(readF(0x7Cu) + missing, 6.2831853f));
+            }
+        }
+        if (apply && ps2HostSettings().mouseTurnsPlayer && runtime->padBackend().movingInput())
+        {
+            // Movement is camera-relative: a fast mouse turn swings the
+            // wanted heading away from the player's and the game answers a
+            // big difference with a skid stop. Turning the player
+            // (m_fRotationCur / m_fRotationDest, ped + 0x8E0 / 0x8E4) by the
+            // camera's turn keeps the difference; a "back" press still
+            // flips the wanted heading and skids. Heading = beta + 90 deg.
+            float after[2];
+            std::memcpy(after, rdram + cam + 0x78u, 8);
+            const float turn = std::remainder(after[1] - before[1], 6.2831853f);
+            uint32_t ped = 0;
+            std::memcpy(&ped, rdram + cam + 0x70u, 4);
+            if (std::isfinite(turn) && turn != 0.0f && ped >= 0x00100000u && ped + 0x8E8u <= PS2_RAM_SIZE)
+                for (uint32_t off : {0x8E0u, 0x8E4u})
+                {
+                    float heading;
+                    std::memcpy(&heading, rdram + ped + off, 4);
+                    if (std::isfinite(heading))
+                    {
+                        heading = std::remainder(heading + turn, 6.2831853f);
+                        std::memcpy(rdram + ped + off, &heading, 4);
+                    }
+                }
+        }
         if (s_debug)
         {
             float after[2];
             std::memcpy(after, rdram + cam + 0x78u, 8);
-            std::fprintf(stderr, "[mouselook] f=%llu want yaw %.4f pitch %.4f got beta %.4f alpha %.4f (alpha %.4f)\n",
-                         (unsigned long long)g_ps2PresentedFrameCounter.load(), yaw, pitch, std::remainder(after[1] - before[1], 6.2831853f),
-                         after[0] - before[0], after[0]);
-        }
-        if (apply)
-        {
-            writeF(0x140u, 0.0f);
-            // A call that left the camera untouched did not turn it either.
-            if (std::memcmp(frontBefore, rdram + cam + 0x10u, 12) == 0)
+            uint32_t ped = 0;
+            std::memcpy(&ped, rdram + cam + 0x70u, 4);
+            float pos[3] = {}, heading = 0.0f;
+            if (ped >= 0x00100000u && ped + 0x8E8u <= PS2_RAM_SIZE)
             {
-                s_carryYaw = yaw;
-                s_carryPitch = pitch;
+                std::memcpy(pos, rdram + ped + 0x30u, 12);
+                std::memcpy(&heading, rdram + ped + 0x8E0u, 4);
             }
+            std::fprintf(stderr, "[mouselook] f=%llu want yaw %.4f pitch %.4f got beta %.4f alpha %.4f (alpha %.4f) ped %.3f %.3f heading %.3f moving %d\n",
+                         (unsigned long long)g_ps2PresentedFrameCounter.load(), yaw, pitch, std::remainder(after[1] - before[1], 6.2831853f),
+                         after[0] - before[0], after[0], pos[0], pos[1], heading, runtime->padBackend().movingInput() ? 1 : 0);
         }
     }
 
@@ -534,7 +580,12 @@ namespace
     }
 
     // Rotates the RenderWare camera frame's modelling matrix (right +0x10,
-    // up +0x20, at +0x30, pos +0x40) by the vehicle look offset.
+    // up +0x20, at +0x30, pos +0x40) by the vehicle look offset, and
+    // TheCamera's matrix (0x6F44D0: right, forward, up, pos) with it: the
+    // game culls the world and places the sky / water from that one (a
+    // rotated view with an unrotated TheCamera showed grey sky and missing
+    // world toward the city). CCamera::Process rebuilds it every frame, so
+    // the rotation does not accumulate.
     void vcsApplyCarLook(uint8_t *rdram, uint32_t frame)
     {
         VcsCarLook &look = g_vcsCarLook;
@@ -553,24 +604,51 @@ namespace
         float *m = reinterpret_cast<float *>(rdram + frame + 0x10u);
         float pivot[3];
         std::memcpy(pivot, rdram + target + 0x30u, 12);
-        float right[3] = {m[0], m[1], m[2]};
-        float up[3] = {m[4], m[5], m[6]};
-        float at[3] = {m[8], m[9], m[10]};
-        float offset[3] = {m[12] - pivot[0], m[13] - pivot[1], m[14] - pivot[2]};
-        float pitchAxis[3] = {at[1], -at[0], 0.0f}; // horizontal, to the right
+        const float offset0[3] = {m[12] - pivot[0], m[13] - pivot[1], m[14] - pivot[2]};
+        float pitchAxis[3] = {m[9], -m[8], 0.0f}; // horizontal, to the right of "at"
         const float axisLength = std::sqrt(pitchAxis[0] * pitchAxis[0] + pitchAxis[1] * pitchAxis[1]);
-        if (!std::isfinite(axisLength) || axisLength < 1.0e-4f || !std::isfinite(offset[0] + offset[1] + offset[2]))
+        if (!std::isfinite(axisLength) || axisLength < 1.0e-4f || !std::isfinite(offset0[0] + offset0[1] + offset0[2]))
             return;
         pitchAxis[0] /= axisLength;
         pitchAxis[1] /= axisLength;
         const float zAxis[3] = {0.0f, 0.0f, 1.0f};
         // Pitch about the horizontal right axis, then yaw about Z (Z up:
         // looking right is clockwise seen from above).
-        for (float *v : {right, up, at, offset})
+        auto rotate = [&](float v[3], float pitch)
         {
-            vcsRotate(v, pitchAxis, look.pitch);
+            vcsRotate(v, pitchAxis, pitch);
             vcsRotate(v, zAxis, -look.yaw);
+        };
+
+        // Looking up swings the camera down around the vehicle: stop it at
+        // the ground (taken as a little below the vehicle's centre).
+        constexpr float kGroundBelowPivot = 0.3f;
+        auto cameraZ = [&](float pitch)
+        {
+            float o[3] = {offset0[0], offset0[1], offset0[2]};
+            rotate(o, pitch);
+            return pivot[2] + o[2];
+        };
+        const float floorZ = pivot[2] - kGroundBelowPivot;
+        if (look.pitch > 0.0f && cameraZ(look.pitch) < floorZ)
+        {
+            float lo = 0.0f, hi = look.pitch;
+            if (cameraZ(0.0f) < floorZ)
+                hi = 0.0f;
+            for (int iteration = 0; iteration < 16 && hi > 0.0f; ++iteration)
+            {
+                const float mid = 0.5f * (lo + hi);
+                (cameraZ(mid) < floorZ ? hi : lo) = mid;
+            }
+            look.pitch = lo; // further "up" movement stops here instead of piling up
         }
+
+        float right[3] = {m[0], m[1], m[2]};
+        float up[3] = {m[4], m[5], m[6]};
+        float at[3] = {m[8], m[9], m[10]};
+        float offset[3] = {offset0[0], offset0[1], offset0[2]};
+        for (float *v : {right, up, at, offset})
+            rotate(v, look.pitch);
         for (int i = 0; i < 3; ++i)
         {
             m[i] = right[i];
@@ -578,6 +656,22 @@ namespace
             m[8 + i] = at[i];
             m[12 + i] = pivot[i] + offset[i];
         }
+
+        // TheCamera's matrix: same rotation about the same pivot.
+        static const bool s_rwOnly = std::getenv("PS2X_CARLOOK_RW_ONLY") != nullptr; // A/B: the old behaviour
+        if (s_rwOnly)
+            return;
+        float *g = reinterpret_cast<float *>(rdram + 0x006F44D0u);
+        for (int row = 0; row < 3; ++row)
+        {
+            float v[3] = {g[row * 4], g[row * 4 + 1], g[row * 4 + 2]};
+            rotate(v, look.pitch);
+            std::memcpy(&g[row * 4], v, sizeof(v));
+        }
+        float gameOffset[3] = {g[12] - pivot[0], g[13] - pivot[1], g[14] - pivot[2]};
+        rotate(gameOffset, look.pitch);
+        for (int i = 0; i < 3; ++i)
+            g[12 + i] = pivot[i] + gameOffset[i];
     }
 
     // Field of view: RwCameraSetViewWindow(camera, &viewWindow) (0x18F2D8;

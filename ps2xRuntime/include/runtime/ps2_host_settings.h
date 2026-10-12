@@ -82,6 +82,7 @@ struct PS2HostSettings
     float drawDistance = 1.0f;  // multiplier on view / detail distances (1 = original)
     float mouseSensitivity = 1.0f;
     bool mouseInvertY = false;
+    bool mouseTurnsPlayer = true; // on foot, mouse turns also turn a moving player (no skid stops)
 
     bool textureReplacement = true;     // apply texture packs from the mods folder
     std::vector<std::string> disabledMods; // mod folder names switched off

@@ -234,6 +234,8 @@ void ps2HostSettingsLoad()
             s.fieldOfView = std::clamp(std::strtof(v, nullptr), 40.0f, 120.0f);
         else if (key == "draw_distance")
             s.drawDistance = std::clamp(std::strtof(v, nullptr), 0.5f, 4.0f);
+        else if (key == "mouse_turns_player")
+            s.mouseTurnsPlayer = std::atoi(v) != 0;
         else if (key == "mouse_invert_y")
             s.mouseInvertY = std::atoi(v) != 0;
         else if (key == "texture_replacement")
@@ -346,6 +348,7 @@ void ps2HostSettingsSave()
         << "draw_distance=" << s.drawDistance << "\n"
         << "mouse_sensitivity=" << s.mouseSensitivity << "\n"
         << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << "\n"
+        << "mouse_turns_player=" << (s.mouseTurnsPlayer ? 1 : 0) << "\n"
         << "gamepad_layout=" << static_cast<int>(s.gamepadLayout) << "\n";
     // Load sees the layout before the per-button lines.
     if (s.gamepadLayout == ps2controls::GamepadLayout::Custom)

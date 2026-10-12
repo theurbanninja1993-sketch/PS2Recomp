@@ -389,6 +389,8 @@ namespace ps2_stubs
                 if (scripted & 0x200000u) state.rx = 0xFF;
                 if (scripted & 0x400000u) state.ry = 0x00;
                 if (scripted & 0x800000u) state.ry = 0xFF;
+                if (runtime)
+                    runtime->padBackend().setMovingInput(std::abs(int(state.lx) - 128) > 40 || std::abs(int(state.ly) - 128) > 40);
             }
 
             fillPadStatus(outData, state, portState);

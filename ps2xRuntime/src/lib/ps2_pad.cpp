@@ -213,6 +213,9 @@ bool PSPadBackend::applyFakeMouse(float &yaw, float &pitch)
 
 void PSPadBackend::updateHostInput()
 {
+    // F7: a marker in the log (playtest notes: "it happened here").
+    if (IsKeyPressed(KEY_F7))
+        std::fprintf(stderr, "[mark] frame=%llu\n", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()));
     // Click in the window to capture the mouse for mouse look; Left Alt (or
     // losing focus) releases it.
     bool captured = m_mouseCaptured.load(std::memory_order_relaxed);
