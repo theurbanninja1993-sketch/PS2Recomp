@@ -514,15 +514,18 @@ namespace
             std::memcpy(after, rdram + cam + 0x78u, 8);
             uint32_t ped = 0;
             std::memcpy(&ped, rdram + cam + 0x70u, 4);
-            float pos[3] = {}, heading = 0.0f;
+            float pos[3] = {}, heading = 0.0f, headingDest = 0.0f;
+            uint32_t moveState = 0;
             if (ped >= 0x00100000u && ped + 0x8E8u <= PS2_RAM_SIZE)
             {
                 std::memcpy(pos, rdram + ped + 0x30u, 12);
                 std::memcpy(&heading, rdram + ped + 0x8E0u, 4);
+                std::memcpy(&headingDest, rdram + ped + 0x8E4u, 4);
+                std::memcpy(&moveState, rdram + ped + 0x8D4u, 4); // CPed move state: 1 still, 4 run, 5 sprint
             }
-            std::fprintf(stderr, "[mouselook] f=%llu want yaw %.4f pitch %.4f got beta %.4f alpha %.4f (alpha %.4f) ped %.3f %.3f heading %.3f moving %d\n",
+            std::fprintf(stderr, "[mouselook] f=%llu want yaw %.4f pitch %.4f got beta %.4f alpha %.4f (alpha %.4f) ped %.3f %.3f heading %.3f dest %.3f state %u moving %d\n",
                          (unsigned long long)g_ps2PresentedFrameCounter.load(), yaw, pitch, std::remainder(after[1] - before[1], 6.2831853f),
-                         after[0] - before[0], after[0], pos[0], pos[1], heading, runtime->padBackend().movingInput() ? 1 : 0);
+                         after[0] - before[0], after[0], pos[0], pos[1], heading, headingDest, moveState, runtime->padBackend().movingInput() ? 1 : 0);
         }
     }
 
@@ -546,6 +549,30 @@ namespace
     };
     VcsCarLook g_vcsCarLook;
 
+    // CCam vectors (Front +0x10, Source +0x20 / +0x50, Up +0x60) the look
+    // offset rotated for this frame's rendering; put back before the next
+    // camera update so the game's camera logic never builds on the offset.
+    struct VcsCamBackup
+    {
+        uint32_t cam = 0;
+        uint64_t frame = 0; // presented frame it was taken (stale ones are dropped)
+        uint8_t bytes[0x60] = {};
+    };
+    VcsCamBackup g_vcsCamBackup[3];
+
+    void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam);
+
+    void vcsRestoreCamBackups(uint8_t *rdram)
+    {
+        const uint64_t now = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        for (VcsCamBackup &backup : g_vcsCamBackup)
+        {
+            if (backup.cam != 0u && now <= backup.frame + 4u)
+                std::memcpy(rdram + backup.cam + 0x10u, backup.bytes, sizeof(backup.bytes));
+            backup.cam = 0u;
+        }
+    }
+
     void vcsRotate(float v[3], const float axis[3], float angle)
     {
         // Rodrigues rotation about a unit axis.
@@ -559,8 +586,12 @@ namespace
     void vcsFollowCarCam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         VcsCarLook &look = g_vcsCarLook;
+        vcsRestoreCamBackups(rdram);
+        const uint64_t now = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        if (now > look.vehicleFrame + 4u)
+            look.yaw = look.pitch = 0.0f; // a new vehicle-camera stretch starts straight
         look.vehicleCam = getRegU32(ctx, 4);
-        look.vehicleFrame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        look.vehicleFrame = now;
         float yaw = 0.0f, pitch = 0.0f;
         const bool captured = runtime->padBackend().consumeMouseLook(yaw, pitch);
         if (captured && (yaw != 0.0f || pitch != 0.0f))
@@ -579,33 +610,55 @@ namespace
         g_vcsOrigFollowCarCam(rdram, ctx, runtime);
     }
 
-    // Rotates the RenderWare camera frame's modelling matrix (right +0x10,
-    // up +0x20, at +0x30, pos +0x40) by the vehicle look offset, and
-    // TheCamera's matrix (0x6F44D0: right, forward, up, pos) with it: the
-    // game culls the world and places the sky / water from that one (a
-    // rotated view with an unrotated TheCamera showed grey sky and missing
-    // world toward the city). CCamera::Process rebuilds it every frame, so
-    // the rotation does not accumulate.
-    void vcsApplyCarLook(uint8_t *rdram, uint32_t frame)
+    // CCamera::Process calls CCam::Process (0x294540) on the active camera,
+    // which runs the vehicle camera and then rewrites Front / Source, and
+    // then 0x2A2ED0 on the same camera; on entry to that, the vehicle
+    // camera's result is final and TheCamera is not built from it yet.
+    PS2Runtime::RecompiledFunction g_vcsOrigAfterCamProcess = nullptr;
+
+    void vcsAfterCamProcess(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t cam = getRegU32(ctx, 4);
+        if (cam == g_vcsCarLook.vehicleCam &&
+            g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) <= g_vcsCarLook.vehicleFrame + 1u)
+            vcsRotateVehicleCam(rdram, cam);
+        g_vcsOrigAfterCamProcess(rdram, ctx, runtime);
+    }
+
+    // The main RenderWare camera and the FOV state (see vcsSetViewWindow).
+    struct VcsFov
+    {
+        uint32_t camera = 0;
+        float gameX = 0.0f, gameY = 0.0f; // the game's last request
+        float appliedFov = 70.0f;
+    };
+    VcsFov g_vcsFov;
+
+    // Applies the look offset to the vehicle camera's result (CCam Front
+    // +0x10, Source +0x20 and copy +0x50, Up +0x60), as the game's own look
+    // left / right does: TheCamera, the RenderWare camera and everything
+    // derived from them (culling, sky, water) follow consistently. (Rotating
+    // only the RenderWare frame left the sky projecting its horizon with
+    // the unrotated camera: grey sky, missing world.) The unrotated result is
+    // put back before the next update, so the camera logic never builds on
+    // the offset.
+    void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam)
     {
         VcsCarLook &look = g_vcsCarLook;
-        const uint64_t now = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
-        if (now > look.vehicleFrame + 4u)
-            look.yaw = look.pitch = 0.0f; // left the vehicle
         if (look.yaw == 0.0f && look.pitch == 0.0f)
             return;
-        const uint32_t cam = look.vehicleCam;
         uint32_t target = 0;
-        if (cam < 0x00100000u || cam + 0x80u > PS2_RAM_SIZE || frame < 0x00100000u || frame + 0x50u > PS2_RAM_SIZE)
+        if (cam < 0x00100000u || cam + 0x80u > PS2_RAM_SIZE)
             return;
         std::memcpy(&target, rdram + cam + 0x70u, 4);
         if (target < 0x00100000u || target + 0x40u > PS2_RAM_SIZE)
             return;
-        float *m = reinterpret_cast<float *>(rdram + frame + 0x10u);
+        float *c = reinterpret_cast<float *>(rdram + cam);
         float pivot[3];
         std::memcpy(pivot, rdram + target + 0x30u, 12);
-        const float offset0[3] = {m[12] - pivot[0], m[13] - pivot[1], m[14] - pivot[2]};
-        float pitchAxis[3] = {m[9], -m[8], 0.0f}; // horizontal, to the right of "at"
+        const float *front = c + 4, *source = c + 8;
+        const float offset0[3] = {source[0] - pivot[0], source[1] - pivot[1], source[2] - pivot[2]};
+        float pitchAxis[3] = {front[1], -front[0], 0.0f}; // horizontal, to the right of Front
         const float axisLength = std::sqrt(pitchAxis[0] * pitchAxis[0] + pitchAxis[1] * pitchAxis[1]);
         if (!std::isfinite(axisLength) || axisLength < 1.0e-4f || !std::isfinite(offset0[0] + offset0[1] + offset0[2]))
             return;
@@ -643,35 +696,25 @@ namespace
             look.pitch = lo; // further "up" movement stops here instead of piling up
         }
 
-        float right[3] = {m[0], m[1], m[2]};
-        float up[3] = {m[4], m[5], m[6]};
-        float at[3] = {m[8], m[9], m[10]};
-        float offset[3] = {offset0[0], offset0[1], offset0[2]};
-        for (float *v : {right, up, at, offset})
-            rotate(v, look.pitch);
-        for (int i = 0; i < 3; ++i)
+        VcsCamBackup &backup = g_vcsCamBackup[0];
+        backup.cam = cam;
+        backup.frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        std::memcpy(backup.bytes, rdram + cam + 0x10u, sizeof(backup.bytes));
+        for (uint32_t off : {0x10u, 0x60u}) // Front, Up
         {
-            m[i] = right[i];
-            m[4 + i] = up[i];
-            m[8 + i] = at[i];
-            m[12 + i] = pivot[i] + offset[i];
+            float *v = c + off / 4u;
+            float r[3] = {v[0], v[1], v[2]};
+            rotate(r, look.pitch);
+            std::memcpy(v, r, sizeof(r));
         }
-
-        // TheCamera's matrix: same rotation about the same pivot.
-        static const bool s_rwOnly = std::getenv("PS2X_CARLOOK_RW_ONLY") != nullptr; // A/B: the old behaviour
-        if (s_rwOnly)
-            return;
-        float *g = reinterpret_cast<float *>(rdram + 0x006F44D0u);
-        for (int row = 0; row < 3; ++row)
+        for (uint32_t off : {0x20u, 0x50u}) // Source and its copy: about the pivot
         {
-            float v[3] = {g[row * 4], g[row * 4 + 1], g[row * 4 + 2]};
-            rotate(v, look.pitch);
-            std::memcpy(&g[row * 4], v, sizeof(v));
+            float *v = c + off / 4u;
+            float o[3] = {v[0] - pivot[0], v[1] - pivot[1], v[2] - pivot[2]};
+            rotate(o, look.pitch);
+            for (int i = 0; i < 3; ++i)
+                v[i] = pivot[i] + o[i];
         }
-        float gameOffset[3] = {g[12] - pivot[0], g[13] - pivot[1], g[14] - pivot[2]};
-        rotate(gameOffset, look.pitch);
-        for (int i = 0; i < 3; ++i)
-            g[12 + i] = pivot[i] + gameOffset[i];
     }
 
     // Field of view: RwCameraSetViewWindow(camera, &viewWindow) (0x18F2D8;
@@ -680,13 +723,6 @@ namespace
     // changes (cutscenes are left as they are). The game only sets it when its FOV changes:
     // the last request is kept to re-apply a new setting.
     PS2Runtime::RecompiledFunction g_vcsOrigSetViewWindow = nullptr;
-    struct VcsFov
-    {
-        uint32_t camera = 0;
-        float gameX = 0.0f, gameY = 0.0f; // the game's last request
-        float appliedFov = 70.0f;
-    };
-    VcsFov g_vcsFov;
 
     // Cutscenes keep the original framing: TheCamera.Cams[0].Mode
     // (0x6F4540) is MODE_FLYBY (17) while one plays (4 = on foot).
@@ -778,7 +814,6 @@ namespace
     {
         if (getRegU32(ctx, 31) == 0x0037AE5Cu)
         {
-            vcsApplyCarLook(rdram, getRegU32(ctx, 4));
             vcsScaleLodDistance(rdram);
             // A new FOV setting: re-issue the game's last view window.
             const uint32_t camera = g_vcsFov.camera;
@@ -812,6 +847,8 @@ namespace
             runtime.replaceFunction(0x0029DAB0u, &vcsFollowPedCam);
         if ((g_vcsOrigFollowCarCam = runtime.lookupFunction(0x0029FAF0u)))
             runtime.replaceFunction(0x0029FAF0u, &vcsFollowCarCam);
+        if ((g_vcsOrigAfterCamProcess = runtime.lookupFunction(0x002A2ED0u)))
+            runtime.replaceFunction(0x002A2ED0u, &vcsAfterCamProcess);
         if ((g_vcsOrigFrameUpdate = runtime.lookupFunction(0x001B4688u)))
             runtime.replaceFunction(0x001B4688u, &vcsFrameUpdate);
         if ((g_vcsOrigSetViewWindow = runtime.lookupFunction(0x0018F2D8u)))
