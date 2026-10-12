@@ -1,6 +1,6 @@
 # GTA Vice City Stories (SLUS_215.90) recomp: handoff notes
 
-State as of 2026-10-12 (last commit `1e0dec8`). Read this before changing
+State as of 2026-10-12 (last commit `1ebf473`). Read this before changing
 anything. A reviewer will check work against it.
 
 ## Ground rules
@@ -269,9 +269,14 @@ texture packs from `mods/`, Windows build under Wine.
      - Verified (1e0dec8): forcing the byte to 9 with a `.pnach` mod makes the
        runtime log "[music] playing ..." in a vehicle; the bike (byte 10) stays
        silent.
-   - **Real extra station: DONE (1e0dec8).** The music folder now plays only
-     on the game's one spare station slot (byte 0x4E4755 == 9) and is named
-     "Custom Soundtracks". Findings:
+   - **Custom Soundtracks station: owner-confirmed shape (1ebf473).** Keep all
+     nine stations and Radio Off and *add* a custom one. The station field is
+     hard-clamped to 0..8 with every value >= 9 forced to 9, so there is no
+     free station value; the custom stop shares the silent off slot (9),
+     tracked by a host flag. The cycle is now
+     **... 6 7 8 [Custom Soundtracks] [Radio Off] 0 ...**. Verified on the
+     fast-boot bike (`PS2X_RADIO_TRACE=1`): 8 -> custom + "[music] playing
+     ...", then Radio Off (silent), then 0. Findings:
      - The station index cycles **mod 10**: the pending change at 0x48613C is
        +1 (next) or +9 (prev), written in `FUN_00189ad0` at 0x189c7c/0x189c90
        (the button check is `func_2852A8`/`func_286328`), applied by
@@ -296,8 +301,15 @@ texture packs from `mods/`, Windows build under Wine.
        matched 9 *or* 10 and played on a bike that has no radio. Do not treat
        0x4E4755 as a reliable station value; the station field is +0x2BA of
        the entity from `FUN_1B5768(0x514A90)`.
-     - Remaining, if wanted: make the frontend show the name (patch AUDPG.PSP
-       state S9 "FEA_NON" -> "FEA_CSS"; needs file overrides), a controller
+     - **Frontend (c81bf35):** a CD read patch renames the audio page's 10th
+       selector state key `FEA_NON` -> `FEA_CSS` in the read buffer (no disc
+       file redistributed). But the menu's RADIO STATION selector only cycles
+       the nine real stations (S9 is unreachable); next step is to add an 11th
+       state (`S10="FEA_CSS"`) and carry the choice to the runtime flag. The
+       station logos on the audio page are code-drawn
+       (CUSTOM_ITEM_RADIO_ICONS); the art source and whether a 10th "custom"
+       logo exists are still to find.
+     - Remaining: frontend menu entry for the custom stop, a controller
        next-track button, pause with the game.
    - Todo:
      - owner test in a car;
