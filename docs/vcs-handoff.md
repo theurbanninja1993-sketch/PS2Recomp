@@ -196,7 +196,17 @@ texture packs from `mods/`, Windows build under Wine.
           backup".
         - Blue CD-ROM PS2 games would need raw mode-2 reads (ioctl /
           `IOCTL_CDROM_RAW_READ`). Not needed for VCS/LCS (DVDs).
-        - **Implemented (untested on hardware):** `ps2x::opticalDrives()` and
+        - Real-drive findings (owner's external Blu-ray, Ultimate
+          Spider-Man disc, 2026-10-12):
+          - The drive needs ~8 s after inserting before reads work ("No
+            medium found" until then), and can drop back to that state.
+            The builder must poll and retry ("Waiting for disc...").
+          - On a USB hub port it hit I/O errors and USB resets. A direct
+            port fixed it. Show a hint when reads fail repeatedly.
+          - It read at ~4 MB/s (a 4 GB disc takes ~17 min). Show progress +
+            ETA, and extract straight from the disc rather than
+            image-then-extract.
+        - **Implemented:** `ps2x::opticalDrives()` and
           `IsoImage::open("/dev/sr0" | "D:")`, plus `ps2x_iso drives`. The
           owner has an external Blu-ray drive: test with `ps2x_iso drives`,
           then `ps2x_iso info|hash /dev/sr0` (expect the boot hash above).
