@@ -121,6 +121,25 @@ texture packs from `mods/`, Windows build under Wine.
      reproduce which programs are co-resident (follow the VIF MPG uploads in
      the game's DMA chains). Find the 14th (runtime-patched, or loaded from
      another disc file).
+
+     Findings, later on 2026-10-12:
+     - The key (`ps2_vu1_programs.cpp`) covers only the program itself: its
+       startPC plus the address + words of every pair reachable from it
+       (JR/JALR not followed). Co-resident programs don't matter.
+     - The ELF has no inline VIF MPG headers before these blobs. RenderWare
+       builds the uploads at runtime from pointer tables, e.g. at file offset
+       0x382888: pointers 0x2ac240, 0x2ac228, ... stepping 0x18. Fully
+       static extraction therefore means decoding RW's PS2 pipeline
+       structures to recover load address + entry points per blob.
+     - **Recommended alternative: self-learning VU1.** When the game meets
+       an uncompiled program, it writes {code image, startPC, traced JR
+       targets} to `vu1_cache/`. The builder (or an "optimize" step at next
+       launch, with the bundled compiler) runs `vu1_recomp` on the cache into
+       a plugin DLL/.so that the game loads at startup (registry merged with
+       the built-in table). The builder can seed it with an automated run:
+       intro + PS2X_PAD_SCRIPT fast boot + some frames of gameplay. This
+       works for any game, ships no game code, and coverage grows as the
+       player plays.
    - Suggested order:
      1. ISO reader + hash check, in a standalone library with a CLI test;
      2. the wizard UI;
