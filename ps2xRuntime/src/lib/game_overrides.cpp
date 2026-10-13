@@ -1155,20 +1155,6 @@ namespace
             if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
                 std::cerr << "[radio] pushed to silent slot once" << std::endl;
         }
-        // Temporary scripted trigger (PS2X_RADIO_OFF_FRAME=<frame>) so the radio
-        // on/off toggle can be exercised headlessly.
-        if (const char *env = std::getenv("PS2X_RADIO_OFF_FRAME"))
-        {
-            static bool s_fired = false;
-            static const uint64_t s_offFrame = std::strtoull(env, nullptr, 0);
-            if (!s_fired && g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) == s_offFrame)
-            {
-                s_fired = true;
-                const bool off = !ps2MusicStationRadioOff();
-                ps2MusicStationSetRadioOff(off);
-                std::cerr << "[radio] scripted radio " << (off ? "off" : "on") << std::endl;
-            }
-        }
         if (getRegU32(ctx, 31) == 0x0037AE5Cu)
         {
             vcsScaleLodDistance(rdram);

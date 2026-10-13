@@ -1,6 +1,6 @@
 # GTA Vice City Stories (SLUS_215.90) recomp: handoff notes
 
-State as of 2026-10-12 (last commit `1ebf473`). Read this before changing
+State as of 2026-10-12 (last commit `f3d6ca3`). Read this before changing
 anything. A reviewer will check work against it.
 
 ## Ground rules
@@ -239,102 +239,56 @@ texture packs from `mods/`, Windows build under Wine.
    UI: a library screen showing each game as Build (no disc yet) or Play,
    with per-game mods and settings. Both games use the PS2Recomp runtime;
    keep game-specific code behind `PS2_REGISTER_GAME_OVERRIDE`.
-2. **Custom radio station:** a `music` folder (MP3/OGG/FLAC/WAV) as an extra
-   in-vehicle station, like the GTA III/VC PC "MP3 Player".
-   - Plan (owner agreed): make the "Radio Off" slot play the music folder
-     through raylib music streams (raylib decodes all four formats), so the
-     game's own audio path doesn't change. Needed:
-     - the current-station variable;
-     - in-vehicle (the existing vehicle probe);
-     - paused / menu state;
-     - the game's radio volume;
-     - next-track and shuffle controls;
-     - a settings toggle.
+2. **Custom radio station + Radio Off: mostly DONE (owner-confirmed).** A
+   `music` folder (MP3/OGG/FLAC/WAV) plays as the in-vehicle "Custom
+   Soundtracks" station on the game's own silent slot, and "Radio Off" is now a
+   runtime toggle (hold D-pad Down ~0.75 s, or `M`), not a station.
    - **Station variable FOUND (2026-10-12, owner's F8 session in a car):**
      u8 at **0x4E4755** (static data; same values at 0x4E475B and in heap
      copies 0x1D859BA / 0x1FB5834). Values: 0 Flash FM, 1 V Rock, 2
      Paradise, 3 VCPR, 4 VCFL Radio, 5 The Wave 103, 6 Fresh 105, 7
      Espantoso, 8 Emotion 98.3, **9 Radio Off**. 0x4E4756 lags one step at
      one point (probably the station actually playing vs the one selected).
-   - **Implemented (2347e89, tightened in 1e0dec8):** `ps2_music_station.cpp`,
-     plus the VCS query in `applyGtaVcsUs`. F10 skips a track. The Mods tab has
-     on/off, volume, shuffle, open folder and rescan. A "now playing" overlay
-     shows the station name for 4 s.
-     - **The radio button is L1** (PS2 layout). D-pad does nothing; that
-       was why the first scripted test saw no station change.
-     - 0x4E4755 read 10 on the Fort Baxter bike and 9 in the owner's car
-       because it is overloaded (station 0..9, or a radio *mode* 9..30 when
-       the slot is unset). The bike has no radio, so it sits on a mode. The
-       fix now matches 9 only (see "Real extra station" below).
-     - Verified (1e0dec8): forcing the byte to 9 with a `.pnach` mod makes the
-       runtime log "[music] playing ..." in a vehicle; the bike (byte 10) stays
-       silent.
-   - **Custom Soundtracks station: owner-confirmed shape (1ebf473).** Keep all
-     nine stations and Radio Off and *add* a custom one. The station field is
-     hard-clamped to 0..8 with every value >= 9 forced to 9, so there is no
-     free station value; the custom stop shares the silent off slot (9),
-     tracked by a host flag. The cycle is now
-     **... 6 7 8 [Custom Soundtracks] [Radio Off] 0 ...**. Verified on the
-     fast-boot bike (`PS2X_RADIO_TRACE=1`): 8 -> custom + "[music] playing
-     ...", then Radio Off (silent), then 0. Findings:
-     - The station index cycles **mod 10**: the pending change at 0x48613C is
-       +1 (next) or +9 (prev), written in `FUN_00189ad0` at 0x189c7c/0x189c90
-       (the button check is `func_2852A8`/`func_286328`), applied by
-       `FUN_0018b8d8`, and `FUN_0018aad8` clamps values >= 9 to 9. So the
-       index is 0..9 and **9 is the only spare slot** (0..8 = the nine
-       stations). L1 enters 0x2FA8C8 (`FUN_002fa8c8` -> `FUN_0018b610`), which
-       invalidates the playing station so the update re-tunes. The radio
-       singleton is at **0x4E41E0** (+0x575 playing, +0x576 desired, +0x577/
-       +0x578 lock flags, +0x57B last, +0x564/+0x568 owning vehicle).
-     - Slot 9 is the leftover PC/PSP **"custom tracks" station**, disabled on
-       PS2 (no custom source): GXT `FEA_CSS` = "CUSTOM SOUNDTRACKS:" and
-       `FEA_NON` = "PLACEHOLDER STATION NAME"; the frontend audio page
-       `FRONTEND/DEFAULT/AUDPG.PSP` defines the selector (RADIO_STATION_MI,
-       states S0..S9 = FEA_FM0..8 + FEA_NON) plus CUSTOM_TRACKS_EDIT_MI
-       (CUSTOM_ITEM_TRACKS) and CUSTOM_RADIO_ICONS_MI; the ELF option list has
-       HOOK_USE_CUSTOM_TRACKS (index 12 in `FUN_003e2530`). GXT text is
-       **UTF-16LE** - plain `strings` misses it.
-     - 0x4E4755 (radio+0x575) is **overloaded**: `FUN_00189ad0` stores the
-       station 0..9 there (0x18a02c, from `FUN_0018b8d8`) but `FUN_0018a248`
-       writes radio *modes* 9..30 when it is 0x71/unset. On the Fort Baxter
-       bike it holds mode 10 for most frames - that is why the previous query
-       matched 9 *or* 10 and played on a bike that has no radio. Do not treat
-       0x4E4755 as a reliable station value; the station field is +0x2BA of
-       the entity from `FUN_1B5768(0x514A90)`.
-     - **HUD station logo: DONE (daf091c).** On each station change the HUD
-       pops up the station's logo top-centre (blue script art, e.g. "Radio
-       Off"); the custom stop shares value 9, so it showed "Radio Off". The
-       pop-up is HUD message `0xB2` enqueued by `FUN_002a69e0` (from
-       `FUN_00189ad0` 0x18a068). The override skips message `0xB2` while
-       `g_vcsCustomStation` is set, and the runtime draws the owner's logo
-       instead (bilinear + mipmaps; size `200 * GetScreenHeight()/720` at
-       `y = 14 * scale`, top-centre - the owner confirmed the size). The
-       owner's art is `vcs-port/assets/custom_logo.png` (1500x384,
-       transparent; made from "Custom Sountrack.png" with the checkerboard
-       keyed out); it loads from `custom_logo.png` next to the executable or
-       `PS2X_CUSTOM_LOGO`. Verified: the pop-up call at the custom stop has
-       custom=1 (suppressed), at the off stop custom=0 (shown).
-     - Frontend (c81bf35): a CD read patch renames the audio page's 10th
-       selector state key `FEA_NON` -> `FEA_CSS` in the read buffer. The menu's
-       RADIO STATION selector only cycles the nine real stations (S9 is
-       unreachable); next step is to add an 11th state and carry the choice.
-     - Remaining: frontend menu entry for the custom stop, HUD logo swap, a
-       controller next-track button, pause with the game.
-   - Todo:
-     - owner test in a car;
-     - pause while the game itself is paused (pause-state address
-       unknown);
-     - a controller button for next track.
-   - (Earlier attempt:) In the fast-boot mission (Fort
-     Baxter bike) D-pad Up/Down/Left/Right showed no station name. That
-     mission's bike probably has no radio. A scripted RAM diff found nothing.
-   - **F8 now saves `ram_f8_<frame>.bin`** (EE RAM, in the working dir). Way
-     forward: the owner (or a tester) gets in a civilian car outside a
-     mission and presses F8. Then change station + F8, 4-5 times, noting
-     the station names. Diff for a byte that steps with the stations (see
-     the numpy diff idea: bytes changing at every snapshot, value < 16).
-     Then find the code writing it (`PS2X_WATCH_WRITE=<addr>`) to read
-     the "off" value and the station count.
+   - **Custom station = slot 9 (e6689ee):** the game has no spare station
+     value (the field clamps >= 9 to 9), so the custom stop *is* the game's
+     own silent slot 9; every transition is one the game expects. Slot 9's
+     GXT name is written per frame: **"Custom" while the radio is on,
+     "Radio Off" while the runtime radio is off** (vcsKeepCustomName; GXT is
+     UTF-16LE, located by scanning for the strings). Natural tuning into 9
+     shows "Custom"; the toggle's re-tune shows "Radio Off".
+   - **Radio Off toggle (af935e3, a13b850, 83a69dc, f3d6ca3):** D-pad Down
+     (host button, both layouts) or `M` held ~0.75 s toggles the runtime
+     radio off/on; a "Radio Off" overlay shows for 2 s. Off = push the
+     game to slot 9 **once** (desired/playing/last bytes + the station
+     field), then leave it alone - the game's own update holds the silent
+     slot, so no station audio plays while the engine/atmosphere keep going,
+     and our music folder pauses. A station press (field departs 9) switches
+     the radio back on. A per-frame push was tried and removed: it fought
+     the game, never silenced the current station, and dragged every station
+     change back to the silent slot.
+   - Key addresses: the radio singleton is at **0x4E41E0** (+0x575 playing
+     [*overloaded, see below*], +0x576 desired, +0x577/+0x578 lock flags,
+     +0x57B last, +0x564/+0x568 owning vehicle); the station field is +0x2BA
+     of the entity from `FUN_1B5768(0x514A90)`; the pending change is
+     +1/+9 at **0x48613C**; the cycle is **mod 10**, applied by
+     `FUN_0018b8d8`, and `FUN_0018aad8` (hooked as vcsRadioUpdate) clamps
+     values >= 9 to 9. 0x4E4755 is not a reliable station value (radio
+     *modes* 9..30 live there when the slot is unset); match the field.
+   - Slot 9 is the leftover PC/PSP **"custom tracks"** station, disabled on
+     PS2: GXT `FEA_CSS` = "CUSTOM SOUNDTRACKS:"; the frontend audio page
+     `FRONTEND/DEFAULT/AUDPG.PSP` defines the selector (RADIO_STATION_MI,
+     states S0..S9) plus CUSTOM_TRACKS_EDIT_MI and CUSTOM_RADIO_ICONS_MI;
+     the ELF option list has HOOK_USE_CUSTOM_TRACKS.
+   - HUD: the station logo pop-up (HUD message `0xB2`) still shows slot 9's
+     "Radio Off" logo on the custom stop (the owner's logo overlay was
+     removed earlier at the owner's request).
+   - `ps2_music_station.cpp` runs the folder (raylib streams; F10 skips a
+     track, Mods tab has on/off, volume, shuffle, open folder, rescan).
+   - Remaining (owner may or may not want these): the frontend audio page's
+     RADIO STATION selector only cycles the nine real stations (S9/S10
+     unreachable - would need an extra selector state); a controller
+     next-track button (F10 only); pausing the music with the game pause;
+     a settings toggle for Radio Off.
 3. **Texture-pack overhead:** the CPU mirror of texture uploads
    (`GSCpuBackend::UploadImage` → `GSMem::WriteRow`) still costs the render
    thread ~+15 pts in streaming scenes. Next lever: a lazy mirror keyed by
