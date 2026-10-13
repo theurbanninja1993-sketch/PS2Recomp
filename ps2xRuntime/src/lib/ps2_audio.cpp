@@ -372,6 +372,14 @@ void PS2AudioBackend::playDecodedSample(uint32_t sampleKey, DecodedSample &sampl
     if (!m_audioReady || sample.pcm.empty())
         return;
 
+    {
+        static const bool s_trace = std::getenv("PS2X_AUDIO_TRACE") != nullptr;
+        if (s_trace)
+            std::fprintf(stderr, "[audio] play key=0x%x dur=%.1fs bgm=%d pitch=%.2f vol=%.2f\n", sampleKey,
+                         static_cast<double>(sample.pcm.size()) / static_cast<double>(sample.sampleRate), isBgm ? 1 : 0,
+                         pitch, volume);
+    }
+
     pruneFinishedSounds();
 
     for (const auto &t : m_impl->activeSounds)

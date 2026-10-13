@@ -180,11 +180,20 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             else if (!s_fired && now - s_holdSince >= 0.75)
             {
                 s_fired = true;
-                ps2MusicStationSetRadioOff(!ps2MusicStationRadioOff());
-                // Silence the game's own audio too, so "Radio Off" works on every
-                // station, not just our music folder.
-                ps2AudioSetOutputMuted(ps2MusicStationRadioOff());
-                std::fprintf(stderr, "[pad] radio %s\n", ps2MusicStationRadioOff() ? "off" : "on");
+                const bool off = !ps2MusicStationRadioOff();
+                ps2MusicStationSetRadioOff(off);
+                if (off && m_rdram)
+                {
+                    // The game's own "radio off": tune to the silent slot (our
+                    // Custom Soundtracks) so the game plays nothing itself. The
+                    // engine and atmosphere keep playing; only the music folder
+                    // pauses, so nothing else needs muting.
+                    uint8_t *ram = const_cast<uint8_t *>(m_rdram);
+                    ram[0x004E4756u] = 9u;
+                    ram[0x004E4755u] = 9u;
+                    ram[0x004E475Bu] = 9u;
+                }
+                std::fprintf(stderr, "[pad] radio %s\n", off ? "off" : "on");
             }
         }
         else

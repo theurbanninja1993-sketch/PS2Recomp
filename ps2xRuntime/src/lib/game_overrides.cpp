@@ -496,22 +496,25 @@ namespace
     }
 
     // The silent slot IS our Custom Soundtracks station, so its GXT name is
-    // permanently "Custom". Writing the same text every frame (rather than
-    // swapping names around a station change) means the game's station pop-up can
-    // never pick up an older name, whenever it reads it.
+    // "Custom" - except while the runtime's radio is switched off, when it is the
+    // original "Radio Off" (the re-tune to the silent slot then shows the proper
+    // name instead of the custom one). Writing the same text every frame means
+    // the game's station pop-up can never pick up a stale name.
     void vcsKeepCustomName(uint8_t *rdram)
     {
         vcsFindStationNames(rdram);
         if (!g_vcsStationNames.found)
             return;
         static const uint16_t kCustom[10] = {'C', 'u', 's', 't', 'o', 'm', 0, 0, 0, 0};
+        static const uint16_t kOff[10] = {'R', 'a', 'd', 'i', 'o', ' ', 'O', 'f', 'f', 0};
+        const uint16_t *want = ps2MusicStationRadioOff() ? kOff : kCustom;
         uint16_t cur[10];
         std::memcpy(cur, rdram + g_vcsStationNames.addr[9], sizeof(cur));
-        if (std::memcmp(cur, kCustom, sizeof(cur)) != 0)
+        if (std::memcmp(cur, want, sizeof(cur)) != 0)
         {
-            std::memcpy(rdram + g_vcsStationNames.addr[9], kCustom, sizeof(kCustom));
+            std::memcpy(rdram + g_vcsStationNames.addr[9], want, sizeof(cur));
             if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
-                std::cerr << "[radio] silent slot named Custom" << std::endl;
+                std::cerr << "[radio] silent slot named " << (want == kOff ? "Radio Off" : "Custom") << std::endl;
         }
     }
 
@@ -534,12 +537,11 @@ namespace
             const uint32_t station = rdram[entity + 0x2BAu];
             if (station != g_vcsRadioStation.load(std::memory_order_relaxed))
             {
-                // Changing the station switches the radio back on: the runtime's
-                // "Radio Off" lasts only until the next station change.
-                if (ps2MusicStationRadioOff())
+                // A real station change (the game's own pending-change byte set by the
+                // pad) while the radio is off switches the runtime's radio back on.
+                if (ps2MusicStationRadioOff() && rdram[0x0048613Cu] != 0u)
                 {
                     ps2MusicStationSetRadioOff(false);
-                    ps2AudioSetOutputMuted(false);
                     if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
                         std::cerr << "[radio] station change -> radio on" << std::endl;
                 }
@@ -1129,8 +1131,34 @@ namespace
     void vcsFrameUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         // The game's silent slot is our Custom Soundtracks station: keep its GXT
-        // name "Custom".
+        // name "Custom" (or "Radio Off" while the radio is switched off).
         vcsKeepCustomName(rdram);
+        // While the runtime's radio is off, keep the game pointed at the silent
+        // slot so it plays nothing itself (the engine and atmosphere keep
+        // playing; only the music folder pauses).
+        if (ps2MusicStationRadioOff())
+        {
+            rdram[0x004E4756u] = 9u;
+            rdram[0x004E4755u] = 9u;
+            rdram[0x004E475Bu] = 9u;
+            const uint32_t entity = vcsRadioEntity(rdram, ctx, runtime);
+            if (entity >= 0x00100000u && entity + 0x2BAu < PS2_RAM_SIZE)
+                rdram[entity + 0x2BAu] = 9u;
+        }
+        // Temporary scripted trigger (PS2X_RADIO_OFF_FRAME=<frame>) so the radio
+        // on/off toggle can be exercised headlessly.
+        if (const char *env = std::getenv("PS2X_RADIO_OFF_FRAME"))
+        {
+            static bool s_fired = false;
+            static const uint64_t s_offFrame = std::strtoull(env, nullptr, 0);
+            if (!s_fired && g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) == s_offFrame)
+            {
+                s_fired = true;
+                const bool off = !ps2MusicStationRadioOff();
+                ps2MusicStationSetRadioOff(off);
+                std::cerr << "[radio] scripted radio " << (off ? "off" : "on") << std::endl;
+            }
+        }
         if (getRegU32(ctx, 31) == 0x0037AE5Cu)
         {
             vcsScaleLodDistance(rdram);
