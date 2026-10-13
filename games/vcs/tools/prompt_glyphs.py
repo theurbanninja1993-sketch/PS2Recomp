@@ -68,9 +68,15 @@ PS_WHITE_SVG = {
 }
 # Shoulder prompts for the PlayStation sets: the pack's DualSense bumper
 # shapes (the game's own PS2 shoulder icons have a different silhouette).
+# The pack draws them near-white; the DualSense set darkens them to the
+# controller's gray bumper tone.
 PS_SHOULDER_SVG = {
     "map_zoom_l": "PlayStation/ps5-Left Back.svg",
     "map_zoom_r": "PlayStation/ps5-Right Back.svg",
+}
+PS_SHOULDER_BRIGHTNESS = {
+    "dualsense": 0.72,
+    "dualshock": 1.0,
 }
 DPAD_SVG = {
     "dpad_up": "PlayStation/ps-D-PAD Up.svg",
@@ -214,7 +220,12 @@ def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) ->
     if button in SHOULDER_LABELS.get(set_name, {}):
         return _shoulder_glyph(SHOULDER_LABELS[set_name][button], size)
     if set_name in ("dualsense", "dualshock") and button in PS_SHOULDER_SVG:
-        return _render_ps_svg(svg_root, PS_SHOULDER_SVG[button], size)
+        im = _render_ps_svg(svg_root, PS_SHOULDER_SVG[button], size)
+        factor = PS_SHOULDER_BRIGHTNESS.get(set_name, 1.0)
+        if factor != 1.0:
+            from PIL import ImageEnhance
+            im = ImageEnhance.Brightness(im).enhance(factor)  # RGB only; alpha kept
+        return im
     if button == "map_target":
         button = "square"  # the map's target toggle is the square button
     if button in PS_COLOR_SVG and set_name in ("dualsense", "dualshock"):
