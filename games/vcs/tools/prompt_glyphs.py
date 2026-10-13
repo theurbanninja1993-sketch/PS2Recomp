@@ -2,8 +2,9 @@
 """Shared prompt-glyph rendering for the pack builders.
 
 The approved look (reads on the light menus and panels):
-- PlayStation (DualSense/DualShock): the pack's Color SVGs (dark disc, white
-  shape, coloured accents).
+- PlayStation DualShock: the pack's Color SVGs (dark disc, coloured shape);
+  DualSense: the same art with the symbol whitened (real DualSense buttons
+  are white-symboled).
 - Xbox: dark disc + the letter in its official colour (A green, B red, X blue,
   Y yellow).
 - Switch: dark disc + white letter (positional B/A/Y/X) + red ring.
@@ -15,7 +16,7 @@ D-pads use the generic arrows (simple light shapes).
 import os
 import subprocess
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 FACE_LETTERS = {
     "xbox":      {"cross": "A", "circle": "B", "square": "X", "triangle": "Y"},
@@ -92,6 +93,20 @@ def _disc_glyph(label: str, size: int, letter_color, ring_color) -> Image.Image:
     return im.resize((size, size), Image.LANCZOS)
 
 
+def _ps_whiten(im: Image.Image) -> Image.Image:
+    """DualSense-style face buttons: the pack's Color-SVG symbol recoloured
+    to white (the DualShock keeps the pack's colours, like the real DS4).
+    Only saturated pixels change, so the disc (and its antialiased rim)
+    stays as the pack drew it."""
+    r, g, b, a = im.split()
+    maxc = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    minc = ImageChops.darker(ImageChops.darker(r, g), b)
+    sat = ImageChops.difference(maxc, minc).point(lambda v: 255 if v > 16 else 0)
+    out = im.copy()
+    out.paste((255, 255, 255), (0, 0, im.width, im.height), ImageChops.darker(sat, a))
+    return out
+
+
 def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) -> Image.Image:
     """Returns an RGBA tile of the button's prompt art at `size` px."""
     if button in PS_COLOR_SVG and set_name in ("dualsense", "dualshock"):
@@ -101,6 +116,8 @@ def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) ->
         subprocess.run(["rsvg-convert", "-w", str(big), "-h", str(big), "-o", png, "-"],
                        input=open(os.path.join(svg_root, PS_COLOR_SVG[button]), "rb").read(), check=True)
         im = Image.open(png).convert("RGBA")
+        if set_name == "dualsense":
+            im = _ps_whiten(im)  # DualSense: white symbols on the dark disc
         return im.resize((size, size), Image.LANCZOS)
     if set_name in FACE_LETTERS and button in FACE_LETTERS[set_name]:
         label = FACE_LETTERS[set_name][button]

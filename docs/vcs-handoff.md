@@ -488,9 +488,12 @@ texture packs from `mods/`, Windows build under Wine.
      controller preview is its own full-alpha file (`preview_controller.png`,
      referenced from `manifest.txt`). Art is dark again (the approved look):
      Xbox letters in official colours, Switch/Steam white + brand ring,
-     PS = the pack's Color SVGs, keyboard keycaps. Verified by replaying
-     capture 1661: the cross prompt renders exactly as authored
-     (`(28,28,32)` disc, green `A`).
+     DualShock = the pack's Color SVGs (coloured symbols, like the real
+     DS4), DualSense = the same SVGs with the symbol whitened (real
+     DualSense buttons are white-symboled), keyboard keycaps; controller
+     portraits are the plain dark art (the white halo was removed after the
+     owner test). Verified by replaying capture 1661: the cross prompt
+     renders exactly as authored (`(28,28,32)` disc, green `A`).
    - The owner has the self-contained contact sheet at
      `texdump/_contact_sheet.html` (open with the full file:// path).
 

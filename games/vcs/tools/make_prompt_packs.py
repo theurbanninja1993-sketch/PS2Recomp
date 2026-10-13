@@ -176,9 +176,8 @@ def compose(canvas_w, canvas_h, cells, glyphs, out_png):
 
 def compose_controller(out_png, art_path, mode, w, h):
     """Fit the device's controller art into the game's diagram texture
-    (transparent background, centered) with a light halo so dark controller
-    art still reads on the game's dark controller page."""
-    from PIL import Image, ImageOps, ImageFilter
+    (transparent background, centred)."""
+    from PIL import Image, ImageOps
     art = Image.open(art_path).convert("RGBA")
     if mode == "cover":
         art = ImageOps.fit(art, (w, h), Image.LANCZOS)
@@ -186,15 +185,8 @@ def compose_controller(out_png, art_path, mode, w, h):
         art = ImageOps.contain(art, (int(w * 0.9), int(h * 0.9)), Image.LANCZOS)
     canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     canvas.alpha_composite(art, ((w - art.width) // 2, (h - art.height) // 2))
-    alpha = canvas.getchannel("A")
-    glow = alpha.filter(ImageFilter.MaxFilter(15)).point(lambda v: 255 if v > 40 else 0)
-    halo = Image.new("RGBA", canvas.size, (245, 245, 245, 255))
-    halo.putalpha(glow)
-    out = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    out.alpha_composite(halo)
-    out.alpha_composite(canvas)
-    to_gs_alpha(out).save(out_png)
-    return out
+    to_gs_alpha(canvas).save(out_png)
+    return canvas
 
 
 def main():
