@@ -66,6 +66,12 @@ PS_WHITE_SVG = {
     "square": "PlayStation/ps-Square.svg",
     "triangle": "PlayStation/ps-Triangle.svg",
 }
+# Shoulder prompts for the PlayStation sets: the pack's DualSense bumper
+# shapes (the game's own PS2 shoulder icons have a different silhouette).
+PS_SHOULDER_SVG = {
+    "map_zoom_l": "PlayStation/ps5-Left Back.svg",
+    "map_zoom_r": "PlayStation/ps5-Right Back.svg",
+}
 DPAD_SVG = {
     "dpad_up": "PlayStation/ps-D-PAD Up.svg",
     "dpad_down": "PlayStation/ps-D-PAD Down.svg",
@@ -189,26 +195,33 @@ def _shoulder_glyph(label: str, size: int) -> Image.Image:
     return im.resize((size, size), Image.LANCZOS)
 
 
+def _render_ps_svg(svg_root: str, rel: str, size: int) -> Image.Image:
+    """Rasterise one of the pack's PlayStation SVGs in its default
+    ('Transparent') style group, at 4x and downscaled."""
+    os.makedirs(_TMP, exist_ok=True)
+    big = max(128, size * 4)
+    png = f"{_TMP}/ps.png"
+    raw = _svg_with_style(open(os.path.join(svg_root, rel), "rb").read(), "Transparent")
+    subprocess.run(["rsvg-convert", "-w", str(big), "-h", str(big), "-o", png, "-"],
+                   input=raw, check=True)
+    return Image.open(png).convert("RGBA").resize((size, size), Image.LANCZOS)
+
+
 def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) -> Image.Image:
     """Returns an RGBA tile of the button's prompt art at `size` px."""
     if set_name == "keyboard":
         return _keycap_glyph(KEYBOARD_KEYS[button], size) if button in KEYBOARD_KEYS else None
     if button in SHOULDER_LABELS.get(set_name, {}):
         return _shoulder_glyph(SHOULDER_LABELS[set_name][button], size)
+    if set_name in ("dualsense", "dualshock") and button in PS_SHOULDER_SVG:
+        return _render_ps_svg(svg_root, PS_SHOULDER_SVG[button], size)
     if button == "map_target":
         button = "square"  # the map's target toggle is the square button
     if button in PS_COLOR_SVG and set_name in ("dualsense", "dualshock"):
         # DualShock: the pack's coloured symbols (like the real DS4).
         # DualSense: the pack's white style (white disc, gray symbol).
         svg = PS_WHITE_SVG[button] if set_name == "dualsense" else PS_COLOR_SVG[button]
-        os.makedirs(_TMP, exist_ok=True)
-        big = max(128, size * 4)
-        png = f"{_TMP}/ps.png"
-        raw = _svg_with_style(open(os.path.join(svg_root, svg), "rb").read(), "Transparent")
-        subprocess.run(["rsvg-convert", "-w", str(big), "-h", str(big), "-o", png, "-"],
-                       input=raw, check=True)
-        im = Image.open(png).convert("RGBA")
-        return im.resize((size, size), Image.LANCZOS)
+        return _render_ps_svg(svg_root, svg, size)
     if set_name in FACE_LETTERS and button in FACE_LETTERS[set_name]:
         label = FACE_LETTERS[set_name][button]
         letter = LETTER_COLORS.get(set_name, {}).get(label, (245, 245, 245))
