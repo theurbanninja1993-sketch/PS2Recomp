@@ -101,6 +101,10 @@ namespace
 
     StreamRing g_streamRing;
 
+    // Runtime "Radio Off": when set, submitStream queues nothing, so the audio
+    // device outputs silence for the game's own audio.
+    std::atomic<bool> g_outputMuted{false};
+
     void streamCallback(void *bufferData, unsigned int frames)
     {
         int16_t *out = static_cast<int16_t *>(bufferData);
@@ -116,6 +120,16 @@ namespace
         g_streamRing.readFrame = (g_streamRing.readFrame + available) % StreamRing::kFrames;
         g_streamRing.queuedFrames -= available;
     }
+}
+
+void ps2AudioSetOutputMuted(bool muted)
+{
+    g_outputMuted.store(muted, std::memory_order_relaxed);
+}
+
+bool ps2AudioOutputMuted()
+{
+    return g_outputMuted.load(std::memory_order_relaxed);
 }
 
 PS2AudioBackend::PS2AudioBackend() : m_impl(std::make_unique<Impl>())
@@ -166,6 +180,8 @@ void PS2AudioBackend::submitStream(const int16_t *stereoFrames, uint32_t frameCo
         std::fflush(s_dump);
     }
     g_ps2AudioFramesSubmitted.fetch_add(frameCount, std::memory_order_relaxed);
+    if (g_outputMuted.load(std::memory_order_relaxed))
+        return; // runtime "Radio Off": drop the game's audio, output stays silent
     std::lock_guard<std::mutex> lock(g_streamRing.mutex);
     for (uint32_t i = 0; i < frameCount; ++i)
     {

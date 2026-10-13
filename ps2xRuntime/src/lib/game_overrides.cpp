@@ -1,4 +1,5 @@
 #include "runtime/ps2_music_station.h"
+#include "runtime/ps2_audio.h"
 #include "game_overrides.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
@@ -533,6 +534,15 @@ namespace
             const uint32_t station = rdram[entity + 0x2BAu];
             if (station != g_vcsRadioStation.load(std::memory_order_relaxed))
             {
+                // Changing the station switches the radio back on: the runtime's
+                // "Radio Off" lasts only until the next station change.
+                if (ps2MusicStationRadioOff())
+                {
+                    ps2MusicStationSetRadioOff(false);
+                    ps2AudioSetOutputMuted(false);
+                    if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
+                        std::cerr << "[radio] station change -> radio on" << std::endl;
+                }
                 static const bool s_trace = std::getenv("PS2X_RADIO_TRACE") != nullptr;
                 if (s_trace)
                 {

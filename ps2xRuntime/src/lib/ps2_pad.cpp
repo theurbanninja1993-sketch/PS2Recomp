@@ -3,6 +3,7 @@
 extern std::atomic<bool> g_ps2DumpRamRequest; // ps2_runtime.cpp
 #include "runtime/ps2_host_settings.h"
 #include "runtime/ps2_music_station.h"
+#include "runtime/ps2_audio.h"
 #include "ps2_host_backend.h"
 #include <atomic>
 #include <mutex>
@@ -176,10 +177,13 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             const double now = GetTime();
             if (s_holdSince == 0.0)
                 s_holdSince = now;
-            else if (!s_fired && now - s_holdSince >= 2.0)
+            else if (!s_fired && now - s_holdSince >= 0.75)
             {
                 s_fired = true;
                 ps2MusicStationSetRadioOff(!ps2MusicStationRadioOff());
+                // Silence the game's own audio too, so "Radio Off" works on every
+                // station, not just our music folder.
+                ps2AudioSetOutputMuted(ps2MusicStationRadioOff());
                 std::fprintf(stderr, "[pad] radio %s\n", ps2MusicStationRadioOff() ? "off" : "on");
             }
         }

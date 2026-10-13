@@ -7,9 +7,14 @@
 #include <unordered_map>
 #include <vector>
 
+// Runtime "Radio Off": silence the emulated SPU2 output, which carries the game's
+// own audio (including its real radio stations). Our own music folder is separate
+// and is paused by the music-station module.
+void ps2AudioSetOutputMuted(bool muted);
+bool ps2AudioOutputMuted();
+
 class PS2AudioBackend
-{
-public:
+{public:
     PS2AudioBackend();
     ~PS2AudioBackend();
 
