@@ -19,6 +19,7 @@
 #include <string>
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter; // EeScheduler.cpp (dump index)
 
 namespace gsgpu
 {
@@ -2222,6 +2223,16 @@ void main()
         std::string path = std::string(dir) + "/" + name;
         ::Image image{rgba.data(), static_cast<int>(width), static_cast<int>(height), 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
         ExportImage(image, path.c_str());
+        // Sidecar index: key -> the VRAM address the draw used. Lets an F9 GS
+        // capture (TEX0 writes at the prompt) be matched to a dumped key.
+        static FILE *s_index = std::fopen((std::string(dir) + "/_dump_index.log").c_str(), "a");
+        if (s_index)
+        {
+            std::fprintf(s_index, "%s tbp0=%u tbw=%u psm=%u tw=%u th=%u frame=%llu\n", name, tex0.tbp0, tex0.tbw,
+                         tex0.psm, tex0.tw, tex0.th,
+                         static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed)));
+            std::fflush(s_index);
+        }
     }
 
     GLuint Renderer::replacementTexture(const GSDrawState &state)
