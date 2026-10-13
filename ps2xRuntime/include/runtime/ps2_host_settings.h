@@ -98,9 +98,10 @@ struct PS2HostSettings
         Xbox,
         Steam,
         Keyboard,
-        PlayStation, // DualShock / DualSense
+        DualSense,
+        DualShock4,
         Switch,
-        Off,
+        Off, // original PS2 art / whatever texture packs provide
     };
     ButtonPrompts buttonPrompts = ButtonPrompts::Auto;
     std::vector<std::string> disabledMods; // mod folder names switched off

@@ -126,7 +126,8 @@ namespace
             case PS2HostSettings::ButtonPrompts::Xbox: return "xbox";
             case PS2HostSettings::ButtonPrompts::Steam: return "steam";
             case PS2HostSettings::ButtonPrompts::Keyboard: return "keyboard";
-            case PS2HostSettings::ButtonPrompts::PlayStation: return "playstation";
+            case PS2HostSettings::ButtonPrompts::DualSense: return "dualsense";
+            case PS2HostSettings::ButtonPrompts::DualShock4: return "dualshock";
             case PS2HostSettings::ButtonPrompts::Switch: return "switch";
             case PS2HostSettings::ButtonPrompts::Auto: break;
         }
@@ -134,7 +135,8 @@ namespace
         {
             case PS2InputDevice::Xbox: return "xbox";
             case PS2InputDevice::Steam: return "steam";
-            case PS2InputDevice::PlayStation: return "playstation";
+            case PS2InputDevice::DualSense: return "dualsense";
+            case PS2InputDevice::DualShock: return "dualshock";
             case PS2InputDevice::Switch: return "switch";
             default: return "keyboard"; // the keyboard, or an unknown Xbox-style gamepad
         }
@@ -151,6 +153,11 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
         return;
     s_last = resolved;
     ps2ModsRefresh();
+}
+
+std::string ps2CurrentPromptSet()
+{
+    return ps2HostSettings().textureReplacement ? resolvedPromptSet(ps2HostSettings()) : std::string();
 }
 
 const std::vector<PS2ModInfo> &ps2Mods()

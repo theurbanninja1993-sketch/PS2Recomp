@@ -54,16 +54,40 @@ SVG_NAMES = {
         "triangle": "Xbox/xbox-P4.svg",   # Y (top)
         "start": "Xbox/xbox-Menu.svg",
         "select": "Xbox/xbox-View.svg",
+        # No Xbox D-pad glyphs in the pack: the generic arrows are universal.
+        "dpad_up": "PlayStation/ps-D-PAD Up.svg",
+        "dpad_down": "PlayStation/ps-D-PAD Down.svg",
+        "dpad_left": "PlayStation/ps-D-PAD Left.svg",
+        "dpad_right": "PlayStation/ps-D-PAD Right.svg",
     },
-    "playstation": {
+    "dualsense": {
         "cross": "PlayStation/ps-Cross.svg",
         "circle": "PlayStation/ps-Circle.svg",
         "square": "PlayStation/ps-Square.svg",
         "triangle": "PlayStation/ps-Triangle.svg",
         "dpad": "PlayStation/ps-D-PAD.svg",
+        "dpad_up": "PlayStation/ps-D-PAD Up.svg",
+        "dpad_down": "PlayStation/ps-D-PAD Down.svg",
+        "dpad_left": "PlayStation/ps-D-PAD Left.svg",
+        "dpad_right": "PlayStation/ps-D-PAD Right.svg",
         "start": "PlayStation/ps5-Option.svg",
         "select": "PlayStation/ps5-Create.svg",
         "l1": "PlayStation/ps5-Left Back.svg",
+        "r1": "PlayStation/ps5-Right Back.svg",
+    },
+    "dualshock": {
+        "cross": "PlayStation/ps-Cross.svg",
+        "circle": "PlayStation/ps-Circle.svg",
+        "square": "PlayStation/ps-Square.svg",
+        "triangle": "PlayStation/ps-Triangle.svg",
+        "dpad": "PlayStation/ps-D-PAD.svg",
+        "dpad_up": "PlayStation/ps-D-PAD Up.svg",
+        "dpad_down": "PlayStation/ps-D-PAD Down.svg",
+        "dpad_left": "PlayStation/ps-D-PAD Left.svg",
+        "dpad_right": "PlayStation/ps-D-PAD Right.svg",
+        "start": "PlayStation/ps4-Option.svg",
+        "select": "PlayStation/ps4-Share.svg",
+        "l1": "PlayStation/ps5-Left Back.svg",  # no DS4 shoulder glyphs in the pack
         "r1": "PlayStation/ps5-Right Back.svg",
     },
     "switch": {
@@ -76,9 +100,13 @@ SVG_NAMES = {
                   "Default Theme/Theme Assets/Active Presses/NSwitchPro_FaceButton.png#0,0",
         "triangle": "sheet:Controller Asset Pack/Nintendo Switch Controller Images/Switch Pro Controller/"
                     "Default Theme/Theme Assets/Active Presses/NSwitchPro_FaceButton.png#1,0",
-        "dpad": "Gamepad-Prompt-Asset-Pack/Nintendo/nintendoswitch-JoyCon D-PAD.svg",
-        "start": "Gamepad-Prompt-Asset-Pack/Nintendo/nintendo-Plus.svg",
-        "select": "Gamepad-Prompt-Asset-Pack/Nintendo/nintendo-Minus.svg",
+        "dpad": "Nintendo/nintendoswitch-JoyCon D-PAD.svg",
+        "dpad_up": "Nintendo/nintendoswitch-JoyCon D-PAD Up.svg",
+        "dpad_down": "Nintendo/nintendoswitch-JoyCon D-PAD Down.svg",
+        "dpad_left": "Nintendo/nintendoswitch-JoyCon D-PAD Left.svg",
+        "dpad_right": "Nintendo/nintendoswitch-JoyCon D-PAD Right.svg",
+        "start": "Nintendo/nintendo-Plus.svg",
+        "select": "Nintendo/nintendo-Minus.svg",
     },
     "steam": {
         # Steam Deck A/B/X/Y are Xbox-positioned; the pack ships no individual
@@ -87,6 +115,10 @@ SVG_NAMES = {
         "circle": "Xbox/xbox-P2.svg",
         "square": "Xbox/xbox-P3.svg",
         "triangle": "Xbox/xbox-P4.svg",
+        "dpad_up": "PlayStation/ps-D-PAD Up.svg",
+        "dpad_down": "PlayStation/ps-D-PAD Down.svg",
+        "dpad_left": "PlayStation/ps-D-PAD Left.svg",
+        "dpad_right": "PlayStation/ps-D-PAD Right.svg",
     },
     "keyboard": {  # keycap text labels; adjust to the port's default bindings
         "cross": "E",
@@ -121,15 +153,35 @@ def make_keycap(label, out_png, size, font=None):
 def compose(canvas_w, canvas_h, cells, glyphs, out_png):
     from PIL import Image, ImageOps
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    previews = {}   # button -> preview PNG path
     for cell in cells:
         key = cell["button"]
         src = Image.open(glyphs[key])
-        # letterbox the glyph to the cell
         src = ImageOps.contain(src, (cell["w"], cell["h"]))
         x = cell["x"] + (cell["w"] - src.width) // 2
         y = cell["y"] + (cell["h"] - src.height) // 2
         canvas.alpha_composite(src, (x, y))
+        # per-button preview tile for the settings menu
+        tile = Image.new("RGBA", (cell["w"], cell["h"]), (0, 0, 0, 0))
+        tile.alpha_composite(src, (x - cell["x"], y - cell["y"]))
+        previews[key] = tile
     canvas.save(out_png)
+    return previews
+
+
+def compose_controller(out_png, art_path, mode, w, h):
+    """Fit the device's controller art into the game's diagram texture
+    (transparent background, centered)."""
+    from PIL import Image, ImageOps
+    art = Image.open(art_path).convert("RGBA")
+    if mode == "cover":
+        art = ImageOps.fit(art, (w, h), Image.LANCZOS)
+    else:
+        art = ImageOps.contain(art, (int(w * 0.9), int(h * 0.9)), Image.LANCZOS)
+    canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    canvas.alpha_composite(art, ((w - art.width) // 2, (h - art.height) // 2))
+    canvas.save(out_png)
+    return canvas
 
 
 def main():
@@ -146,10 +198,16 @@ def main():
         outdir = os.path.join(args.out, set_name)
         os.makedirs(outdir, exist_ok=True)
         glyph_cache = {}
+        # The AL2009man pack root: contains Gamepad-Prompt-Asset-Pack/ (the
+        # SVGs) and Controller Asset Pack/ (the controller art), so --svg
+        # points at .../Gamepad-Prompt-Asset-Pack and art paths are relative
+        # to its parent.
         pack_root = os.path.dirname(os.path.abspath(args.svg))
-        if os.path.basename(os.path.abspath(args.svg)) == "Gamepad-Prompt-Asset-Pack":
-            pack_root = os.path.dirname(pack_root)
+        manifest = []  # button=preview-file lines for the settings menu
+        previews = {}  # button -> PIL tile
         for file_name, spec in textures.items():
+            if file_name == "_controller":
+                continue  # handled after the glyph textures
             cells = spec["cells"]
             canvas_w = max(c["x"] + c["w"] for c in cells)
             canvas_h = max(c["y"] + c["h"] for c in cells)
@@ -184,7 +242,28 @@ def main():
             if missing:
                 print(f"!! {set_name}/{file_name}: missing glyphs {missing}; skipping", file=sys.stderr)
                 continue
-            compose(canvas_w, canvas_h, cells, glyph_cache, os.path.join(outdir, file_name))
+            per_button = compose(canvas_w, canvas_h, cells, glyph_cache, os.path.join(outdir, file_name))
+            for btn, tile in per_button.items():
+                previews[btn] = tile  # last cell placement wins for multi-file buttons
+        # Controller diagram art for this set (optional "_controller" entry).
+        if "_controller" in textures:
+            cspec = textures["_controller"]
+            target = cspec.get("file", "")
+            art = cspec.get("art", "")
+            if target and art and os.path.exists(os.path.join(pack_root, art)):
+                from PIL import Image
+                gw, gh = Image.open(os.path.join(pack_root, target)).size if os.path.exists(
+                    os.path.join(pack_root, target)) else (512, 256)
+                compose_controller(os.path.join(outdir, target), os.path.join(pack_root, art),
+                                   cspec.get("mode", "fit"), gw, gh)
+                manifest.append(f"controller={target}")
+        # Per-button preview tiles + manifest for the settings menu.
+        for btn, tile in previews.items():
+            pv = f"preview_{btn}.png"
+            tile.save(os.path.join(outdir, pv))
+            manifest.append(f"{btn}={pv}")
+        with open(os.path.join(outdir, "manifest.txt"), "w") as mf:
+            mf.write("\n".join(manifest) + ("\n" if manifest else ""))
         for btn, tmp in glyph_cache.items():
             os.unlink(tmp)
     print("done: packs written under", args.out)

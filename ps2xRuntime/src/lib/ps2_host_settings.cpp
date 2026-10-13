@@ -253,7 +253,7 @@ void ps2HostSettingsLoad()
         else if (key == "pnach_cheats")
             s.pnachCheats = std::atoi(v) != 0;
         else if (key == "button_prompts")
-            s.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(std::clamp(std::atoi(v), 0, 6));
+            s.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(std::clamp(std::atoi(v), 0, 7));
         else if (key == "mods_disabled")
         {
             s.disabledMods.clear();

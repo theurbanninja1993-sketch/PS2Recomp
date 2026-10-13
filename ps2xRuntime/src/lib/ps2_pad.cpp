@@ -165,9 +165,11 @@ PS2InputDevice ps2InputDeviceKind()
         return PS2InputDevice::Steam;
     if (name.find("switch") != std::string::npos || name.find("pro controller") != std::string::npos)
         return PS2InputDevice::Switch;
-    if (name.find("dual") != std::string::npos || name.find("playstation") != std::string::npos ||
-        name.find("ps5") != std::string::npos || name.find("ps4") != std::string::npos || name.find("ps3") != std::string::npos)
-        return PS2InputDevice::PlayStation;
+    if (name.find("dualsense") != std::string::npos || name.find("ps5") != std::string::npos)
+        return PS2InputDevice::DualSense;
+    if (name.find("dualshock") != std::string::npos || name.find("playstation") != std::string::npos ||
+        name.find("ps4") != std::string::npos || name.find("ps3") != std::string::npos)
+        return PS2InputDevice::DualShock;
     return PS2InputDevice::Generic; // e.g. 8BitDo etc.: Xbox-style ABXY layout
 }
 

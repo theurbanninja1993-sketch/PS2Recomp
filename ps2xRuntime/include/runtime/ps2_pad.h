@@ -21,7 +21,8 @@ enum class PS2InputDevice
     Keyboard,
     Xbox,
     Steam,
-    PlayStation, // DualShock 3/4, DualSense
+    DualSense,  // PS5
+    DualShock,  // PS3/PS4
     Switch,
     Generic
 };

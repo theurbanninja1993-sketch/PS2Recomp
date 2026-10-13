@@ -429,14 +429,32 @@ texture packs from `mods/`, Windows build under Wine.
      to the Xbox glyphs (Deck layout; swap art later), keyboard set renders
      keycap text labels (defaults per the port's default bindings; adjust
      per action).
-   - **BLOCKED on identification:** the fast-boot / first-mission scene
-     never draws the prompt glyphs, so the dump contains no button-set
-     cluster (7 small single-glyph textures are ambiguous; the captured
-     128x128 font atlas has 1758 fragments and may hold the shapes as font
-     glyphs - check that first). Next: dump 1-2 min of play where glyphs
-     show (pause menu options, mission help boxes), then author
-     `packs.json` (keys + cell rects or single-glyph textures), generate,
-     and verify `[texrepl]` hit counts for those keys.
+   - **Identification progress (owner, 2026-10-13 evening):** the pause-screen
+     controller diagram is `955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png`
+     (256x256); face buttons + d-pad are the 16x16 tiles:
+     `60a3a644...-00001113` = Cross, `d0d9f396...-00001113` = Triangle,
+     `a1b7cc92...-00001113` = D-pad Up, `3c60f292...-00001113` = D-pad Right
+     (owner-corrected), `784c33b4...-00001113` = D-pad Left and
+     `47e8e408...-00001113` = D-pad Down (by mirror/elimination; owner to
+     double-check). **Done already:** the five sets (xbox, steam, dualsense,
+     dualshock, switch - PS split into DualSense/DualShock 4 at the owner's
+     ask, detection by name) each carry the controller-page art (from the
+     Controller Asset Pack bases) + the 2 faces + 4 d-pad arrows at 4x;
+     verified: `[prompts] xbox: 7 textures (7 overriding mod packs)`.
+     Still to find on the contact sheet: Circle, Square, Start/Select, and
+     L1/R1 if they exist as glyphs (keyboard set = text keycaps via the
+     script; no controller art for it - intentional).
+   - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
+     (= Off, shows the game's own art and any texture-pack art), and the
+     settings menu draws the active set's glyphs as images (from each set's
+     `manifest.txt`, written by the pack script) instead of text-only hints.
+   - Layout-adaptive labels (Classic/Modern/custom bindings changing the
+     controller-page text) are still open: the page's labels are page text,
+     not part of the diagram texture, so that needs a runtime-generated
+     diagram (compose per (device, layout) at index build or procedurally) -
+     design noted, not started.
+   - The owner has the self-contained contact sheet at
+     `texdump/_contact_sheet.html` (open with the full file:// path).
 
 ## Where past fixes live
 

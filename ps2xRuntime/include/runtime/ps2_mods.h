@@ -51,6 +51,9 @@ void ps2ModsRefresh();
 // active controller. Called once per frame: re-resolves Auto and rebuilds the
 // replacement index only when the resolved set changes.
 void ps2ModsRefreshButtonPromptsIfNeeded();
+// The resolved prompts folder name ("xbox", "keyboard", ...) for the
+// current ButtonPrompts setting and active device ("" = none).
+std::string ps2CurrentPromptSet();
 const std::vector<PS2ModInfo> &ps2Mods();
 // Enables / disables a mod (persisted in the settings) and re-applies.
 void ps2ModsSetEnabled(const std::string &name, bool enabled);

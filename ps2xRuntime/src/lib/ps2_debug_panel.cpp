@@ -2218,7 +2218,8 @@ namespace
         Keyboard,
         Xbox,
         Steam,
-        PlayStation,
+        DualSense,
+        DualShock,
         Switch,
         Generic
     };
@@ -2230,7 +2231,8 @@ namespace
             case PS2InputDevice::Keyboard: return InputDeviceKind::Keyboard;
             case PS2InputDevice::Xbox: return InputDeviceKind::Xbox;
             case PS2InputDevice::Steam: return InputDeviceKind::Steam;
-            case PS2InputDevice::PlayStation: return InputDeviceKind::PlayStation;
+            case PS2InputDevice::DualSense: return InputDeviceKind::DualSense;
+            case PS2InputDevice::DualShock: return InputDeviceKind::DualShock;
             case PS2InputDevice::Switch: return InputDeviceKind::Switch;
             default: return InputDeviceKind::Generic;
         }
@@ -2243,7 +2245,8 @@ namespace
             case InputDeviceKind::Keyboard: return "keyboard";
             case InputDeviceKind::Xbox: return "Xbox controller";
             case InputDeviceKind::Steam: return "Steam controller";
-            case InputDeviceKind::PlayStation: return "PlayStation controller";
+            case InputDeviceKind::DualSense: return "DualSense controller";
+            case InputDeviceKind::DualShock: return "DualShock 4 controller";
             case InputDeviceKind::Switch: return "Switch controller";
             default: return "gamepad";
         }
@@ -2255,9 +2258,13 @@ namespace
     {
         switch (kind)
         {
-            case InputDeviceKind::PlayStation: return "Circle";
-            case InputDeviceKind::Keyboard: return nullptr;
-            default: return "B"; // Xbox / Steam / Switch / generic pads
+            case InputDeviceKind::DualSense:
+            case InputDeviceKind::DualShock:
+                return "Circle";
+            case InputDeviceKind::Keyboard:
+                return nullptr;
+            default:
+                return "B"; // Xbox / Steam / Switch / generic pads
         }
     }
 
@@ -2269,6 +2276,67 @@ namespace
             case InputDeviceKind::Keyboard: return "F10 skips a track";
             default: return "D-pad Right / Left skip tracks";
         }
+    }
+
+    // The active prompt set's glyph textures in the settings menu: loads
+    // prompts/<set>/manifest.txt ("button=file.png" per line, written by
+    // make_prompt_packs.py) and draws the images with tooltips, instead of a
+    // text-only description.
+    void drawPromptSetPreview()
+    {
+        const std::string set = ps2CurrentPromptSet();
+        static std::string s_set;
+        static std::vector<Texture2D> s_tex;
+        static std::vector<std::string> s_names;
+        if (set != s_set)
+        {
+            for (Texture2D &t : s_tex)
+                UnloadTexture(t);
+            s_tex.clear();
+            s_names.clear();
+            s_set = set;
+            if (!set.empty())
+            {
+                std::ifstream in(std::filesystem::path(ps2PromptsDirectory()) / set / "manifest.txt");
+                std::string line;
+                while (std::getline(in, line))
+                {
+                    const size_t eq = line.find('=');
+                    if (eq == std::string::npos)
+                        continue;
+                    const std::string name = line.substr(0, eq), file = line.substr(eq + 1);
+                    if (file.empty() || file.find("..") != std::string::npos)
+                        continue;
+                    Texture2D tex = LoadTexture((std::filesystem::path(ps2PromptsDirectory()) / set / file).string().c_str());
+                    if (tex.id != 0)
+                    {
+                        s_tex.push_back(tex);
+                        s_names.push_back(name);
+                    }
+                }
+            }
+        }
+        if (s_tex.empty())
+        {
+            if (!s_set.empty())
+                ImGui::TextDisabled("(no manifest.txt in this set - glyph preview unavailable)");
+            return;
+        }
+        const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
+        ImGui::Spacing();
+        const int shown = std::min<int>(static_cast<int>(s_tex.size()), 10);
+        for (int i = 0; i < shown; ++i)
+        {
+            const float size = 30.0f * scale;
+            ImGui::PushID(i);
+            ImGui::Image(static_cast<ImTextureID>(static_cast<uint64_t>(s_tex[i].id)), ImVec2(size, size));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", s_names[i].c_str());
+            ImGui::PopID();
+            if (i + 1 < shown)
+                ImGui::SameLine(0.0f, 6.0f);
+        }
+        ImGui::Spacing();
     }
 }
 
@@ -2830,7 +2898,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 ImGui::SeparatorText("Button prompts");
                 {
                     static const char *const kPromptSets[] = {"Auto (active controller or keyboard)", "Xbox", "Steam",
-                                                               "Keyboard", "PlayStation (DualShock/DualSense)", "Switch", "Off"};
+                                                               "Keyboard", "DualSense (PS5)", "DualShock 4", "Switch",
+                                                               "Original (PS2 art / texture packs)"};
                     int current = static_cast<int>(settings.buttonPrompts);
                     if (ImGui::Combo("Prompt set", &current, kPromptSets, IM_ARRAYSIZE(kPromptSets)))
                     {
@@ -2841,6 +2910,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::TextDisabled("Glyphs in %s/<set>/ (PCSX2 texture names). They override "
                                         "texture packs for the same textures.",
                                         ps2PromptsDirectory().c_str());
+                    drawPromptSetPreview();
                 }
                 if (ps2MusicStationSupported())
                 {
