@@ -489,11 +489,16 @@ texture packs from `mods/`, Windows build under Wine.
      referenced from `manifest.txt`). Art is dark again (the approved look):
      Xbox letters in official colours, Switch/Steam white + brand ring,
      DualShock = the pack's Color SVGs (coloured symbols, like the real
-     DS4), DualSense = the same SVGs with the symbol whitened (real
-     DualSense buttons are white-symboled), keyboard keycaps; controller
-     portraits are the plain dark art (the white halo was removed after the
-     owner test). Verified by replaying capture 1661: the cross prompt
-     renders exactly as authored (`(28,28,32)` disc, green `A`).
+     DS4), DualSense = the pack's **white style** (white disc, gray
+     `#808080` symbol - the "Style - Transparent" layer group; the SVG's
+     three style groups are selected explicitly in `_svg_with_style()`),
+     keyboard keycaps; controller portraits are the plain dark art (the
+     white halo was removed after the owner test). Verified by replaying
+     capture 1661: the cross prompt renders exactly as authored
+     (`(28,28,32)` disc, green `A`); DualSense renders as the white button.
+     Backlog: the "Black" style (`Style - Outline (Black)`: black disc,
+     white symbol) is available as an alternative if a prompt set ever
+     needs a dark-button look.
    - The owner has the self-contained contact sheet at
      `texdump/_contact_sheet.html` (open with the full file:// path).
 
