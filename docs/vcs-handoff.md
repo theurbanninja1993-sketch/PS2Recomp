@@ -462,6 +462,14 @@ texture packs from `mods/`, Windows build under Wine.
      `screen_black` option in `packs.json` flattens green-dominant pixels
      to black inside `compose_controller()`. The white halo outline was
      dropped after the owner test.
+   - **Keyboard set (2026-10-13 late):** now ships the six menu glyph
+     textures too (cross/triangle + the 4 d-pads), so menus stop showing
+     the PS2 icons for keyboard users; the keyboard art is a keycap square
+     (dark rounded square + gray rim + white label): W/LMB/S/E for the
+     face buttons (port defaults) and the arrow keys for the d-pad (the
+     Menu directions are bound to the arrow keys). The font-atlas cells
+     use the same keycaps. `keyboard/` = 6 textures + sheet + previews +
+     manifest; no controller diagram (intentional).
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,
@@ -514,6 +522,27 @@ texture packs from `mods/`, Windows build under Wine.
      needs a dark-button look.
    - The owner has the self-contained contact sheet at
      `texdump/_contact_sheet.html` (open with the full file:// path).
+
+## Third-party assets (release-page credits)
+
+Both packs are by **AL2009man**, MIT-licensed, (c) 2024 Al. Lopez:
+
+- **Gamepad Asset Pack** - https://github.com/AL2009man/Gamepad-Asset-Pack
+  (the assets were originally created for
+  [VSCView](https://github.com/Nielk1/VSCView/)). Used for the
+  controller-page portrait art: `Controller Asset Pack/` - Xbox Series X,
+  DualSense, DualShock 4, Switch Pro and Steam Deck images.
+- **Gamepad Prompt Asset Pack** -
+  https://github.com/AL2009man/Gamepad-Prompt-Asset-Pack. Used for the
+  button-prompt glyphs: PlayStation face glyphs (Colour + white styles),
+  Xbox face buttons, Nintendo glyphs, D-pad arrows.
+- Minor: the keyboard keycap labels are rendered with **DejaVu Sans Bold**
+  (Bitstream Vera / DejaVu licence) and the SVGs with `rsvg-convert`
+  (LGPL); neither ships in the release, only the baked PNGs.
+- Licence note: the Prompt Asset Pack README carves out platform "Guide"
+  buttons from its commercial-use grant; our prompt configs never use
+  guide/home glyphs (face buttons, d-pads, start/select only). The
+  controller portraits come from the Controller Asset Pack (plain MIT).
 
 ## Where past fixes live
 
