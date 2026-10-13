@@ -7,6 +7,7 @@
 // usage: gs_replay <capture.bin> [passes]
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
+#include "runtime/ps2_mods.h" // PS2X_MODS_DIR texture packs (PS2X_TEXREPL_DUMP)
 #include "ps2_runtime.h"
 
 #include <csignal>
@@ -68,6 +69,11 @@ int main(int argc, char **argv)
         return 2;
     }
     const int passes = argc > 2 ? std::atoi(argv[2]) : 1;
+
+    // Load texture packs (PS2X_MODS_DIR or the default mods folder) so the
+    // replacement path - and PS2X_TEXREPL_DUMP's normal-texture hook - runs
+    // during the replay, exactly like in game.
+    ps2ModsRefresh();
 
     std::vector<Record> records;
     std::vector<uint8_t> initialVram;
