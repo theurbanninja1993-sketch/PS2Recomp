@@ -504,17 +504,29 @@ texture packs from `mods/`, Windows build under Wine.
      square, DualShock = the Color square); both use the same dark L1/R1
      pill (dark fill + light print, like the black bumpers on the real
      controllers). The cross/d-pad legend icons were already covered.
-   - **Runtime keyboard art (2026-10-13, milestone 1).**
-     `ps2_prompt_art.cpp` redraws the keyboard set's keycaps with raylib
-     whenever a bound key changes (same action labels as the shipped art,
-     arrow glyphs included) and writes them to
+   - **Runtime prompt art (2026-10-13, both milestones).**
+     `ps2_prompt_art.cpp` regenerates the prompt textures from the live
+     bindings and writes them to
      `<config>/ps2recomp/prompts_rt/<set>/`; the prompt loader reads that
-     folder after the shipped `prompts/<set>/` files (last wins), and
-     `ps2ModsRefreshButtonPromptsIfNeeded()` regenerates + rescans on
-     changes. Validated with a hidden-window raylib harness (keycaps W/E/
-     arrows/SPACE/Q/RMB + the atlas cells). The console sets' runtime
-     generation is the next milestone; the executable must be relinked for
-     the feature to go live.
+     folder after the shipped `prompts/<set>/` files (last wins).
+     - Keyboard: keycaps labelled with the bound keys (same action labels
+       as the shipped art, arrow glyphs included).
+     - Controller sets: the glyph of the host button that currently reaches
+       each PS2 button (`hostButtonForPs2`), so Classic / Modern / Custom
+       and the on-foot vs in-vehicle contexts show in the art too (Modern
+       on foot: the Circle cell becomes an RT pill, L1 a B disc, ...).
+       Styles: Xbox/Steam/Switch letter discs (brand rings, official
+       colours), PlayStation symbol discs (DualSense white style with gray
+       symbols, DualShock Color style with the pack's sampled colours),
+       pills for shoulders / sticks / menu buttons, arrows for host D-pad
+       inputs.
+     - Rewrites are debounced (~45 stable frames) and keyed by an
+       effective-content signature, so Classic layouts hash the same in
+       both pad contexts (riding a vehicle rewrites nothing) while Modern /
+       Custom rewrite when the context changes; stale files are removed so
+       dropped mappings fall back to the shipped art.
+     - Validated with a standalone hidden-window raylib harness for all six
+       sets plus a Modern-layout case; both executables relinked.
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,
