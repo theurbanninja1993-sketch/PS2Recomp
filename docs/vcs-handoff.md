@@ -61,8 +61,11 @@ Windows (cross-compiled, tested under Wine 11 / Proton):
        /usr/share/steam/compatibilitytools.d/proton-cachyos-native/files/lib/wine/x86_64-unix/wine \
          ps2EntryRunner.exe
      The runner is OpenGL (GL 4.6 core passthrough to native Mesa), so DXVK
-     does nothing here; Proton helps only through sync primitives. Owner
-     ear-confirmation pending for the music speed under Proton.
+     does nothing here; Proton helps only through sync primitives.
+     **Owner-confirmed (2026-10-13):** the radio music is at full speed
+     under Proton, and all of yesterday's radio work (custom station,
+     D-pad hold Radio Off toggle, unmute on station change) works on the
+     Windows build.
 
 Regenerating game code (only needed after recompiler/map changes, about 25 min
 full build): see the `vcs-recomp-function-map` notes. `ps2recomp
@@ -283,10 +286,10 @@ texture packs from `mods/`, Windows build under Wine.
      the radio back on. A per-frame push was tried and removed: it fought
      the game, never silenced the current station, and dragged every station
      change back to the silent slot.
-     - Verified under Wine/Proton headlessly (2026-10-13): station cycle to
-       slot 9, `[music] playing ...`, cycle continues past it; the pad
-       hold-toggle itself needs the owner's controller because it reads host
-       buttons (not scriptable through PS2X_PAD_SCRIPT).
+     - Verified under Wine/Proton (2026-10-13): station cycle to slot 9,
+       `[music] playing ...`, cycle continues past it (headless); the owner
+       then confirmed the D-pad hold toggle and the radio feature set on the
+       controller under Proton, at full speed.
    - Key addresses: the radio singleton is at **0x4E41E0** (+0x575 playing
      [*overloaded, see below*], +0x576 desired, +0x577/+0x578 lock flags,
      +0x57B last, +0x564/+0x568 owning vehicle); the station field is +0x2BA
