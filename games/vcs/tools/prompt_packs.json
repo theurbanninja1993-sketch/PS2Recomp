@@ -2,7 +2,7 @@
   "xbox": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/Xbox Wireless Controller Images/Default Theme/Template/Xbox Series X Controller/White/XBSeries_base_white.png",
+      "art": "Controller Asset Pack/Xbox Wireless Controller Images/Default Theme/Template/Xbox Series X Controller/Black/XBSeries_base.png",
       "mode": "fit"
     },
     "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
@@ -148,7 +148,7 @@
   "dualsense": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/DualSense Controller Image/Default/Templates/White/DualSense_base.png",
+      "art": "Controller Asset Pack/DualSense Controller Image/Default/Templates/Midnight Black/DualSense_base_black.png",
       "mode": "fit"
     },
     "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
@@ -221,7 +221,7 @@
   "dualshock": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/DualShock 4 Controller Images/Default Theme/DualShock 4 Templates/DS4 V2/Glacier White/DS4_V2_base_glacier_white.png",
+      "art": "Controller Asset Pack/DualShock 4 Controller Images/Default Theme/DualShock 4 Templates/DS4 V2/Jet Black/DS4_V2_base.png",
       "mode": "fit"
     },
     "60a3a644467171e5-acbe9ae672fed823-00001113.png": {

@@ -475,6 +475,22 @@ texture packs from `mods/`, Windows build under Wine.
      the rest of the text is untouched. The v2 note about shared-sheet
      replacement now applies only for extending this (e.g. adding L1/R1 or
      Start/Select symbols in the font if they exist).
+   - **GS-scale alpha (fixed 2026-10-13 late) - the "see-through prompts"
+     root cause.** Replacement textures are sampled through the GS blend
+     emulation, whose factor is `k = alpha/128` (`0x80` = opaque; the dumper
+     writes that scale and the DDS converter uses it too). Art authored in
+     `0..255` alpha makes `k ~ 2`: the source is over-brightened and the
+     destination factor goes negative, so prompt glyphs rendered washed out
+     and "showing the game world through" on the HUD (menus hid it; white
+     art saturated worst). `prompt_glyphs.to_gs_alpha()` now scales every
+     generated replacement (glyph tiles, atlas cells, controller art) to
+     `0..128`; `preview_*.png` keep `0..255` for the settings UI and the
+     controller preview is its own full-alpha file (`preview_controller.png`,
+     referenced from `manifest.txt`). Art is dark again (the approved look):
+     Xbox letters in official colours, Switch/Steam white + brand ring,
+     PS = the pack's Color SVGs, keyboard keycaps. Verified by replaying
+     capture 1661: the cross prompt renders exactly as authored
+     (`(28,28,32)` disc, green `A`).
    - The owner has the self-contained contact sheet at
      `texdump/_contact_sheet.html` (open with the full file:// path).
 

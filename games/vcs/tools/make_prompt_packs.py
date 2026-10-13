@@ -37,7 +37,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from prompt_glyphs import render_prompt_glyph
+from prompt_glyphs import render_prompt_glyph, to_gs_alpha
 
 # PS2 shape -> per-set glyph (relative to the SVG pack root), square target
 # size; keyboard labels. Verified against the checked-out pack (2026-10-13):
@@ -168,7 +168,9 @@ def compose(canvas_w, canvas_h, cells, glyphs, out_png):
         tile = Image.new("RGBA", (cell["w"], cell["h"]), (0, 0, 0, 0))
         tile.alpha_composite(src, (x - cell["x"], y - cell["y"]))
         previews[key] = tile
-    canvas.save(out_png)
+    # Replacement textures use GS-scale alpha (0x80 = opaque); the preview
+    # tiles above keep full alpha for the settings UI.
+    to_gs_alpha(canvas).save(out_png)
     return previews
 
 
@@ -191,7 +193,7 @@ def compose_controller(out_png, art_path, mode, w, h):
     out = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     out.alpha_composite(halo)
     out.alpha_composite(canvas)
-    out.save(out_png)
+    to_gs_alpha(out).save(out_png)
     return out
 
 
@@ -278,9 +280,10 @@ def main():
                 from PIL import Image
                 gw, gh = Image.open(os.path.join(pack_root, target)).size if os.path.exists(
                     os.path.join(pack_root, target)) else (512, 256)
-                compose_controller(os.path.join(outdir, target), os.path.join(pack_root, art),
-                                   cspec.get("mode", "fit"), gw, gh)
-                manifest.append(f"controller={target}")
+                preview = compose_controller(os.path.join(outdir, target), os.path.join(pack_root, art),
+                                             cspec.get("mode", "fit"), gw, gh)
+                preview.save(os.path.join(outdir, "preview_controller.png"))
+                manifest.append("controller=preview_controller.png")
         # Per-button preview tiles + manifest for the settings menu.
         for btn, tile in previews.items():
             pv = f"preview_{btn}.png"

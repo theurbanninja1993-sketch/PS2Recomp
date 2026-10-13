@@ -23,7 +23,7 @@ import argparse, os, subprocess, struct, sys
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from prompt_glyphs import render_prompt_glyph
+from prompt_glyphs import render_prompt_glyph, to_gs_alpha
 
 SHEET_KEY = "3ece7b57667e958b-f663bcea3bca5023-00002213.png"
 CELLS = [
@@ -99,6 +99,7 @@ def main():
             if glyph is None:
                 continue
             glyph = ImageOps.contain(glyph, (inner, inner), Image.LANCZOS)
+            glyph = to_gs_alpha(glyph)  # replacement cells use GS-scale alpha
             px = x + (w - glyph.width) // 2
             py = y + (h - glyph.height) // 2
             sheet.alpha_composite(glyph, (px, py))
