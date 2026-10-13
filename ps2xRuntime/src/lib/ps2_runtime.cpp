@@ -1603,6 +1603,27 @@ uint32_t g_ps2WriteWatchAddr = []() -> uint32_t
     return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 0)) & PS2_RAM_MASK : 0u;
 }();
 
+std::unordered_set<uint32_t> g_ps2WriteWatchSet = []()
+{
+    // The env also accepts a comma-separated list; each byte inside a wider
+    // store's range counts as hit, and reports include the presented frame.
+    std::unordered_set<uint32_t> set;
+    const char *env = std::getenv("PS2X_WATCH_WRITE");
+    if (!env)
+        return set;
+    for (const char *p = env; *p;)
+    {
+        char *end = nullptr;
+        const uint32_t a = static_cast<uint32_t>(std::strtoul(p, &end, 0)) & PS2_RAM_MASK;
+        if (a != 0u)
+            set.insert(a);
+        p = (*end == ',') ? end + 1 : end;
+        if (end == p)
+            break;
+    }
+    return set;
+}();
+
 void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op)
 {
     static const uint32_t s_limit = []() -> uint32_t
@@ -1619,7 +1640,9 @@ void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R
               << " size=" << std::dec << size << " value=0x" << std::hex << value;
     if (ctx)
     {
-        std::cerr << " pc=0x" << ctx->pc
+        extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+        std::cerr << " frame=" << std::dec << g_ps2PresentedFrameCounter.load(std::memory_order_relaxed)
+                  << " pc=0x" << std::hex << ctx->pc
                   << " ra=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0))
                   << " sp=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[29], 0));
         static const bool s_regs = std::getenv("PS2X_WATCH_REGS") != nullptr;

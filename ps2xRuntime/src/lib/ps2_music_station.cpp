@@ -27,6 +27,7 @@ namespace
     // backend, read by the music update, the game query and the overlay.
     std::atomic<bool> g_radioOff{false};
     bool g_skip = false;
+    bool g_prev = false;
     std::string g_title;
     double g_startedAt = -100.0;
     bool g_active = false;
@@ -152,6 +153,11 @@ void ps2MusicStationNextTrack()
     g_skip = true;
 }
 
+void ps2MusicStationPrevTrack()
+{
+    g_prev = true;
+}
+
 void ps2MusicStationRescan()
 {
     g_scanned = false;
@@ -189,16 +195,26 @@ void ps2MusicStationUpdate(const uint8_t *rdram)
         {
             PauseMusicStream(g_music); // resumes where it left off
             g_playing = false;
+            std::cerr << "[music] paused" << std::endl;
         }
         g_skip = false;
+        g_prev = false;
         return;
     }
     const bool ended = g_loaded && g_playing && !IsMusicStreamPlaying(g_music);
-    if (!g_loaded || ended || g_skip)
+    if (!g_loaded || ended || g_skip || g_prev)
     {
         if (g_loaded)
-            g_index = (g_index + 1) % g_tracks.size();
+        {
+            // Next / previous track (D-pad Right / Left on the controller,
+            // F10 on the keyboard for next).
+            if (g_prev)
+                g_index = (g_index + g_tracks.size() - 1) % g_tracks.size();
+            else
+                g_index = (g_index + 1) % g_tracks.size();
+        }
         g_skip = false;
+        g_prev = false;
         if (!loadCurrent())
             return;
         PlayMusicStream(g_music);
@@ -211,6 +227,7 @@ void ps2MusicStationUpdate(const uint8_t *rdram)
         ResumeMusicStream(g_music);
         g_playing = true;
         g_startedAt = GetTime(); // show the title again when tuning back in
+        std::cerr << "[music] resumed" << std::endl;
     }
     SetMusicVolume(g_music, std::clamp(settings.musicStationVolume, 0.0f, 1.0f));
     UpdateMusicStream(g_music);

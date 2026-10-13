@@ -87,6 +87,7 @@ struct PS2HostSettings
     bool musicStation = true;          // play the music folder as a radio station (VCS: the unused 10th station slot)
     float musicStationVolume = 0.8f;
     bool musicShuffle = true;
+    bool radioOffEnabled = true; // hold D-pad Down / M toggles "Radio Off" (Mods tab)
     bool textureReplacement = true;     // apply texture packs from the mods folder
     bool pnachCheats = true;            // apply .pnach memory patches from enabled mods
     std::vector<std::string> disabledMods; // mod folder names switched off

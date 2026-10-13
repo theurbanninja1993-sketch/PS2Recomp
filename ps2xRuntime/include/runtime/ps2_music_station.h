@@ -18,6 +18,7 @@ bool ps2MusicStationSupported(); // a game registered a query
 // Window thread, once per frame (after audio is initialised).
 void ps2MusicStationUpdate(const uint8_t *rdram);
 void ps2MusicStationNextTrack();
+void ps2MusicStationPrevTrack();
 void ps2MusicStationRescan();
 
 // The runtime's own radio on/off switch (D-pad Down / M held ~0.75 s). While

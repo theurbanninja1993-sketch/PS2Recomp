@@ -1208,10 +1208,13 @@ namespace
         // renamed once, see vcsKeepCustomName). Nothing is inserted into the
         // cycle, so every transition is one the game expects.
         // Custom Soundtracks: the music folder plays on the silent slot while in a
-        // vehicle and the runtime's radio is not switched off.
+        // vehicle, the runtime's radio is not switched off, and the game's own
+        // pause menu is closed (0x4CD2AC is set to 1 by the pause open/close
+        // handlers at 0x2F4D64/0x2F4D70 on the START press). The music then
+        // pauses and resumes with the game, on the same track.
         ps2MusicStationSetQuery([](const uint8_t *rdram)
                                 { return g_vcsRadioStation.load(std::memory_order_relaxed) == 9u &&
-                                         vcsPlayerInVehicle(rdram); });
+                                         vcsPlayerInVehicle(rdram) && rdram[0x004CD2ACu] == 0u; });
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);

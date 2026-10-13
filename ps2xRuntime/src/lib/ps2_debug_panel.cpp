@@ -2208,6 +2208,72 @@ void PS2DebugPanel::shutdown()
 #endif
 }
 
+namespace
+{
+    // Input-device prompts: the runtime's own hints and overlay text name the
+    // buttons of the active device (Xbox / Steam / PlayStation pads, or the
+    // keyboard). Detected from the gamepad's reported name.
+    enum class InputDeviceKind
+    {
+        Keyboard,
+        Xbox,
+        Steam,
+        PlayStation,
+        Generic
+    };
+
+    InputDeviceKind activeInputDevice()
+    {
+        const int pad = ps2ActiveGamepad();
+        if (pad < 0)
+            return InputDeviceKind::Keyboard;
+        std::string name = GetGamepadName(pad);
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (name.find("xbox") != std::string::npos)
+            return InputDeviceKind::Xbox;
+        if (name.find("steam") != std::string::npos)
+            return InputDeviceKind::Steam;
+        if (name.find("dual") != std::string::npos || name.find("playstation") != std::string::npos ||
+            name.find("ps5") != std::string::npos || name.find("ps4") != std::string::npos || name.find("ps3") != std::string::npos)
+            return InputDeviceKind::PlayStation;
+        return InputDeviceKind::Generic;
+    }
+
+    const char *inputDeviceName(InputDeviceKind kind)
+    {
+        switch (kind)
+        {
+            case InputDeviceKind::Keyboard: return "keyboard";
+            case InputDeviceKind::Xbox: return "Xbox controller";
+            case InputDeviceKind::Steam: return "Steam controller";
+            case InputDeviceKind::PlayStation: return "PlayStation controller";
+            default: return "gamepad";
+        }
+    }
+
+    // The face button that goes back in menus ("Circle" on a PlayStation pad,
+    // "B" on Xbox/Steam/generic pads, no button on the keyboard).
+    const char *backButtonName(InputDeviceKind kind)
+    {
+        switch (kind)
+        {
+            case InputDeviceKind::PlayStation: return "Circle";
+            case InputDeviceKind::Keyboard: return nullptr;
+            default: return "B";
+        }
+    }
+
+    // How to skip music-folder tracks on the active device.
+    const char *trackSkipPrompt(InputDeviceKind kind)
+    {
+        switch (kind)
+        {
+            case InputDeviceKind::Keyboard: return "F10 skips a track";
+            default: return "D-pad Right / Left skip tracks";
+        }
+    }
+}
+
 void PS2DebugPanel::draw(PS2Runtime &runtime)
 {
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
@@ -2267,6 +2333,7 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
             ImGui::SetWindowFontScale(scale);
             ImGui::Text("%s", ps2MusicStationName());
             ImGui::TextDisabled("%s", track.c_str());
+            ImGui::TextDisabled("%s", trackSkipPrompt(activeInputDevice()));
         }
         ImGui::End();
     }
@@ -2765,9 +2832,11 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 if (ps2MusicStationSupported())
                 {
                     ImGui::SeparatorText("Custom Soundtracks (music folder)");
+                    const InputDeviceKind device = activeInputDevice();
                     ImGui::TextWrapped("Your own music as a radio station, like the PC versions of GTA III and Vice "
                                        "City. It plays on the game's leftover \"CUSTOM SOUNDTRACKS\" station slot -- the "
-                                       "unused one past the nine real stations -- while in a vehicle. F10 skips a track.");
+                                       "unused one past the nine real stations -- while in a vehicle. %s on the %s.",
+                                       trackSkipPrompt(device), inputDeviceName(device));
                     changed |= ImGui::Checkbox("Play the music folder on the unused station", &settings.musicStation);
                     float volume = settings.musicStationVolume * 100.0f;
                     if (ImGui::SliderFloat("Music volume", &volume, 0.0f, 100.0f, "%.0f%%"))
@@ -2779,6 +2848,12 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     {
                         changed = true;
                         ps2MusicStationRescan();
+                    }
+                    if (ImGui::Checkbox("Hold D-pad Down / M turns the radio off", &settings.radioOffEnabled))
+                    {
+                        changed = true;
+                        if (!settings.radioOffEnabled)
+                            ps2MusicStationSetRadioOff(false); // don't strand the radio off
                     }
                     ImGui::Text("%zu tracks (MP3, OGG, FLAC, WAV)", ps2MusicStationTrackCount());
                     ImGui::TextDisabled("%s", ps2MusicStationDirectory().c_str());
@@ -2813,8 +2888,11 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
             if (ImGui::Button("Close"))
                 open = false;
             ImGui::SameLine();
-            ImGui::TextDisabled(ps2ActiveGamepad() >= 0 ? "F2 / Select+Start opens and closes this menu; Circle goes back"
-                                                      : "F2 opens/closes this menu");
+            const char *back = backButtonName(activeInputDevice());
+            if (ps2ActiveGamepad() >= 0)
+                ImGui::TextDisabled("F2 / Select+Start opens and closes this menu; %s goes back", back ? back : "the back button");
+            else
+                ImGui::TextDisabled("F2 opens/closes this menu");
         }
         ImGui::SameLine(columnW - ImGui::CalcTextSize("Quit to desktop").x - style.FramePadding.x * 2.0f);
         if (ImGui::Button("Quit to desktop"))

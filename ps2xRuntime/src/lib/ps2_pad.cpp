@@ -164,22 +164,27 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[3] = 0xFF;
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
     // Radio on/off: hold D-pad Down on the controller or "M" on the keyboard for
-    // 0.75 s. This reads the host button directly rather than the layout's
-    // mapping, so it behaves the same on the Classic and Modern layouts.
+    // 0.75 s (the Mods settings toggle can disable it). Track skip: a single
+    // press of D-pad Right / Left skips the music folder track (the keyboard
+    // uses F10 for next). The D-pad is unmapped in-game, so neither ever
+    // reaches the game.
     {
-        static double s_holdSince = 0.0;
-        static bool s_fired = false;
+        const PS2HostSettings &settings = ps2HostSettings();
+        static double s_offSince = 0.0;
+        static bool s_offFired = false;
+        static bool s_dpadPrev[2] = {};
         const int pad = ps2ActiveGamepad();
-        const bool held =
-            (pad >= 0 && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN)) || IsKeyDown(KEY_M);
-        if (held)
+        const bool heldOff =
+            settings.radioOffEnabled &&
+            ((pad >= 0 && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN)) || IsKeyDown(KEY_M));
+        if (heldOff)
         {
             const double now = GetTime();
-            if (s_holdSince == 0.0)
-                s_holdSince = now;
-            else if (!s_fired && now - s_holdSince >= 0.75)
+            if (s_offSince == 0.0)
+                s_offSince = now;
+            else if (!s_offFired && now - s_offSince >= 0.75)
             {
-                s_fired = true;
+                s_offFired = true;
                 const bool off = !ps2MusicStationRadioOff();
                 ps2MusicStationSetRadioOff(off);
                 // The game is re-tuned to its silent slot by vcsFrameUpdate once,
@@ -189,8 +194,23 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         }
         else
         {
-            s_holdSince = 0.0;
-            s_fired = false;
+            s_offSince = 0.0;
+            s_offFired = false;
+        }
+        if (pad >= 0)
+        {
+            const bool dpadNext = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
+            const bool dpadPrev = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_FACE_LEFT);
+            if (dpadNext && !s_dpadPrev[0])
+                ps2MusicStationNextTrack();
+            if (dpadPrev && !s_dpadPrev[1])
+                ps2MusicStationPrevTrack();
+            s_dpadPrev[0] = dpadNext;
+            s_dpadPrev[1] = dpadPrev;
+        }
+        else
+        {
+            s_dpadPrev[0] = s_dpadPrev[1] = false;
         }
     }
 

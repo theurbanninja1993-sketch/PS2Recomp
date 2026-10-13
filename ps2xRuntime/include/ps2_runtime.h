@@ -18,6 +18,7 @@
 #include <atomic>
 #include <array>
 #include <map>
+#include <unordered_set>
 #include <mutex>
 #include <filesystem>
 #include <memory>
@@ -257,6 +258,7 @@ inline void ps2TraceGuestWrite(uint8_t *rdram,
 }
 
 extern uint32_t g_ps2WriteWatchAddr;
+extern std::unordered_set<uint32_t> g_ps2WriteWatchSet;
 void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op);
 
 inline void ps2TraceGuestRangeWrite(uint8_t *rdram,
@@ -267,7 +269,11 @@ inline void ps2TraceGuestRangeWrite(uint8_t *rdram,
 {
     (void)rdram;
     // Host-side (HLE) bulk writes into guest memory; see PS2X_WATCH_WRITE.
-    if (g_ps2WriteWatchAddr != 0u && (g_ps2WriteWatchAddr - (guestAddr & PS2_RAM_MASK)) < size)
+    bool hit = g_ps2WriteWatchAddr != 0u && (g_ps2WriteWatchAddr - (guestAddr & PS2_RAM_MASK)) < size;
+    if (!hit && !g_ps2WriteWatchSet.empty())
+        for (uint32_t i = 0; i < size && !hit; ++i)
+            hit = g_ps2WriteWatchSet.count((guestAddr & PS2_RAM_MASK) + i) != 0u;
+    if (hit)
     {
         ps2ReportWatchedWrite(guestAddr, size, 0u, ctx, op);
     }

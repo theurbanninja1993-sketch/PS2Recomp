@@ -318,14 +318,20 @@ static inline void Ps2FastWrite128(uint8_t *rdram, uint32_t addr, __m128i value)
 #define FAST_READ128(addr) Ps2FastRead128(rdram, (uint32_t)(addr))
 
 // Guest write watchpoint (debug aid). Set PS2X_WATCH_WRITE=0xADDR to log every
-// guest store that touches that byte with the guest PC/RA/SP. Disabled (0)
-// costs one predictable compare per store.
+// guest store that touches that byte with the guest PC/RA/SP - a comma list
+// watches several bytes at once, and stores that merely cover a watched byte
+// count too. Disabled (0) costs one predictable compare per store.
 extern uint32_t g_ps2WriteWatchAddr;
+extern std::unordered_set<uint32_t> g_ps2WriteWatchSet;
 void ps2ReportWatchedWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op);
 
 static inline void Ps2WatchWrite(uint32_t addr, uint32_t size, uint64_t value, const R5900Context *ctx, const char *op)
 {
-    if (g_ps2WriteWatchAddr != 0u && (g_ps2WriteWatchAddr - (addr & PS2_RAM_MASK)) < size)
+    bool hit = g_ps2WriteWatchAddr != 0u && (g_ps2WriteWatchAddr - (addr & PS2_RAM_MASK)) < size;
+    if (!hit && !g_ps2WriteWatchSet.empty())
+        for (uint32_t i = 0; i < size && !hit; ++i)
+            hit = g_ps2WriteWatchSet.count((addr & PS2_RAM_MASK) + i) != 0u;
+    if (hit)
     {
         ps2ReportWatchedWrite(addr, size, value, ctx, op);
     }
