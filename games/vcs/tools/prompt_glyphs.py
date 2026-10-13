@@ -37,13 +37,15 @@ KEYBOARD_KEYS = {
     "start": "ESC", "select": "TAB",
     "map_target": "SPACE", "map_zoom_l": "Q", "map_zoom_r": "RMB",
 }
-# Shoulder (map zoom) pills for the console sets. The PlayStation sets use
-# the pack's DualSense bumper shape recoloured to the controllers' black
-# bumpers with light print instead (see PS_SHOULDER_SVG below).
+# Shoulder (map zoom) pills for the console sets: dark pill, light label.
+# The PlayStation bumpers are black with light print on both the DualSense
+# and the DualShock 4, so those sets share the L1/R1 pill.
 SHOULDER_LABELS = {
     "xbox": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
     "steam": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
     "switch": {"map_zoom_l": "L", "map_zoom_r": "R"},
+    "dualsense": {"map_zoom_l": "L1", "map_zoom_r": "R1"},
+    "dualshock": {"map_zoom_l": "L1", "map_zoom_r": "R1"},
 }
 LETTER_COLORS = {
     "xbox": {"A": (16, 124, 16), "B": (211, 47, 47), "X": (0, 120, 215), "Y": (242, 196, 0)},
@@ -59,22 +61,6 @@ PS_COLOR_SVG = {
     "square": "PlayStation/ps-Square-Color.svg",
     "triangle": "PlayStation/ps-Triangle-Color.svg",
 }
-# Shoulder prompts for the PlayStation sets: the pack's DualSense bumper
-# shape (the real DualSense and DualShock 4 bumpers share the silhouette
-# look), recoloured to black with light print like the controllers.
-PS_SHOULDER_SVG = {
-    "map_zoom_l": "PlayStation/ps5-Left Back.svg",
-    "map_zoom_r": "PlayStation/ps5-Right Back.svg",
-}
-
-
-def _ps_shoulder_dark(im: Image.Image) -> Image.Image:
-    """Flip the pack's white bumper art to a black bumper with light print
-    (the relief darkens the print, so inverting lifts it out)."""
-    lum = im.convert("L").point(lambda v: round(min(255.0, max(0.0, 405.0 - 1.52 * v))))
-    return Image.merge("RGBA", (lum, lum, lum, im.getchannel("A")))
-
-
 # The pack's white style: white disc + gray (#808080) symbol, meant to work
 # on any background (DualSense buttons are white-symboled, not coloured).
 PS_WHITE_SVG = {
@@ -224,8 +210,6 @@ def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) ->
         return _keycap_glyph(KEYBOARD_KEYS[button], size) if button in KEYBOARD_KEYS else None
     if button in SHOULDER_LABELS.get(set_name, {}):
         return _shoulder_glyph(SHOULDER_LABELS[set_name][button], size)
-    if set_name in ("dualsense", "dualshock") and button in PS_SHOULDER_SVG:
-        return _ps_shoulder_dark(_render_ps_svg(svg_root, PS_SHOULDER_SVG[button], size))
     if button == "map_target":
         button = "square"  # the map's target toggle is the square button
     if button in PS_COLOR_SVG and set_name in ("dualsense", "dualshock"):
