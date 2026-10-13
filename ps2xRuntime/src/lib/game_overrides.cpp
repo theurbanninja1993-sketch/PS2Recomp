@@ -537,9 +537,11 @@ namespace
             const uint32_t station = rdram[entity + 0x2BAu];
             if (station != g_vcsRadioStation.load(std::memory_order_relaxed))
             {
-                // A real station change (the game's own pending-change byte set by the
-                // pad) while the radio is off switches the runtime's radio back on.
-                if (ps2MusicStationRadioOff() && rdram[0x0048613Cu] != 0u)
+                // A station change to a real slot while the runtime radio is off
+                // means the player retuned (the push to the silent slot holds at
+                // 9, so any departure from 9 is a real change): switch the
+                // runtime radio back on.
+                if (ps2MusicStationRadioOff() && station != 9u)
                 {
                     ps2MusicStationSetRadioOff(false);
                     if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
@@ -1133,17 +1135,25 @@ namespace
         // The game's silent slot is our Custom Soundtracks station: keep its GXT
         // name "Custom" (or "Radio Off" while the radio is switched off).
         vcsKeepCustomName(rdram);
-        // While the runtime's radio is off, keep the game pointed at the silent
-        // slot so it plays nothing itself (the engine and atmosphere keep
-        // playing; only the music folder pauses).
-        if (ps2MusicStationRadioOff())
+        // Radio Off re-tune: push the game to its silent slot exactly once, on
+        // the first frame after the radio switches off, then leave the station
+        // alone - the game's own update then holds the silent slot (no station
+        // audio, the engine and atmosphere keep playing), and a later station
+        // press is free to move away and switch the radio back on.
+        static bool s_pushedWhileOff = false;
+        if (!ps2MusicStationRadioOff())
+            s_pushedWhileOff = false;
+        else if (!s_pushedWhileOff)
         {
+            s_pushedWhileOff = true;
             rdram[0x004E4756u] = 9u;
             rdram[0x004E4755u] = 9u;
             rdram[0x004E475Bu] = 9u;
             const uint32_t entity = vcsRadioEntity(rdram, ctx, runtime);
             if (entity >= 0x00100000u && entity + 0x2BAu < PS2_RAM_SIZE)
                 rdram[entity + 0x2BAu] = 9u;
+            if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
+                std::cerr << "[radio] pushed to silent slot once" << std::endl;
         }
         // Temporary scripted trigger (PS2X_RADIO_OFF_FRAME=<frame>) so the radio
         // on/off toggle can be exercised headlessly.

@@ -164,7 +164,7 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[3] = 0xFF;
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
     // Radio on/off: hold D-pad Down on the controller or "M" on the keyboard for
-    // two seconds. This reads the host button directly rather than the layout's
+    // 0.75 s. This reads the host button directly rather than the layout's
     // mapping, so it behaves the same on the Classic and Modern layouts.
     {
         static double s_holdSince = 0.0;
@@ -182,17 +182,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 s_fired = true;
                 const bool off = !ps2MusicStationRadioOff();
                 ps2MusicStationSetRadioOff(off);
-                if (off && m_rdram)
-                {
-                    // The game's own "radio off": tune to the silent slot (our
-                    // Custom Soundtracks) so the game plays nothing itself. The
-                    // engine and atmosphere keep playing; only the music folder
-                    // pauses, so nothing else needs muting.
-                    uint8_t *ram = const_cast<uint8_t *>(m_rdram);
-                    ram[0x004E4756u] = 9u;
-                    ram[0x004E4755u] = 9u;
-                    ram[0x004E475Bu] = 9u;
-                }
+                // The game is re-tuned to its silent slot by vcsFrameUpdate once,
+                // on the first frame of the off state (see game_overrides.cpp).
                 std::fprintf(stderr, "[pad] radio %s\n", off ? "off" : "on");
             }
         }
