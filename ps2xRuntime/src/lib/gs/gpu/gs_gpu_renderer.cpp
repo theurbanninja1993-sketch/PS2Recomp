@@ -2139,7 +2139,11 @@ void main()
         const GSTex0Reg &tex0 = ctx.tex0;
         const uint32_t psm = tex0.psm & 0x3Fu;
         const bool palettized = isPalettized(static_cast<uint8_t>(psm));
-        if (!palettized && psm != PSM_CT32 && psm != PSM_CT24 && psm != PSM_CT16 && psm != PSM_CT16S)
+        // PS2X_TEXREPL_DUMP_ALL=1: decode best effort even for formats the
+        // matcher does not support (raw 32-bit words), so pack authoring can
+        // see every drawn texture.
+        static const bool s_anyFormat = std::getenv("PS2X_TEXREPL_DUMP_ALL") != nullptr;
+        if (!palettized && psm != PSM_CT32 && psm != PSM_CT24 && psm != PSM_CT16 && psm != PSM_CT16S && !s_anyFormat)
             return;
         const uint32_t width = 1u << std::min<uint32_t>(tex0.tw, 10u);
         const uint32_t height = 1u << std::min<uint32_t>(tex0.th, 10u);
@@ -2207,6 +2211,40 @@ void main()
         const GSTex0Reg &tex0 = ctx.tex0;
         const uint32_t psm = tex0.psm;
         const bool palettized = isPalettized(static_cast<uint8_t>(psm));
+        // PS2X_TEXREPL_DUMP_ALL=1: dump textures the matcher refuses
+        // (unsupported formats, region clamp) so pack authoring sees every
+        // drawn texture; GPU-drawn (CPU-stale) pages are still skipped - the
+        // CPU copy holds stale bytes there.
+        static const bool s_dumpAll = std::getenv("PS2X_TEXREPL_DUMP_ALL") != nullptr && std::getenv("PS2X_TEXREPL_DUMP") != nullptr;
+        if (s_dumpAll)
+        {
+            const bool supported = palettized || psm == PSM_CT32 || psm == PSM_CT24 || psm == PSM_CT16 || psm == PSM_CT16S;
+            const bool unclamped = (ctx.clamp & 3u) < 2u && ((ctx.clamp >> 2) & 3u) < 2u;
+            if (!supported || !unclamped)
+            {
+                uint32_t begin = 0, end = 0;
+                bufferRange(tex0.tbp0, tex0.tbw, 1u << std::min<uint32_t>(tex0.th, 10u), static_cast<uint8_t>(psm), begin, end);
+                bool stale = false;
+                if (begin < end)
+                    for (uint32_t page = begin / kPageBytes; page <= std::min<uint32_t>((end - 1u) / kPageBytes, 511u); ++page)
+                        if (m_pageCpuStale[page])
+                        {
+                            stale = true;
+                            break;
+                        }
+                if (!stale && begin < end)
+                {
+                    const bool texa = !palettized && psm != PSM_CT32;
+                    gsrepl::Key key;
+                    key.tex0Hash = hashTextureMemory(state);
+                    key.clutHash = palettized ? hashClut(state) : 0u;
+                    key.bits = gsrepl::makeBits(static_cast<uint8_t>(psm), tex0.tw, tex0.th, texa ? state.texa.ta0 : 0u,
+                                                texa ? state.texa.aem : 0u, texa ? state.texa.ta1 : 0u);
+                    if (m_dumpedTextures.insert(key).second)
+                        dumpReplacementTexture(state, key);
+                }
+            }
+        }
         if (!palettized && psm != PSM_CT32 && psm != PSM_CT24 && psm != PSM_CT16 && psm != PSM_CT16S)
             return 0;
         if ((ctx.clamp & 3u) >= 2u || ((ctx.clamp >> 2) & 3u) >= 2u)
