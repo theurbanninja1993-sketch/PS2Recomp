@@ -238,7 +238,8 @@ def main():
                 if btn in glyph_cache:
                     continue
                 size = cell["w"]  # glyphs are square
-                if set_name == "keyboard" or (btn in ("cross", "circle", "square", "triangle") and set_name in (
+                if set_name == "keyboard" or (btn in ("cross", "circle", "square", "triangle",
+                                                       "map_target", "map_zoom_l", "map_zoom_r") and set_name in (
                         "xbox", "steam", "dualsense", "dualshock", "switch")):
                     # Bare high-contrast glyphs: the disc-style SVG art is
                     # unreadable at prompt sizes (see prompt_glyphs.py).

@@ -70,6 +70,39 @@
           "button": "dpad_right"
         }
       ]
+    },
+    "c075546801b74bf1-6b7c470bee19b607-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_target"
+        }
+      ]
+    },
+    "1c274bfc4808cd11-21fc390fe03ad8c0-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_l"
+        }
+      ]
+    },
+    "23ece69c64b71407-f6ce098a91a7ac7b-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_r"
+        }
+      ]
     }
   },
   "steam": {
@@ -142,6 +175,39 @@
           "w": 64,
           "h": 64,
           "button": "dpad_right"
+        }
+      ]
+    },
+    "c075546801b74bf1-6b7c470bee19b607-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_target"
+        }
+      ]
+    },
+    "1c274bfc4808cd11-21fc390fe03ad8c0-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_l"
+        }
+      ]
+    },
+    "23ece69c64b71407-f6ce098a91a7ac7b-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_r"
         }
       ]
     }
@@ -363,6 +429,39 @@
           "button": "dpad_right"
         }
       ]
+    },
+    "c075546801b74bf1-6b7c470bee19b607-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_target"
+        }
+      ]
+    },
+    "1c274bfc4808cd11-21fc390fe03ad8c0-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_l"
+        }
+      ]
+    },
+    "23ece69c64b71407-f6ce098a91a7ac7b-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_r"
+        }
+      ]
     }
   },
   "keyboard": {
@@ -429,6 +528,39 @@
           "w": 64,
           "h": 64,
           "button": "dpad_right"
+        }
+      ]
+    },
+    "c075546801b74bf1-6b7c470bee19b607-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_target"
+        }
+      ]
+    },
+    "1c274bfc4808cd11-21fc390fe03ad8c0-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_l"
+        }
+      ]
+    },
+    "23ece69c64b71407-f6ce098a91a7ac7b-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_zoom_r"
         }
       ]
     }

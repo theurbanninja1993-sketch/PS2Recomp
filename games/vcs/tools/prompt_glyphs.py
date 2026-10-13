@@ -27,12 +27,22 @@ FACE_LETTERS = {
     "switch":    {"cross": "B", "circle": "A", "square": "Y", "triangle": "X"},
 }
 # Keyboard: keycap squares labelled with the port's default bindings. The
-# d-pad / menu directions are the arrow keys.
+# d-pad / menu directions are the arrow keys. The map-screen icons map the
+# PS2 buttons to the action that presses them on that screen (Square is the
+# menu-context jump, L1/R1 are interact / aim on foot).
 KEYBOARD_KEYS = {
     "cross": "W", "circle": "LMB", "square": "S", "triangle": "E",
     "dpad_up": "\u2191", "dpad_down": "\u2193",
     "dpad_left": "\u2190", "dpad_right": "\u2192",
     "start": "ESC", "select": "TAB",
+    "map_target": "SPACE", "map_zoom_l": "Q", "map_zoom_r": "RMB",
+}
+# Shoulder (map zoom) pills for the console sets. The PlayStation sets keep
+# the game's own L1/R1 icons.
+SHOULDER_LABELS = {
+    "xbox": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
+    "steam": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
+    "switch": {"map_zoom_l": "L", "map_zoom_r": "R"},
 }
 LETTER_COLORS = {
     "xbox": {"A": (16, 124, 16), "B": (211, 47, 47), "X": (0, 120, 215), "Y": (242, 196, 0)},
@@ -142,8 +152,39 @@ def _keycap_glyph(label: str, size: int) -> Image.Image:
     frac = 0.55 if len(label) == 1 else (0.45 if len(label) == 2 else 0.34)
     font = _font(int(big * frac))
     bbox = d.textbbox((0, 0), label, font=font)
+    target = (big - 2 * pad) * 0.78
+    if bbox[2] - bbox[0] > target:
+        fs = max(8, int(int(big * frac) * target / (bbox[2] - bbox[0])))
+        font = _font(fs)
+        bbox = d.textbbox((0, 0), label, font=font)
     tx = (big - (bbox[2] - bbox[0])) // 2 - bbox[0]
     ty = int(big * 0.5) - (bbox[3] - bbox[1]) // 2 - bbox[1]
+    d.text((tx, ty), label, font=font, fill=(232, 236, 242, 255))
+    return im.resize((size, size), Image.LANCZOS)
+
+
+def _shoulder_glyph(label: str, size: int) -> Image.Image:
+    """Shoulder / bumper prompts: a wide pill with the button label."""
+    ss = 4
+    big = size * ss
+    im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    pad = max(2, big // 16)
+    top = int(big * 0.28)
+    bot = big - top - 1
+    d.rounded_rectangle([pad, top, big - pad - 1, bot], radius=(bot - top) // 2,
+                        fill=(32, 38, 46, 255), outline=(138, 148, 166, 255),
+                        width=max(ss, big // 16))
+    fs = int((bot - top) * 0.78)
+    font = _font(fs)
+    bbox = d.textbbox((0, 0), label, font=font)
+    target = (big - 2 * pad) * 0.7
+    if bbox[2] - bbox[0] > target:
+        fs = max(8, int(fs * target / (bbox[2] - bbox[0])))
+        font = _font(fs)
+        bbox = d.textbbox((0, 0), label, font=font)
+    tx = (big - (bbox[2] - bbox[0])) // 2 - bbox[0]
+    ty = (top + bot) // 2 - (bbox[3] - bbox[1]) // 2 - bbox[1]
     d.text((tx, ty), label, font=font, fill=(232, 236, 242, 255))
     return im.resize((size, size), Image.LANCZOS)
 
@@ -152,6 +193,10 @@ def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) ->
     """Returns an RGBA tile of the button's prompt art at `size` px."""
     if set_name == "keyboard":
         return _keycap_glyph(KEYBOARD_KEYS[button], size) if button in KEYBOARD_KEYS else None
+    if button in SHOULDER_LABELS.get(set_name, {}):
+        return _shoulder_glyph(SHOULDER_LABELS[set_name][button], size)
+    if button == "map_target":
+        button = "square"  # the map's target toggle is the square button
     if button in PS_COLOR_SVG and set_name in ("dualsense", "dualshock"):
         # DualShock: the pack's coloured symbols (like the real DS4).
         # DualSense: the pack's white style (white disc, gray symbol).
