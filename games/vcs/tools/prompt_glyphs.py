@@ -9,7 +9,8 @@ The approved look (reads on the light menus and panels):
   Y yellow).
 - Switch: dark disc + white letter (positional B/A/Y/X) + red ring.
 - Steam: dark disc + white letter + Steam-blue ring.
-- Keyboard: dark key + white label (the port's default bindings).
+- Keyboard: keycap squares with the bound key label (W/LMB/S/E; the
+  d-pad/menu directions are the arrow keys).
 
 D-pads use the generic arrows (simple light shapes).
 """
@@ -24,7 +25,14 @@ FACE_LETTERS = {
     "steam":     {"cross": "A", "circle": "B", "square": "X", "triangle": "Y"},
     # Nintendo layout: B bottom (cross position), A right, Y left, X top.
     "switch":    {"cross": "B", "circle": "A", "square": "Y", "triangle": "X"},
-    "keyboard":  {"cross": "W", "circle": "LMB", "square": "S", "triangle": "E"},
+}
+# Keyboard: keycap squares labelled with the port's default bindings. The
+# d-pad / menu directions are the arrow keys.
+KEYBOARD_KEYS = {
+    "cross": "W", "circle": "LMB", "square": "S", "triangle": "E",
+    "dpad_up": "\u2191", "dpad_down": "\u2193",
+    "dpad_left": "\u2190", "dpad_right": "\u2192",
+    "start": "ESC", "select": "TAB",
 }
 LETTER_COLORS = {
     "xbox": {"A": (16, 124, 16), "B": (211, 47, 47), "X": (0, 120, 215), "Y": (242, 196, 0)},
@@ -33,7 +41,6 @@ RING_COLORS = {
     "xbox": None,
     "steam": (102, 192, 244),   # Steam blue
     "switch": (230, 0, 18),     # Nintendo red
-    "keyboard": (170, 170, 170),
 }
 PS_COLOR_SVG = {
     "cross": "PlayStation/ps-Cross-Color.svg",
@@ -121,8 +128,30 @@ def _svg_with_style(svg: bytes, style: str) -> bytes:
     return _STYLE_GROUP_RE.sub(repl, svg.decode("utf-8")).encode("utf-8")
 
 
+def _keycap_glyph(label: str, size: int) -> Image.Image:
+    """Keyboard prompts: a rounded-square keycap with the binding label."""
+    ss = 4
+    big = size * ss
+    im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    pad = max(2, big // 16)
+    d.rounded_rectangle([pad, pad, big - pad - 1, big - pad - 1],
+                        radius=max(4, big // 6),
+                        fill=(32, 38, 46, 255), outline=(138, 148, 166, 255),
+                        width=max(ss, big // 16))
+    frac = 0.55 if len(label) == 1 else (0.45 if len(label) == 2 else 0.34)
+    font = _font(int(big * frac))
+    bbox = d.textbbox((0, 0), label, font=font)
+    tx = (big - (bbox[2] - bbox[0])) // 2 - bbox[0]
+    ty = int(big * 0.5) - (bbox[3] - bbox[1]) // 2 - bbox[1]
+    d.text((tx, ty), label, font=font, fill=(232, 236, 242, 255))
+    return im.resize((size, size), Image.LANCZOS)
+
+
 def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) -> Image.Image:
     """Returns an RGBA tile of the button's prompt art at `size` px."""
+    if set_name == "keyboard":
+        return _keycap_glyph(KEYBOARD_KEYS[button], size) if button in KEYBOARD_KEYS else None
     if button in PS_COLOR_SVG and set_name in ("dualsense", "dualshock"):
         # DualShock: the pack's coloured symbols (like the real DS4).
         # DualSense: the pack's white style (white disc, gray symbol).

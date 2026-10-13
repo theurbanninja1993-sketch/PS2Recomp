@@ -123,12 +123,15 @@ SVG_NAMES = {
         "dpad_left": "PlayStation/ps-D-PAD Left.svg",
         "dpad_right": "PlayStation/ps-D-PAD Right.svg",
     },
-    "keyboard": {  # keycap text labels; adjust to the port's default bindings
-        "cross": "E",
-        "circle": "BACKSPACE",
-        "square": "RMB",
-        "triangle": "SPACE",
-        "dpad": "WASD",
+    "keyboard": {  # keycap labels, kept in sync with prompt_glyphs.KEYBOARD_KEYS
+        "cross": "W",
+        "circle": "LMB",
+        "square": "S",
+        "triangle": "E",
+        "dpad_up": "\u2191",
+        "dpad_down": "\u2193",
+        "dpad_left": "\u2190",
+        "dpad_right": "\u2192",
         "start": "ESC",
         "select": "TAB",
     },
@@ -235,8 +238,8 @@ def main():
                 if btn in glyph_cache:
                     continue
                 size = cell["w"]  # glyphs are square
-                if btn in ("cross", "circle", "square", "triangle") and set_name in ("xbox", "steam", "dualsense",
-                                                                                      "dualshock", "switch", "keyboard"):
+                if set_name == "keyboard" or (btn in ("cross", "circle", "square", "triangle") and set_name in (
+                        "xbox", "steam", "dualsense", "dualshock", "switch")):
                     # Bare high-contrast glyphs: the disc-style SVG art is
                     # unreadable at prompt sizes (see prompt_glyphs.py).
                     from PIL import Image as _Img, ImageOps as _Ops
