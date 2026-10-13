@@ -450,9 +450,11 @@ texture packs from `mods/`, Windows build under Wine.
      L1/R1 if they exist as glyphs (keyboard set = text keycaps via the
      script; no controller art for it - intentional).
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
-     (= Off, shows the game's own art and any texture-pack art), and the
-     settings menu draws the active set's glyphs as images (from each set's
-     `manifest.txt`, written by the pack script) instead of text-only hints.
+     (= Off, shows the game's own art and any texture-pack art), it lives in
+     the **Controls tab** (next to the gamepad layouts) with a glyph preview,
+     and the prompt sets load independently of the texture packs - the old
+     "Use texture packs" master toggle is gone (per-pack toggles only; the
+     master switch silently disabled the prompt sets).
    - Layout-adaptive labels (Classic/Modern/custom bindings changing the
      controller-page text) are still open: the page's labels are page text,
      not part of the diagram texture, so that needs a runtime-generated
