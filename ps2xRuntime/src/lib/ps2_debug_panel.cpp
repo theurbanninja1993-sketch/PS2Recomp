@@ -2825,6 +2825,23 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 changed |= ImGui::Checkbox("Invert vertical look", &settings.mouseInvertY);
                 changed |= ImGui::Checkbox("Player turns with the camera while moving", &settings.mouseTurnsPlayer);
                 ImGui::TextDisabled("On: no skid stop when the mouse turns you while running (pressing back still skids).");
+                ImGui::SeparatorText("Button prompts");
+                {
+                    static const char *const kPromptSets[] = {"Auto (active controller or keyboard)", "Xbox", "Steam",
+                                                               "Keyboard", "DualSense (PS5)", "DualShock 4", "Switch",
+                                                               "Original (PS2 art / texture packs)"};
+                    int current = static_cast<int>(settings.buttonPrompts);
+                    if (ImGui::Combo("Prompt set", &current, kPromptSets, IM_ARRAYSIZE(kPromptSets)))
+                    {
+                        settings.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(current);
+                        changed = true;
+                        ps2ModsRefresh();
+                    }
+                    ImGui::TextDisabled("Prompts follow the connected controller by default; the sets keep every "
+                                        "button icon and button name in sync (including the tutorials' font "
+                                        "symbols). 'Original' restores the game's own art.");
+                    drawPromptSetPreview();
+                }
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
@@ -2845,11 +2862,6 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 ImGui::SameLine();
                 if (ImGui::Button("Rescan"))
                     ps2ModsRefresh();
-                if (ImGui::Checkbox("Use texture packs", &settings.textureReplacement))
-                {
-                    ps2HostSettingsSave();
-                    ps2ModsRefresh();
-                }
                 if (ImGui::Checkbox("Apply .pnach memory patches", &settings.pnachCheats))
                     ps2HostSettingsSave();
                 if (!ps2HostSettingsGpuRenderer())
@@ -2894,23 +2906,6 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::EndTable();
                     if (!toggle.empty())
                         ps2ModsSetEnabled(toggle, toggleTo); // after drawing: rebuilds the list
-                }
-                ImGui::SeparatorText("Button prompts");
-                {
-                    static const char *const kPromptSets[] = {"Auto (active controller or keyboard)", "Xbox", "Steam",
-                                                               "Keyboard", "DualSense (PS5)", "DualShock 4", "Switch",
-                                                               "Original (PS2 art / texture packs)"};
-                    int current = static_cast<int>(settings.buttonPrompts);
-                    if (ImGui::Combo("Prompt set", &current, kPromptSets, IM_ARRAYSIZE(kPromptSets)))
-                    {
-                        settings.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(current);
-                        changed = true;
-                        ps2ModsRefresh();
-                    }
-                    ImGui::TextDisabled("Glyphs in %s/<set>/ (PCSX2 texture names). They override "
-                                        "texture packs for the same textures.",
-                                        ps2PromptsDirectory().c_str());
-                    drawPromptSetPreview();
                 }
                 if (ps2MusicStationSupported())
                 {

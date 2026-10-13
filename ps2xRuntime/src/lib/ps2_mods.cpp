@@ -148,7 +148,7 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
     // Auto follows the active input device: rebuild the replacement index only
     // when the resolved set changes (rare; the rebuild rescan is expensive).
     static std::string s_last;
-    const std::string resolved = ps2HostSettings().textureReplacement ? resolvedPromptSet(ps2HostSettings()) : std::string();
+    const std::string resolved = resolvedPromptSet(ps2HostSettings());
     if (resolved == s_last)
         return;
     s_last = resolved;
@@ -157,7 +157,7 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
 
 std::string ps2CurrentPromptSet()
 {
-    return ps2HostSettings().textureReplacement ? resolvedPromptSet(ps2HostSettings()) : std::string();
+    return resolvedPromptSet(ps2HostSettings());
 }
 
 const std::vector<PS2ModInfo> &ps2Mods()
@@ -219,10 +219,10 @@ void ps2ModsRefresh()
                   << " replacement textures, " << mod.patches << " memory patches" << std::endl;
     }
     // Button-prompt set: PCSX2-named glyph textures in prompts/<set>/ next to
-    // the executable load after the mods on purpose - where both replace the
-    // same texture, the prompt set wins (the index keeps the last file), so a
-    // user's texture pack can never override the prompt glyphs.
-    if (settings.textureReplacement)
+    // the executable. This is a runtime feature, NOT a texture pack: it loads
+    // even when the texture-pack setting is off. It loads after the mods on
+    // purpose - where both replace the same texture, the prompt set wins (the
+    // index keeps the last file), so a user's pack can never override it.
     {
         const std::string set = resolvedPromptSet(settings);
         if (!set.empty())
@@ -250,8 +250,7 @@ void ps2ModsRefresh()
     }
     g_mods = std::move(mods);
     g_pnach = std::move(pnach);
-    gsrepl::setCurrent(settings.textureReplacement && !index->files.empty() ? std::shared_ptr<const gsrepl::Index>(index)
-                                                                            : nullptr);
+    gsrepl::setCurrent(!index->files.empty() ? std::shared_ptr<const gsrepl::Index>(index) : nullptr);
 }
 
 void ps2PnachApply(const std::vector<PS2PnachEntry> &entries, uint8_t *ram, size_t ramSize)

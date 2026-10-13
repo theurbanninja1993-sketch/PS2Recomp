@@ -88,7 +88,6 @@ struct PS2HostSettings
     float musicStationVolume = 0.8f;
     bool musicShuffle = true;
     bool radioOffEnabled = true; // hold D-pad Down / M toggles "Radio Off" (Mods tab)
-    bool textureReplacement = true;     // apply texture packs from the mods folder
     bool pnachCheats = true;            // apply .pnach memory patches from enabled mods
     // Button-prompt replacement set: PCSX2-named glyph textures in
     // prompts/<set>/ next to the executable. Auto follows the active device.
