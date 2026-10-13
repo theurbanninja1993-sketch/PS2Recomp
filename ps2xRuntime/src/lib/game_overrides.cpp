@@ -525,6 +525,8 @@ namespace
         }
     }
 
+    uint32_t vcsRadioEntity(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+
     // FUN_0018b610 is called when a station change is initiated, before the getter
     // applies it and before the game captures the station name for its pop-up.
     // Blank the other station names here so the capture cannot pick up the station
