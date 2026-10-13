@@ -21,6 +21,82 @@
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter; // EeScheduler.cpp (dump index)
 
+// ------------------------------------------------------------- dump worker
+// PS2X_TEXREPL_DUMP writes from a background thread: PNG encoding on the
+// render thread caused visible stutter while hunting textures. The queue is
+// bounded - under backlog new dumps are dropped (this is a hunting tool).
+namespace
+{
+    struct DumpJob
+    {
+        std::vector<uint8_t> rgba;
+        int width = 0, height = 0;
+        uint32_t tbp0 = 0, tbw = 0, psm = 0, tw = 0, th = 0;
+        uint64_t frame = 0;
+        char name[64] = {};
+    };
+    std::deque<DumpJob> g_dumpQueue;
+    std::mutex g_dumpMutex;
+    std::condition_variable g_dumpCv;
+    std::atomic<bool> g_dumpStop{false};
+    std::atomic<uint32_t> g_dumpQueued{0};
+
+    void dumpWorkerThread()
+    {
+        const char *dir = std::getenv("PS2X_TEXREPL_DUMP");
+        if (!dir || !*dir)
+            return;
+        FILE *index = std::fopen((std::string(dir) + "/_dump_index.log").c_str(), "a");
+        for (;;)
+        {
+            DumpJob job;
+            {
+                std::unique_lock<std::mutex> lock(g_dumpMutex);
+                g_dumpCv.wait(lock, []
+                              { return g_dumpStop.load(std::memory_order_relaxed) || !g_dumpQueue.empty(); });
+                if (g_dumpQueue.empty())
+                {
+                    if (g_dumpStop.load(std::memory_order_relaxed))
+                        break;
+                    continue;
+                }
+                job = std::move(g_dumpQueue.front());
+                g_dumpQueue.pop_front();
+            }
+            ::Image image{job.rgba.data(), job.width, job.height, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+            ExportImage(image, (std::string(dir) + "/" + job.name).c_str());
+            if (index)
+            {
+                std::fprintf(index, "%s tbp0=%u tbw=%u psm=%u tw=%u th=%u frame=%llu\n", job.name, job.tbp0, job.tbw,
+                             job.psm, job.tw, job.th, static_cast<unsigned long long>(job.frame));
+                std::fflush(index);
+            }
+            g_dumpQueued.fetch_sub(1, std::memory_order_relaxed);
+        }
+        if (index)
+            std::fclose(index);
+    }
+
+    void enqueueDump(DumpJob &&job)
+    {
+        static std::thread *s_worker = []()
+        {
+            auto *thread = new std::thread(dumpWorkerThread);
+            thread->detach(); // runs until process exit
+            return thread;
+        }();
+        (void)s_worker;
+        {
+            std::lock_guard<std::mutex> lock(g_dumpMutex);
+            if (g_dumpQueued.load(std::memory_order_relaxed) > 256u)
+                return; // backlog: drop rather than grow memory
+            g_dumpQueue.push_back(std::move(job));
+            g_dumpQueued.fetch_add(1, std::memory_order_relaxed);
+        }
+        g_dumpCv.notify_one();
+    }
+}
+
 namespace gsgpu
 {
     namespace
@@ -2169,6 +2245,16 @@ void main()
         const uint32_t height = 1u << std::min<uint32_t>(tex0.th, 10u);
         if (width == 0u || height == 0u)
             return;
+        // Skip very large textures while hunting glyphs: copying 1-4 MB
+        // buffers per dump stutters the render thread. Raise via
+        // PS2X_TEXREPL_DUMP_MAX (edge length, default 512) when needed.
+        static const uint32_t s_maxEdge = []()
+        {
+            const char *env = std::getenv("PS2X_TEXREPL_DUMP_MAX");
+            return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 10)) : 512u;
+        }();
+        if (width > s_maxEdge || height > s_maxEdge)
+            return;
         // Palette for palettized textures, expanded like hashClut does.
         uint32_t palette[256] = {};
         if (palettized)
@@ -2217,22 +2303,20 @@ void main()
                 }
                 std::memcpy(rgba.data() + (size_t(y) * width + x) * 4u, &c, 4u);
             }
-        char name[64];
-        std::snprintf(name, sizeof(name), "%016llx-%016llx-%08x.png", static_cast<unsigned long long>(key.tex0Hash),
+        DumpJob job;
+        job.rgba = std::move(rgba);
+        job.width = static_cast<int>(width);
+        job.height = static_cast<int>(height);
+        job.tbp0 = tex0.tbp0;
+        job.tbw = tex0.tbw;
+        job.psm = tex0.psm;
+        job.tw = tex0.tw;
+        job.th = tex0.th;
+        job.frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        std::snprintf(job.name, sizeof(job.name), "%016llx-%016llx-%08x.png", static_cast<unsigned long long>(key.tex0Hash),
                       static_cast<unsigned long long>(key.clutHash), key.bits);
-        std::string path = std::string(dir) + "/" + name;
-        ::Image image{rgba.data(), static_cast<int>(width), static_cast<int>(height), 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
-        ExportImage(image, path.c_str());
-        // Sidecar index: key -> the VRAM address the draw used. Lets an F9 GS
-        // capture (TEX0 writes at the prompt) be matched to a dumped key.
-        static FILE *s_index = std::fopen((std::string(dir) + "/_dump_index.log").c_str(), "a");
-        if (s_index)
-        {
-            std::fprintf(s_index, "%s tbp0=%u tbw=%u psm=%u tw=%u th=%u frame=%llu\n", name, tex0.tbp0, tex0.tbw,
-                         tex0.psm, tex0.tw, tex0.th,
-                         static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed)));
-            std::fflush(s_index);
-        }
+        // Encoded off-thread: PNG compression on the render thread stutters.
+        enqueueDump(std::move(job));
     }
 
     GLuint Renderer::replacementTexture(const GSDrawState &state)
