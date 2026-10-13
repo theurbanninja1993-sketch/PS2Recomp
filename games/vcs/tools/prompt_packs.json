@@ -2,15 +2,75 @@
   "xbox": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/Xbox Wireless Controller Images/Default Theme/Template/Xbox Series X Controller/Black/XBSeries_base.png",
+      "art": "Controller Asset Pack/Xbox Wireless Controller Images/Default Theme/Template/Xbox Series X Controller/White/XBSeries_base_white.png",
       "mode": "fit"
     },
-    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "cross"}]},
-    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "triangle"}]},
-    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_up"}]},
-    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_down"}]},
-    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_left"}]},
-    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_right"}]}
+    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "cross"
+        }
+      ]
+    },
+    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "triangle"
+        }
+      ]
+    },
+    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_up"
+        }
+      ]
+    },
+    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_down"
+        }
+      ]
+    },
+    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_left"
+        }
+      ]
+    },
+    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_right"
+        }
+      ]
+    }
   },
   "steam": {
     "_controller": {
@@ -18,38 +78,218 @@
       "art": "Controller Asset Pack/Steam Deck Images/Template/Steam Deck VSCView Overlay without Joystick and Triggers.png",
       "mode": "fit"
     },
-    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "cross"}]},
-    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "triangle"}]},
-    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_up"}]},
-    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_down"}]},
-    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_left"}]},
-    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_right"}]}
+    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "cross"
+        }
+      ]
+    },
+    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "triangle"
+        }
+      ]
+    },
+    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_up"
+        }
+      ]
+    },
+    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_down"
+        }
+      ]
+    },
+    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_left"
+        }
+      ]
+    },
+    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_right"
+        }
+      ]
+    }
   },
   "dualsense": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/DualSense Controller Image/Default/Templates/Midnight Black/DualSense_base_black.png",
+      "art": "Controller Asset Pack/DualSense Controller Image/Default/Templates/White/DualSense_base.png",
       "mode": "fit"
     },
-    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "cross"}]},
-    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "triangle"}]},
-    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_up"}]},
-    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_down"}]},
-    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_left"}]},
-    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_right"}]}
+    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "cross"
+        }
+      ]
+    },
+    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "triangle"
+        }
+      ]
+    },
+    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_up"
+        }
+      ]
+    },
+    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_down"
+        }
+      ]
+    },
+    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_left"
+        }
+      ]
+    },
+    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_right"
+        }
+      ]
+    }
   },
   "dualshock": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/DualShock 4 Controller Images/Default Theme/DualShock 4 Templates/DS4 V2/Jet Black/DS4_V2_base.png",
+      "art": "Controller Asset Pack/DualShock 4 Controller Images/Default Theme/DualShock 4 Templates/DS4 V2/Glacier White/DS4_V2_base_glacier_white.png",
       "mode": "fit"
     },
-    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "cross"}]},
-    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "triangle"}]},
-    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_up"}]},
-    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_down"}]},
-    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_left"}]},
-    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_right"}]}
+    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "cross"
+        }
+      ]
+    },
+    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "triangle"
+        }
+      ]
+    },
+    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_up"
+        }
+      ]
+    },
+    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_down"
+        }
+      ]
+    },
+    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_left"
+        }
+      ]
+    },
+    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_right"
+        }
+      ]
+    }
   },
   "switch": {
     "_controller": {
@@ -57,11 +297,71 @@
       "art": "Controller Asset Pack/Nintendo Switch Controller Images/Switch Pro Controller/Default Theme/Templates/NSwitchPro_base.png",
       "mode": "fit"
     },
-    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "cross"}]},
-    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "triangle"}]},
-    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_up"}]},
-    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_down"}]},
-    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_left"}]},
-    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {"cells": [{"x": 0, "y": 0, "w": 64, "h": 64, "button": "dpad_right"}]}
+    "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "cross"
+        }
+      ]
+    },
+    "d0d9f396c36b7411-bd20758f94447ef8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "triangle"
+        }
+      ]
+    },
+    "a1b7cc92002291c5-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_up"
+        }
+      ]
+    },
+    "47e8e408d74357d8-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_down"
+        }
+      ]
+    },
+    "784c33b4a3241b19-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_left"
+        }
+      ]
+    },
+    "3c60f292c5015937-b97a81b80c22e4c8-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "dpad_right"
+        }
+      ]
+    }
   }
 }
