@@ -75,7 +75,8 @@
   "steam": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/Steam Deck Images/Template/Steam Deck VSCView Overlay without Joystick and Triggers.png",
+      "art": "Controller Asset Pack/Steam Deck Images/Template/Steam Deck VSCView Overlay.png",
+      "screen_black": true,
       "mode": "fit"
     },
     "60a3a644467171e5-acbe9ae672fed823-00001113.png": {
@@ -148,7 +149,7 @@
   "dualsense": {
     "_controller": {
       "file": "955f573d239ed3c1-ed1f7a64aaa8fafc-00002213.png",
-      "art": "Controller Asset Pack/DualSense Controller Image/Default/Templates/Midnight Black/DualSense_base_black.png",
+      "art": "Controller Asset Pack/DualSense Controller Image/Default/Templates/White/DualSense_base.png",
       "mode": "fit"
     },
     "60a3a644467171e5-acbe9ae672fed823-00001113.png": {

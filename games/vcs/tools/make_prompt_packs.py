@@ -174,11 +174,25 @@ def compose(canvas_w, canvas_h, cells, glyphs, out_png):
     return previews
 
 
-def compose_controller(out_png, art_path, mode, w, h):
+def _flatten_green_screen(im):
+    """The Steam Deck templates paint the screen flat green; the port draws
+    the diagram on the game's dark page, so flatten it to black."""
+    from PIL import Image, ImageChops
+    r, g, b, _ = im.split()
+    gr = ImageChops.subtract(g, r).point(lambda v: 255 if v > 30 else 0)
+    gb = ImageChops.subtract(g, b).point(lambda v: 255 if v > 30 else 0)
+    strong = g.point(lambda v: 255 if v > 80 else 0)
+    mask = ImageChops.darker(ImageChops.darker(gr, gb), strong)
+    return Image.composite(Image.new("RGBA", im.size, (0, 0, 0, 255)), im, mask)
+
+
+def compose_controller(out_png, art_path, mode, w, h, screen_black=False):
     """Fit the device's controller art into the game's diagram texture
     (transparent background, centred)."""
     from PIL import Image, ImageOps
     art = Image.open(art_path).convert("RGBA")
+    if screen_black:
+        art = _flatten_green_screen(art)
     if mode == "cover":
         art = ImageOps.fit(art, (w, h), Image.LANCZOS)
     else:
@@ -273,7 +287,8 @@ def main():
                 gw, gh = Image.open(os.path.join(pack_root, target)).size if os.path.exists(
                     os.path.join(pack_root, target)) else (512, 256)
                 preview = compose_controller(os.path.join(outdir, target), os.path.join(pack_root, art),
-                                             cspec.get("mode", "fit"), gw, gh)
+                                             cspec.get("mode", "fit"), gw, gh,
+                                             screen_black=bool(cspec.get("screen_black", False)))
                 preview.save(os.path.join(outdir, "preview_controller.png"))
                 manifest.append("controller=preview_controller.png")
         # Per-button preview tiles + manifest for the settings menu.

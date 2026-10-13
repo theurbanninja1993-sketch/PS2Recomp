@@ -449,6 +449,17 @@ texture packs from `mods/`, Windows build under Wine.
      Still to find on the contact sheet: Circle, Square, Start/Select, and
      L1/R1 if they exist as glyphs (keyboard set = text keycaps via the
      script; no controller art for it - intentional).
+   - **Controller portraits (owner picks, 2026-10-13 late):** Xbox Series X
+     Black, Switch Pro base, DualShock 4 Jet Black (`DS4_V2_base.png`),
+     DualSense **White** (`White/DualSense_base.png` - same VSCView
+     no-stick variant as the black one, just the white shell), Steam Deck
+     **full** VSCView overlay (the "without Joystick" export leaves a
+     bright stick well; the full overlay carries the dark stick tops).
+     The Steam Deck templates paint the screen flat green (every variant,
+     including the "Black" theme SVG), which looked wrong on the game's
+     dark page - the `screen_black` option in `packs.json` now flattens
+     green-dominant pixels to black inside `compose_controller()`. The
+     white halo outline was dropped after the owner test.
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,
