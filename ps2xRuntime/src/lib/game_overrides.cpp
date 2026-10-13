@@ -1,5 +1,6 @@
 #include "runtime/ps2_music_station.h"
 #include "runtime/ps2_audio.h"
+#include "runtime/ps2_mods.h" // ps2CurrentPromptSet (button-prompt text)
 #include "game_overrides.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <unordered_set>
 #include <optional>
 #include <vector>
 
@@ -516,6 +518,171 @@ namespace
             if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
                 std::cerr << "[radio] silent slot named " << (want == kOff ? "Radio Off" : "Custom") << std::endl;
         }
+    }
+
+    // ------------------------------------------------------ button-name text
+    // The loaded GXT also carries button names as text: menu legends like
+    // "L1 - Warp Player To Site", "CROSS - Complete Config" and "(L1+R1)".
+    // The per-device prompt set rewrites those words (the HUD prompts use the
+    // texture glyphs; L1/R1/L2/R2 only exist as text). Every rewrite is
+    // same-length-or-shorter and rebuilt from a cached original string, so
+    // switching sets - or back to Original - is idempotent.
+    enum VcsButtonToken
+    {
+        VcsBtnL1, VcsBtnR1, VcsBtnL2, VcsBtnR2, VcsBtnL3, VcsBtnR3,
+        VcsBtnCross, VcsBtnCircle, VcsBtnSquare, VcsBtnTriangle, VcsBtnSelect, VcsBtnStart,
+        VcsBtnTokenCount
+    };
+    const char *const kButtonTokens[VcsBtnTokenCount] = {"L1", "R1", "L2", "R2", "L3", "R3",
+                                                         "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "SELECT", "START"};
+
+    struct VcsButtonLabelSet
+    {
+        const char *label[VcsBtnTokenCount];
+    };
+    const VcsButtonLabelSet kButtonLabelsXbox{{"LB", "RB", "LT", "RT", "LS", "RS", "A", "B", "X", "Y", "VIEW", "MENU"}};
+    // Switch layouts put B at the bottom and A at the right, X at the top and
+    // Y at the left; sticks clicks are left as-is (no short standard label).
+    const VcsButtonLabelSet kButtonLabelsSwitch{{"L", "R", "ZL", "ZR", nullptr, nullptr, "B", "A", "Y", "X", "MINUS", "PLUS"}};
+
+    struct VcsButtonTextSite
+    {
+        uint32_t addr = 0;         // UTF-16 string start in guest RAM
+        int token = 0;             // VcsButtonToken of the leading word
+        int tokenLen = 0;          // original token length in UTF-16 chars
+        uint16_t original[96]{};   // the original string (bounded)
+        int originalLen = 0;       // chars before the original NUL
+    };
+    std::vector<VcsButtonTextSite> g_vcsButtonSites;
+    std::unordered_set<uint32_t> g_vcsButtonAddrs;
+    std::string g_vcsButtonAppliedSet = "<init>";
+    size_t g_vcsButtonAppliedCount = 0;
+    bool g_vcsButtonLogged = false;
+
+    inline uint16_t vcsUtf16At(const uint8_t *rdram, uint32_t a)
+    {
+        return static_cast<uint16_t>(rdram[a] | (rdram[a + 1] << 8));
+    }
+
+    void vcsFindButtonText(const uint8_t *rdram)
+    {
+        // The strings load lazily, with the menus that use them (cheat menu,
+        // business lists, pause pages), so this keeps looking for the whole
+        // session - a full pass every 60 frames is cheap (first-char filter).
+        static int s_cooldown = 0;
+        if (s_cooldown-- > 0)
+            return;
+        s_cooldown = 60;
+        // One pass over RAM. Cheap first-char filter keeps it fast.
+        for (uint32_t a = 0x00100000u; a + 128u < PS2_RAM_SIZE; a += 2u)
+        {
+            const uint16_t first = vcsUtf16At(rdram, a);
+            if (first != 'L' && first != 'R' && first != 'C' && first != 'S' && first != 'T')
+                continue;
+            int token = -1, tokenLen = 0;
+            for (int t = 0; t < VcsBtnTokenCount && token < 0; ++t)
+            {
+                if (t == VcsBtnStart)
+                    continue; // "START" is only ever a verb / menu title in the GXT
+                const size_t n = std::strlen(kButtonTokens[t]);
+                bool ok = true;
+                for (size_t i = 0; i < n && ok; ++i)
+                    ok = vcsUtf16At(rdram, a + static_cast<uint32_t>(i) * 2u) == static_cast<uint8_t>(kButtonTokens[t][i]);
+                if (!ok)
+                    continue;
+                // A button word sits at a string start or after one of the
+                // separators the game uses; it never glues to another word on
+                // the right.
+                const uint16_t before = vcsUtf16At(rdram, a - 2u);
+                const uint16_t after = vcsUtf16At(rdram, a + static_cast<uint32_t>(n) * 2u);
+                auto alnum = [](uint16_t c)
+                { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); };
+                const bool okBefore = before == 0u || before == ' ' || before == '(' || before == '+' || before == '~';
+                bool okAfter = !alnum(after);
+                // "SELECT" is a button only in the settings lists' literal
+                // "SELECT button" ("SELECT GAME TO JOIN" is a verb).
+                if (t == VcsBtnSelect)
+                    okAfter = okAfter && after == ' ' && vcsUtf16At(rdram, a + static_cast<uint32_t>(n + 1u) * 2u) == 'b';
+                if (okBefore && okAfter)
+                {
+                    token = t;
+                    tokenLen = static_cast<int>(n);
+                }
+            }
+            if (token < 0)
+                continue;
+            VcsButtonTextSite site;
+            site.addr = a;
+            site.token = token;
+            site.tokenLen = tokenLen;
+            int n = 0;
+            while (n < 95 && vcsUtf16At(rdram, a + static_cast<uint32_t>(n) * 2u) != 0u)
+            {
+                site.original[n] = vcsUtf16At(rdram, a + static_cast<uint32_t>(n) * 2u);
+                ++n;
+            }
+            if (n >= 95) // very long string: leave it alone rather than risk a tail
+                continue;
+            site.original[n] = 0;
+            site.originalLen = n;
+            if (n <= tokenLen)
+                continue;
+            if (!g_vcsButtonAddrs.insert(a).second)
+                continue; // already collected in an earlier pass
+            g_vcsButtonSites.push_back(site);
+            if (g_vcsButtonSites.size() >= 256u)
+                break;
+            // Do not skip the rest of the string: a later token ("R1" in
+            // "(L1+R1)") must become a site too.
+        }
+        if (!g_vcsButtonLogged && !g_vcsButtonSites.empty())
+        {
+            g_vcsButtonLogged = true;
+            if (std::getenv("PS2X_PROMPT_TRACE") != nullptr)
+                std::cerr << "[prompts] button-name strings: " << g_vcsButtonSites.size() << std::endl;
+        }
+    }
+
+    void vcsApplyButtonText(uint8_t *rdram)
+    {
+        if (!g_vcsStationNames.found) // waits for the loaded GXT
+            return;
+        vcsFindButtonText(rdram);
+        if (g_vcsButtonSites.empty())
+            return;
+        const std::string set = ps2CurrentPromptSet();
+        if (set == g_vcsButtonAppliedSet && g_vcsButtonSites.size() == g_vcsButtonAppliedCount)
+            return; // nothing new; sites can appear later with their menus
+        const VcsButtonLabelSet *labels = nullptr;
+        if (set == "xbox" || set == "steam")
+            labels = &kButtonLabelsXbox;
+        else if (set == "switch")
+            labels = &kButtonLabelsSwitch;
+        // dualsense / dualshock / keyboard / Original: the game's own text stays.
+        for (VcsButtonTextSite &site : g_vcsButtonSites)
+        {
+            const char *label = labels ? labels->label[site.token] : nullptr;
+            uint16_t buf[128];
+            int n = 0;
+            if (label != nullptr)
+                for (const char *p = label; *p != 0 && n < 120; ++p)
+                    buf[n++] = static_cast<uint16_t>(static_cast<uint8_t>(*p));
+            const int tailFrom = label != nullptr ? site.tokenLen : 0;
+            for (int i = tailFrom; i < site.originalLen && n < 120; ++i)
+                buf[n++] = site.original[i];
+            buf[n] = 0;
+            for (int i = 0; i <= site.originalLen; ++i)
+            {
+                const uint16_t v = i <= n ? buf[i] : 0u;
+                rdram[site.addr + static_cast<uint32_t>(i) * 2u] = static_cast<uint8_t>(v & 0xFFu);
+                rdram[site.addr + static_cast<uint32_t>(i) * 2u + 1u] = static_cast<uint8_t>(v >> 8);
+            }
+        }
+        g_vcsButtonAppliedSet = set;
+        g_vcsButtonAppliedCount = g_vcsButtonSites.size();
+        if (std::getenv("PS2X_PROMPT_TRACE") != nullptr)
+            std::cerr << "[prompts] button-name text -> " << (set.empty() ? "original" : set) << " (" << g_vcsButtonSites.size()
+                      << " strings)" << std::endl;
     }
 
     uint32_t vcsRadioEntity(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -1135,6 +1302,8 @@ namespace
         // The game's silent slot is our Custom Soundtracks station: keep its GXT
         // name "Custom" (or "Radio Off" while the radio is switched off).
         vcsKeepCustomName(rdram);
+        // Button-name text ("L1", "CROSS", ...) follows the prompt set too.
+        vcsApplyButtonText(rdram);
         // Radio Off re-tune: push the game to its silent slot exactly once, on
         // the first frame after the radio switches off, then leave the station
         // alone - the game's own update then holds the silent slot (no station
