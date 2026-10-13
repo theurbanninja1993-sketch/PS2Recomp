@@ -37,12 +37,15 @@ KEYBOARD_KEYS = {
     "start": "ESC", "select": "TAB",
     "map_target": "SPACE", "map_zoom_l": "Q", "map_zoom_r": "RMB",
 }
-# Shoulder (map zoom) pills for the console sets. The PlayStation sets keep
-# the game's own L1/R1 icons.
+# Shoulder (map zoom) pills for the console sets. The DualSense uses the
+# pack's own bumper glyph (grayed to the controller's tone) instead; the
+# DualShock's real bumpers are dark with light print, so it gets the dark
+# pill style like the Xbox/Steam/Switch sets.
 SHOULDER_LABELS = {
     "xbox": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
     "steam": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
     "switch": {"map_zoom_l": "L", "map_zoom_r": "R"},
+    "dualshock": {"map_zoom_l": "L1", "map_zoom_r": "R1"},
 }
 LETTER_COLORS = {
     "xbox": {"A": (16, 124, 16), "B": (211, 47, 47), "X": (0, 120, 215), "Y": (242, 196, 0)},
@@ -66,17 +69,15 @@ PS_WHITE_SVG = {
     "square": "PlayStation/ps-Square.svg",
     "triangle": "PlayStation/ps-Triangle.svg",
 }
-# Shoulder prompts for the PlayStation sets: the pack's DualSense bumper
-# shapes (the game's own PS2 shoulder icons have a different silhouette).
-# The pack draws them near-white; the DualSense set darkens them to the
-# controller's gray bumper tone.
+# Shoulder prompts for the DualSense: the pack's bumper shape (the game's own
+# PS2 shoulder icons have a different silhouette). The pack draws it
+# near-white; the set darkens it to the controller's gray bumper tone.
 PS_SHOULDER_SVG = {
     "map_zoom_l": "PlayStation/ps5-Left Back.svg",
     "map_zoom_r": "PlayStation/ps5-Right Back.svg",
 }
 PS_SHOULDER_BRIGHTNESS = {
     "dualsense": 0.72,
-    "dualshock": 1.0,
 }
 DPAD_SVG = {
     "dpad_up": "PlayStation/ps-D-PAD Up.svg",
@@ -219,7 +220,7 @@ def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) ->
         return _keycap_glyph(KEYBOARD_KEYS[button], size) if button in KEYBOARD_KEYS else None
     if button in SHOULDER_LABELS.get(set_name, {}):
         return _shoulder_glyph(SHOULDER_LABELS[set_name][button], size)
-    if set_name in ("dualsense", "dualshock") and button in PS_SHOULDER_SVG:
+    if set_name == "dualsense" and button in PS_SHOULDER_SVG:
         im = _render_ps_svg(svg_root, PS_SHOULDER_SVG[button], size)
         factor = PS_SHOULDER_BRIGHTNESS.get(set_name, 1.0)
         if factor != 1.0:

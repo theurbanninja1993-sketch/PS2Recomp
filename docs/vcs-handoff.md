@@ -499,11 +499,12 @@ texture packs from `mods/`, Windows build under Wine.
      xbox/steam/switch get face-button discs (X / Y) and shoulder pills
      (LB/RB, L/R); the keyboard set gets keycaps with the keys that work on
      the map (SPACE = Jump sends Square, Q = Interact sends L1, RMB = Aim
-     sends R1); the PlayStation sets use the pack's DualSense bumper glyphs
-     (`ps5-Left Back.svg` / `ps5-Right Back.svg`) for the L1/R1 icons so the
-     shoulder silhouette matches the controller - the square keeps the
-     game's own PS icon (the classic symbol shape is identical). The
-     cross/d-pad legend icons were already covered.
+     sends R1). The PlayStation sets use the pack's own art so the icons
+     match the tutorial HUD cells: DualSense = the white-style square and
+     the grayed DualSense bumper glyph (`ps5-Left/Right Back.svg`) for
+     L1/R1; DualShock = the Color square and the dark L1/R1 pill (real DS4
+     bumpers are dark with light print). The cross/d-pad legend icons were
+     already covered.
    - **Runtime keyboard art (2026-10-13, milestone 1).**
      `ps2_prompt_art.cpp` redraws the keyboard set's keycaps with raylib
      whenever a bound key changes (same action labels as the shipped art,

@@ -305,6 +305,17 @@
           "button": "map_zoom_r"
         }
       ]
+    },
+    "c075546801b74bf1-6b7c470bee19b607-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_target"
+        }
+      ]
     }
   },
   "dualshock": {
@@ -398,6 +409,17 @@
           "w": 64,
           "h": 64,
           "button": "map_zoom_r"
+        }
+      ]
+    },
+    "c075546801b74bf1-6b7c470bee19b607-00001113.png": {
+      "cells": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "button": "map_target"
         }
       ]
     }
