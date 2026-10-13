@@ -412,6 +412,9 @@ namespace
     // the custom stop and Radio Off share value 9 and this flag says which one
     // is selected. The music folder plays while it is set (in a vehicle).
     std::atomic<bool> g_vcsCustomStation{false};
+    // True while the plain "Radio Off" stop is selected (the custom stop and off
+    // share the silent slot, so they need separate flags for the pop-up names).
+    std::atomic<bool> g_vcsOffStation{false};
     PS2Runtime::RecompiledFunction g_vcsOrigRadioUpdate = nullptr;     // FUN_0018aad8
     PS2Runtime::RecompiledFunction g_vcsOrigRadioStationGet = nullptr; // FUN_0018b8d8
     PS2Runtime::RecompiledFunction g_vcsFnRadioEntity = nullptr;       // FUN_1B5768(0x514A90)
@@ -440,14 +443,86 @@ namespace
         return s_addr;
     }
 
-    void vcsSetRadioOffName(uint8_t *rdram, bool custom)
+    // While one of our stops is selected (the custom stop or Radio Off - they
+    // share the silent slot), blank every *other* station's GXT name and give the
+    // silent slot our own name. The pop-up reads the name live, so while the
+    // engine has not retuned yet it draws nothing instead of the previous
+    // station's name. Everything is restored for a normal station.
+    struct VcsStationNames
     {
-        const uint32_t addr = vcsRadioOffNameAddr(rdram);
-        if (addr == 0u)
+        uint32_t addr[10]{};      // 0..8 by FEA_FM0..8, 9 = the "Radio Off" string
+        uint16_t firstChar[10]{}; // saved first UTF-16 char of each name
+        uint16_t offName[20]{};   // slot 9's original name ("Radio Off")
+        bool found = false;
+        int applied = -1;         // 0 = normal, 1 = custom, 2 = Radio Off
+    };
+    VcsStationNames g_vcsStationNames;
+
+    void vcsFindStationNames(uint8_t *rdram)
+    {
+        if (g_vcsStationNames.found)
             return;
-        static const uint16_t kCustom[10] = {'C', 'u', 's', 't', 'o', 'm', 0, 0, 0, 0};
-        static const uint16_t kOff[10] = {'R', 'a', 'd', 'i', 'o', ' ', 'O', 'f', 'f', 0};
-        std::memcpy(rdram + addr, custom ? kCustom : kOff, sizeof(kOff));
+        // The loaded GXT keeps its key table as {char[8] key, uint32 text offset}.
+        for (uint32_t a = 0x00100000u; a + 12u < PS2_RAM_SIZE; ++a)
+        {
+            if (std::memcmp(rdram + a, "FEA_FM", 6u) != 0)
+                continue;
+            const int idx = static_cast<int>(rdram[a + 6u]) - '0';
+            if (idx < 0 || idx > 8 || rdram[a + 7u] != 0u)
+                continue;
+            uint32_t p = 0;
+            std::memcpy(&p, rdram + a + 8u, sizeof(p));
+            if (p >= 0x00100000u && p + 4u < PS2_RAM_SIZE)
+                g_vcsStationNames.addr[idx] = p;
+        }
+        const uint32_t off = vcsRadioOffNameAddr(rdram);
+        g_vcsStationNames.addr[9] = off;
+        bool ok = off != 0u;
+        for (int i = 0; i < 9; ++i)
+            ok = ok && g_vcsStationNames.addr[i] != 0u;
+        if (!ok)
+        {
+            if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
+                std::cerr << "[radio] station names: not found" << std::endl;
+            return;
+        }
+        if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
+            std::cerr << "[radio] station names found" << std::endl;
+        for (int i = 0; i < 10; ++i)
+            std::memcpy(&g_vcsStationNames.firstChar[i], rdram + g_vcsStationNames.addr[i], sizeof(uint16_t));
+        std::memcpy(g_vcsStationNames.offName, rdram + off, sizeof(g_vcsStationNames.offName));
+        g_vcsStationNames.found = true;
+    }
+
+    void vcsApplyStationNames(uint8_t *rdram, int mode)
+    {
+        vcsFindStationNames(rdram);
+        if (!g_vcsStationNames.found || g_vcsStationNames.applied == mode)
+            return;
+        g_vcsStationNames.applied = mode;
+        for (int i = 0; i < 9; ++i)
+        {
+            const uint16_t ch = (mode == 0) ? g_vcsStationNames.firstChar[i] : 0u;
+            std::memcpy(rdram + g_vcsStationNames.addr[i], &ch, sizeof(ch));
+        }
+        if (mode == 1)
+        {
+            static const uint16_t kCustom[10] = {'C', 'u', 's', 't', 'o', 'm', 0, 0, 0, 0};
+            std::memcpy(rdram + g_vcsStationNames.addr[9], kCustom, sizeof(kCustom));
+        }
+        else
+        {
+            std::memcpy(rdram + g_vcsStationNames.addr[9], g_vcsStationNames.offName,
+                        sizeof(g_vcsStationNames.offName));
+        }
+        if (std::getenv("PS2X_RADIO_TRACE") != nullptr)
+        {
+            uint16_t st8 = 0, st9 = 0;
+            std::memcpy(&st8, rdram + g_vcsStationNames.addr[8], sizeof(st8));
+            std::memcpy(&st9, rdram + g_vcsStationNames.addr[9], sizeof(st9));
+            std::cerr << "[radio] names mode=" << mode << " st8=0x" << std::hex << st8 << " st9=0x" << st9 << std::dec
+                      << std::endl;
+        }
     }
 
     uint32_t vcsRadioEntity(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -514,11 +589,6 @@ namespace
                 override = true;
             }
         }
-        // The pop-up reads the station name when the change is applied, so set
-        // the shared slot-9 name before running the original.
-        if (override)
-            vcsSetRadioOffName(rdram, wantCustom);
-
         g_vcsOrigRadioStationGet(rdram, ctx, runtime);
         uint32_t result = getRegU32(ctx, 2) & 0xFFu;
         if (override)
@@ -531,45 +601,24 @@ namespace
         setReturnU32(ctx, result);
         g_vcsRadioStation.store(result, std::memory_order_relaxed);
         if (override)
+        {
             g_vcsCustomStation.store(wantCustom, std::memory_order_relaxed);
+            g_vcsOffStation.store(!wantCustom, std::memory_order_relaxed);
+        }
+        else
+        {
+            g_vcsCustomStation.store(false, std::memory_order_relaxed);
+            g_vcsOffStation.store(false, std::memory_order_relaxed);
+        }
         static const bool s_trace = std::getenv("PS2X_RADIO_TRACE") != nullptr;
         if (s_trace)
         {
             std::ostringstream out;
             out << "[radio] change prev=" << previous << " delta=" << delta << " -> " << result
-                << (wantCustom ? " (custom)" : "");
+                << (wantCustom ? " (custom)" : "") << " [575=" << static_cast<int>(rdram[0x4E4755u])
+                << " 576=" << static_cast<int>(rdram[0x4E4756u]) << " 57B=" << static_cast<int>(rdram[0x4E475Bu]) << "]";
             std::cerr << out.str() << std::endl;
         }
-    }
-
-    // FUN_0018b610 is called when the pending station change is initiated (it
-    // marks radio+0x575 = 0x71). The pop-up reads the station name during this
-    // frame, before the getter runs, so set the shared slot-9 name here for the
-    // upcoming transition - otherwise the game shows "Radio Off" for one frame.
-    PS2Runtime::RecompiledFunction g_vcsOrigRadioChangeBegin = nullptr; // FUN_0018b610
-    void vcsRadioChangeBegin(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-    {
-        g_vcsOrigRadioChangeBegin(rdram, ctx, runtime);
-        uint32_t delta = 0u;
-        std::memcpy(&delta, rdram + 0x0048613Cu, sizeof(delta));
-        const uint32_t previous = g_vcsRadioStation.load(std::memory_order_relaxed);
-        const bool custom = g_vcsCustomStation.load(std::memory_order_relaxed);
-        bool nextCustom = custom;
-        if (delta == 1u)
-        {
-            if (previous == 8u && !custom)
-                nextCustom = true; // 8 -> Custom
-            else if (previous >= 9u && custom)
-                nextCustom = false; // Custom -> off
-        }
-        else if (delta == 9u)
-        {
-            if (previous == 0u)
-                nextCustom = false; // 0 -> off
-            else if (previous >= 9u && !custom)
-                nextCustom = true; // off -> Custom
-        }
-        vcsSetRadioOffName(rdram, nextCustom);
     }
 
     // (FUN_002a69e0 / HUD message 0xB2 was checked as the station pop-up; it is
@@ -1080,9 +1129,17 @@ namespace
 
     void vcsFrameUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        // Keep the shared slot-9 station name in sync with the custom flag (the
-        // game derives the pop-up name each frame, so this must run every frame).
-        vcsSetRadioOffName(rdram, g_vcsCustomStation.load(std::memory_order_relaxed));
+        // Keep the station names right for the pop-up: on our stops, blank the
+        // other stations' names so the pop-up cannot flash the previously playing
+        // station (1 = custom, 2 = Radio Off, 0 = normal). The mode is latched at
+        // the station change, since the game's station field is not stable frame
+        // to frame.
+        {
+            const int mode = g_vcsCustomStation.load(std::memory_order_relaxed)
+                                 ? 1
+                                 : (g_vcsOffStation.load(std::memory_order_relaxed) ? 2 : 0);
+            vcsApplyStationNames(rdram, mode);
+        }
         if (getRegU32(ctx, 31) == 0x0037AE5Cu)
         {
             vcsScaleLodDistance(rdram);
@@ -1133,8 +1190,6 @@ namespace
             runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);
         if ((g_vcsOrigRadioStationGet = runtime.lookupFunction(0x0018B8D8u)))
             runtime.replaceFunction(0x0018B8D8u, &vcsRadioStationGet);
-        if ((g_vcsOrigRadioChangeBegin = runtime.lookupFunction(0x0018B610u)))
-            runtime.replaceFunction(0x0018B610u, &vcsRadioChangeBegin);
         // Custom Soundtracks: the injected station stop between the last real
         // station and Radio Off (see vcsRadioStationGet); the music folder plays
         // there while in a vehicle.
