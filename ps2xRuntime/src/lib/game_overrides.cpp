@@ -525,6 +525,37 @@ namespace
         }
     }
 
+    // FUN_0018b610 is called when a station change is initiated, before the getter
+    // applies it and before the game captures the station name for its pop-up.
+    // Blank the other station names here so the capture cannot pick up the station
+    // that is still playing - doing it a frame later is already too late.
+    PS2Runtime::RecompiledFunction g_vcsOrigRadioChangeBegin = nullptr; // FUN_0018b610
+    void vcsRadioChangeBegin(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        uint32_t delta = 0u;
+        std::memcpy(&delta, rdram + 0x0048613Cu, sizeof(delta));
+        const uint32_t previous = g_vcsRadioStation.load(std::memory_order_relaxed);
+        const bool custom = g_vcsCustomStation.load(std::memory_order_relaxed);
+        int mode = 0;
+        if (delta == 1u)
+        {
+            if (previous == 8u && !custom)
+                mode = 1; // 8 -> Custom
+            else if (previous >= 9u && custom)
+                mode = 2; // Custom -> off
+        }
+        else if (delta == 9u)
+        {
+            if (previous == 0u)
+                mode = 2; // 0 -> off
+            else if (previous >= 9u && !custom)
+                mode = 1; // off -> Custom
+        }
+        if (mode != 0)
+            vcsApplyStationNames(rdram, mode);
+        g_vcsOrigRadioChangeBegin(rdram, ctx, runtime);
+    }
+
     uint32_t vcsRadioEntity(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         if (!g_vcsFnRadioEntity)
@@ -1190,6 +1221,8 @@ namespace
             runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);
         if ((g_vcsOrigRadioStationGet = runtime.lookupFunction(0x0018B8D8u)))
             runtime.replaceFunction(0x0018B8D8u, &vcsRadioStationGet);
+        if ((g_vcsOrigRadioChangeBegin = runtime.lookupFunction(0x0018B610u)))
+            runtime.replaceFunction(0x0018B610u, &vcsRadioChangeBegin);
         // Custom Soundtracks: the injected station stop between the last real
         // station and Radio Off (see vcsRadioStationGet); the music folder plays
         // there while in a vehicle.
