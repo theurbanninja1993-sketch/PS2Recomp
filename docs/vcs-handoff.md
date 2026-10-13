@@ -501,10 +501,10 @@ texture packs from `mods/`, Windows build under Wine.
      the map (SPACE = Jump sends Square, Q = Interact sends L1, RMB = Aim
      sends R1). The PlayStation sets use the pack's own face art so the
      icons match the tutorial HUD cells (DualSense = the white-style
-     square, DualShock = the Color square); both use the dark L1/R1 pill
-     for the shoulder icons, because both controllers' real bumpers are
-     black with light print. The cross/d-pad legend icons were already
-     covered.
+     square, DualShock = the Color square); their L1/R1 icons use the
+     pack's DualSense bumper shape recoloured to black with light print
+     (`_ps_shoulder_dark`: luminance flip), matching the real controllers'
+     bumpers. The cross/d-pad legend icons were already covered.
    - **Runtime keyboard art (2026-10-13, milestone 1).**
      `ps2_prompt_art.cpp` redraws the keyboard set's keycaps with raylib
      whenever a bound key changes (same action labels as the shipped art,
