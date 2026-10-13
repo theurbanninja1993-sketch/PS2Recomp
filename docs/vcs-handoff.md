@@ -48,6 +48,22 @@ Windows (cross-compiled, tested under Wine 11 / Proton):
     make -C build-win -j14 ps2EntryRunner
     wine build-win/ps2xRuntime/ps2EntryRunner.exe   # boots ./game/SLUS_215.90 next to the exe
 
+   - **Wine vs Proton (2026-10-13):** the system wine (11.19) has jittery frame
+     pacing (`PS2X_PERF_LOG` over the fast-boot run: late=2..57/600,
+     lostMs up to 554 ms) and the radio music audibly ran slow, while the
+     emulator itself was never the bottleneck (eeMcyc constant, VU1 fully
+     compiled, 0 interpreted calls). Running the same exe with the bundled
+     wine from `proton-cachyos-native` (any Proton install works) fixed it:
+     late=0..22/600, steady-state lostMs 0-29 ms --- the win is **ntsync**
+     (the prefix boot printed "ntsync: up and running"; needs the ntsync
+     kernel driver, checked with CachyOS's ntsync-enabled kernels).
+       WINEPREFIX=/some/proton-pfx \
+       /usr/share/steam/compatibilitytools.d/proton-cachyos-native/files/lib/wine/x86_64-unix/wine \
+         ps2EntryRunner.exe
+     The runner is OpenGL (GL 4.6 core passthrough to native Mesa), so DXVK
+     does nothing here; Proton helps only through sync primitives. Owner
+     ear-confirmation pending for the music speed under Proton.
+
 Regenerating game code (only needed after recompiler/map changes, about 25 min
 full build): see the `vcs-recomp-function-map` notes. `ps2recomp
 vcs-configs/vcs_clean.toml` writes `vcs-port/generated_clean/`, which is copied
@@ -267,6 +283,10 @@ texture packs from `mods/`, Windows build under Wine.
      the radio back on. A per-frame push was tried and removed: it fought
      the game, never silenced the current station, and dragged every station
      change back to the silent slot.
+     - Verified under Wine/Proton headlessly (2026-10-13): station cycle to
+       slot 9, `[music] playing ...`, cycle continues past it; the pad
+       hold-toggle itself needs the owner's controller because it reads host
+       buttons (not scriptable through PS2X_PAD_SCRIPT).
    - Key addresses: the radio singleton is at **0x4E41E0** (+0x575 playing
      [*overloaded, see below*], +0x576 desired, +0x577/+0x578 lock flags,
      +0x57B last, +0x564/+0x568 owning vehicle); the station field is +0x2BA
@@ -303,6 +323,36 @@ texture packs from `mods/`, Windows build under Wine.
 5. Controllers: PlayStation button names in the menu, rumble.
 6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
    regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
+7. **Player-selectable render API (Vulkan; D3D11 for Windows).** Owner's ask:
+   a settings choice of rendering API --- Vulkan on Linux, Vulkan + DirectX on
+   Windows. Feasible by design: the GS frontend is decoupled from
+   rasterization behind the 42-line `GSRasterBackend` interface
+   (`runtime/gs/gs_backend.h`), with two living backends (`GSCpuBackend`,
+   the bit-exact reference, and `GSGpuBackend`, the GL 4.6 surfaceless
+   renderer in `src/lib/gs/gpu/gs_gpu_renderer.cpp`, ~2.4k lines; selected
+   with `PS2X_GS_GPU=1`, reading `ps2HostSettingsGpuRenderer()`). A Vulkan
+   (or D3D11/12) renderer is a new backend in the same slot: same frontend,
+   same local-memory model, same GS-semantics knowledge (blend
+   `(A-B)*C>>7`, swizzles, DATE, FBMSK), same frame-diff verification via
+   `tools/gs_replay` and `PS2X_GS_CAPTURE`.
+   - **Effort (honest):** ~3-6 weeks each for Vulkan and ~the same for D3D11
+     (D3D12 more), for someone fluent in Vulkan and this GS pipeline. The
+     bulk is backend boilerplate (surfaceless/headless present, sync,
+     barriers, descriptor/memory management, SPIR-V/HLSL re-expression of
+     the uber shader) plus present-path wiring (today the GL backend reads
+     the DISPLAY back into a `PresentationFrame`; the host window side is
+     rlgl/GL and would need a shared-texture/DMA path for Vulkan/D3D).
+   - **First cheap step:** stop gating the backend on the env var; add a
+     "Renderer: CPU / OpenGL" dropdown in the F2 settings menu (the menu
+     already has internal resolution), so the selector UX exists before the
+     new backends do. Then each new backend is one more entry.
+   - **What it buys:** on Linux native, OpenGL passthrough is already full
+     speed --- Vulkan there is player choice and future-proofing, not
+     perf. D3D11 pays off on real (non-Wine) Windows and under Wine via
+     DXVK. Today's actual Windows pacing problem was sync, not graphics:
+     fixed by running under Proton (ntsync), see the Build and run note.
+   - Don't start until the radio feature, its owner test under Proton, and
+     the remaining radio niceties are closed out.
 
 ## Where past fixes live
 
