@@ -490,6 +490,28 @@ texture packs from `mods/`, Windows build under Wine.
      positional (baked per set), so with Modern/custom layouts an icon can
      still show the classic button - runtime art generation would be the
      follow-up. `PS2X_PROMPT_TRACE=1` logs the site counts.
+   - **Map-screen icons covered (2026-10-13 late).** The map legend draws
+     its button icons as their own textures; miss logging + single-key
+     colour tests on the owner's capture 6209 found them:
+     `c075546801b74bf1-6b7c470bee19b607-00001113` = square (Target),
+     `1c274bfc4808cd11-21fc390fe03ad8c0-00001113` = L1 and
+     `23ece69c64b71407-f6ce098a91a7ac7b-00001113` = R1 (the Zoom pair).
+     xbox/steam/switch get face-button discs (X / Y) and shoulder pills
+     (LB/RB, L/R); the keyboard set gets keycaps with the keys that work on
+     the map (SPACE = Jump sends Square, Q = Interact sends L1, RMB = Aim
+     sends R1); the PlayStation sets keep the game's PS icons. The
+     cross/d-pad legend icons were already covered.
+   - **Runtime keyboard art (2026-10-13, milestone 1).**
+     `ps2_prompt_art.cpp` redraws the keyboard set's keycaps with raylib
+     whenever a bound key changes (same action labels as the shipped art,
+     arrow glyphs included) and writes them to
+     `<config>/ps2recomp/prompts_rt/<set>/`; the prompt loader reads that
+     folder after the shipped `prompts/<set>/` files (last wins), and
+     `ps2ModsRefreshButtonPromptsIfNeeded()` regenerates + rescans on
+     changes. Validated with a hidden-window raylib harness (keycaps W/E/
+     arrows/SPACE/Q/RMB + the atlas cells). The console sets' runtime
+     generation is the next milestone; the executable must be relinked for
+     the feature to go live.
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,
