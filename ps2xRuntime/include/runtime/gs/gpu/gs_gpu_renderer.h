@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class GSCpuBackend;
@@ -170,6 +171,11 @@ namespace gsgpu
         void updateReplacements(); // between frames: a new set of packs
         bool replacementsActive() const { return m_replIndex && !m_replIndex->files.empty(); }
         GLuint replacementTexture(const GSDrawState &state);
+        // PS2X_TEXREPL_DUMP=<dir>: write every texture the matcher sees as a
+        // PNG named by its replacement key (<tex0Hash>-<clutHash>-<bits>.png),
+        // the same naming PCSX2 uses. For authoring packs (e.g. button-prompt
+        // sets); the RGBA expansion is best effort for identification.
+        void dumpReplacementTexture(const GSDrawState &state, const gsrepl::Key &key);
         uint64_t hashTextureMemory(const GSDrawState &state);
         uint64_t hashClut(const GSDrawState &state);
         // CPU-copy bookkeeping for [begin, end): a write happened; `cpuStale`:
@@ -194,6 +200,7 @@ namespace gsgpu
         uint64_t m_replVersion = 0;
         std::unordered_map<gsrepl::Key, Replacement, gsrepl::KeyHash> m_replacements;
         std::unordered_map<uint64_t, HashedTexture> m_textureHashes;
+        std::unordered_set<gsrepl::Key, gsrepl::KeyHash> m_dumpedTextures; // PS2X_TEXREPL_DUMP
         std::vector<uint32_t> m_pageGeneration = std::vector<uint32_t>(512, 0u); // 8 KiB pages of local memory
         std::vector<uint8_t> m_pageCpuStale = std::vector<uint8_t>(512, 0u);
         uint64_t m_clutHashKey = ~0ull, m_clutHash = 0;

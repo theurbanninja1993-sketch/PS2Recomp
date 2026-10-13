@@ -152,6 +152,25 @@ int ps2ActiveGamepad()
     return active;
 }
 
+PS2InputDevice ps2InputDeviceKind()
+{
+    const int pad = ps2ActiveGamepad();
+    if (pad < 0)
+        return PS2InputDevice::Keyboard;
+    std::string name = GetGamepadName(pad);
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (name.find("xbox") != std::string::npos)
+        return PS2InputDevice::Xbox;
+    if (name.find("steam") != std::string::npos)
+        return PS2InputDevice::Steam;
+    if (name.find("switch") != std::string::npos || name.find("pro controller") != std::string::npos)
+        return PS2InputDevice::Switch;
+    if (name.find("dual") != std::string::npos || name.find("playstation") != std::string::npos ||
+        name.find("ps5") != std::string::npos || name.find("ps4") != std::string::npos || name.find("ps3") != std::string::npos)
+        return PS2InputDevice::PlayStation;
+    return PS2InputDevice::Generic; // e.g. 8BitDo etc.: Xbox-style ABXY layout
+}
+
 bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
 {
     if (!data || size < 32)

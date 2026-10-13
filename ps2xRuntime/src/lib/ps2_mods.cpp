@@ -1,5 +1,6 @@
 #include "runtime/ps2_mods.h"
 #include "runtime/ps2_platform.h"
+#include "runtime/ps2_pad.h"
 
 #include "runtime/gs/gs_texture_replacements.h"
 #include "runtime/ps2_host_settings.h"
@@ -102,6 +103,56 @@ std::string ps2ModsDirectory()
     return s_dir;
 }
 
+std::string ps2PromptsDirectory()
+{
+    static const std::string s_dir = []()
+    {
+        fs::path dir = std::getenv("PS2X_PROMPTS_DIR") ? fs::path(std::getenv("PS2X_PROMPTS_DIR")) : ps2ExecutableDirectory() / "prompts";
+        std::error_code ec;
+        fs::create_directories(dir, ec); // so the Mods tab hint can point at it
+        return dir.string();
+    }();
+    return s_dir;
+}
+
+namespace
+{
+    // Which prompts/<set>/ folder the setting resolves to ("" = none).
+    std::string resolvedPromptSet(const PS2HostSettings &settings)
+    {
+        switch (settings.buttonPrompts)
+        {
+            case PS2HostSettings::ButtonPrompts::Off: return "";
+            case PS2HostSettings::ButtonPrompts::Xbox: return "xbox";
+            case PS2HostSettings::ButtonPrompts::Steam: return "steam";
+            case PS2HostSettings::ButtonPrompts::Keyboard: return "keyboard";
+            case PS2HostSettings::ButtonPrompts::PlayStation: return "playstation";
+            case PS2HostSettings::ButtonPrompts::Switch: return "switch";
+            case PS2HostSettings::ButtonPrompts::Auto: break;
+        }
+        switch (ps2InputDeviceKind())
+        {
+            case PS2InputDevice::Xbox: return "xbox";
+            case PS2InputDevice::Steam: return "steam";
+            case PS2InputDevice::PlayStation: return "playstation";
+            case PS2InputDevice::Switch: return "switch";
+            default: return "keyboard"; // the keyboard, or an unknown Xbox-style gamepad
+        }
+    }
+} // namespace
+
+void ps2ModsRefreshButtonPromptsIfNeeded()
+{
+    // Auto follows the active input device: rebuild the replacement index only
+    // when the resolved set changes (rare; the rebuild rescan is expensive).
+    static std::string s_last;
+    const std::string resolved = ps2HostSettings().textureReplacement ? resolvedPromptSet(ps2HostSettings()) : std::string();
+    if (resolved == s_last)
+        return;
+    s_last = resolved;
+    ps2ModsRefresh();
+}
+
 const std::vector<PS2ModInfo> &ps2Mods()
 {
     return g_mods;
@@ -159,6 +210,36 @@ void ps2ModsRefresh()
         }
         std::cerr << "[mods] " << mod.name << (mod.enabled ? "" : " (disabled)") << ": " << mod.textures
                   << " replacement textures, " << mod.patches << " memory patches" << std::endl;
+    }
+    // Button-prompt set: PCSX2-named glyph textures in prompts/<set>/ next to
+    // the executable load after the mods on purpose - where both replace the
+    // same texture, the prompt set wins (the index keeps the last file), so a
+    // user's texture pack can never override the prompt glyphs.
+    if (settings.textureReplacement)
+    {
+        const std::string set = resolvedPromptSet(settings);
+        if (!set.empty())
+        {
+            const fs::path dir = fs::path(ps2PromptsDirectory()) / set;
+            size_t count = 0, overridden = 0;
+            for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec))
+            {
+                if (ec)
+                    break;
+                if (!it->is_regular_file(ec))
+                    continue;
+                if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
+                {
+                    overridden += index->files.find(*key) != index->files.end() ? 1u : 0u;
+                    index->files[*key] = it->path().string();
+                    ++count;
+                }
+            }
+            if (count != 0u)
+                std::cerr << "[prompts] " << set << ": " << count << " textures (" << overridden << " overriding mod packs)"
+                          << std::endl;
+        }
     }
     g_mods = std::move(mods);
     g_pnach = std::move(pnach);

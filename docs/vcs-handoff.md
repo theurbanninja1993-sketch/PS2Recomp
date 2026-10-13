@@ -401,6 +401,42 @@ texture packs from `mods/`, Windows build under Wine.
      fixed by running under Proton (ntsync), see the Build and run note.
    - Don't start until the radio feature, its owner test under Proton, and
      the remaining radio niceties are closed out.
+8. **Button prompts: per-device replacement of the game's on-screen button
+   glyphs. Runtime DONE + verified (2026-10-13); asset keys pending.**
+   - Mechanism: the game's prompt glyphs are ordinary uploaded textures, so
+     PCSX2-named replacement PNGs swap them, exactly like texture packs.
+   - **`PS2X_TEXREPL_DUMP=<dir>`** (new): writes every texture the
+     replacement matcher sees as `<tex0Hash>-<clutHash>-<bits>.png`, the
+     PCSX2 naming - i.e. what a pack file for that texture must be called.
+     RGBA expansion is best effort (CLUT/16-bit via the same rules as the
+     hashing).
+   - **Prompt set layer** (new): PCSX2-named PNGs in `prompts/<set>/` next to
+     the executable (or `PS2X_PROMPTS_DIR`), sets `xbox`, `steam`,
+     `keyboard`, `playstation`, `switch`. Loaded into the replacement index
+     AFTER the mods on purpose (last file wins), so a user texture pack can
+     never override the prompt glyphs - verified: 791 test textures, 511
+     overriding the HD pack's keys.
+   - **Setting `button_prompts`** (Mods tab): Auto (follows the active
+     device via `ps2InputDeviceKind()`, per-frame re-resolve) / Xbox /
+     Steam / Keyboard / PlayStation (DualShock + DualSense) / Switch / Off.
+   - **Pipeline: `tools/make_prompt_packs.py`** (also in
+     `games/vcs/tools/`): manifest (`packs.json`) driven compositor; renders
+     the AL2009man prompt SVGs (honest queue: scrape
+     https://github.com/AL2009man/Gamepad-Asset-Pack, submodule
+     Gamepad-Prompt-Asset-Pack, MIT with attribution) via `rsvg-convert`,
+     single-glyph or atlas-cell placements, Switch face buttons come from
+     the Pro Controller FaceButton sheet (2x2, A=bottom), Steam falls back
+     to the Xbox glyphs (Deck layout; swap art later), keyboard set renders
+     keycap text labels (defaults per the port's default bindings; adjust
+     per action).
+   - **BLOCKED on identification:** the fast-boot / first-mission scene
+     never draws the prompt glyphs, so the dump contains no button-set
+     cluster (7 small single-glyph textures are ambiguous; the captured
+     128x128 font atlas has 1758 fragments and may hold the shapes as font
+     glyphs - check that first). Next: dump 1-2 min of play where glyphs
+     show (pause menu options, mission help boxes), then author
+     `packs.json` (keys + cell rects or single-glyph textures), generate,
+     and verify `[texrepl]` hit counts for those keys.
 
 ## Where past fixes live
 

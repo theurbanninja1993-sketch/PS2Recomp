@@ -13,6 +13,20 @@
 int ps2ActiveGamepad();
 void ps2SetPreferredGamepad(const std::string &name);
 
+// The active input device, from the gamepad's reported name (the keyboard when
+// no gamepad is active). Drives the runtime's prompt wording and the
+// button-prompt replacement set.
+enum class PS2InputDevice
+{
+    Keyboard,
+    Xbox,
+    Steam,
+    PlayStation, // DualShock 3/4, DualSense
+    Switch,
+    Generic
+};
+PS2InputDevice ps2InputDeviceKind();
+
 class PSPadBackend
 {
 public:

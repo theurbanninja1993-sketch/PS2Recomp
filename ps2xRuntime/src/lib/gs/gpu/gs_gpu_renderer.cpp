@@ -4,6 +4,8 @@
 #include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
 
+#include "raylib.h" // PS2X_TEXREPL_DUMP: ExportImage writes the dumped PNGs
+
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
@@ -2128,6 +2130,77 @@ void main()
         return m_clutHash;
     }
 
+    void Renderer::dumpReplacementTexture(const GSDrawState &state, const gsrepl::Key &key)
+    {
+        const char *dir = std::getenv("PS2X_TEXREPL_DUMP");
+        if (!dir || !*dir || !m_cpu || !m_vram)
+            return;
+        const GSContext &ctx = state.context;
+        const GSTex0Reg &tex0 = ctx.tex0;
+        const uint32_t psm = tex0.psm & 0x3Fu;
+        const bool palettized = isPalettized(static_cast<uint8_t>(psm));
+        if (!palettized && psm != PSM_CT32 && psm != PSM_CT24 && psm != PSM_CT16 && psm != PSM_CT16S)
+            return;
+        const uint32_t width = 1u << std::min<uint32_t>(tex0.tw, 10u);
+        const uint32_t height = 1u << std::min<uint32_t>(tex0.th, 10u);
+        if (width == 0u || height == 0u)
+            return;
+        // Palette for palettized textures, expanded like hashClut does.
+        uint32_t palette[256] = {};
+        if (palettized)
+        {
+            const bool fourBit = tex0.psm == PSM_T4 || tex0.psm == PSM_T4HL || tex0.psm == PSM_T4HH;
+            const bool sixteen = tex0.cpsm == PSM_CT16 || tex0.cpsm == PSM_CT16S;
+            const auto &clut = m_cpu->clutTable();
+            const uint32_t count = fourBit ? 16u : 256u;
+            if (!sixteen)
+            {
+                const uint32_t csa = (tex0.csa & 15u) << 4;
+                for (uint32_t i = 0; i < count; ++i)
+                {
+                    const uint32_t e = fourBit ? csa + i : std::min((i & ~15u) + csa, 240u) + (i & 15u);
+                    const uint32_t lo = clut[e & 0xFFu], hi = clut[(e & 0xFFu) + 256u];
+                    palette[i] = (lo & 0xFFu) | ((lo >> 8) << 8) | ((hi & 0xFFu) << 16) | ((hi >> 8) << 24);
+                }
+            }
+            else
+            {
+                const uint32_t base = static_cast<uint32_t>(tex0.csa) << 4;
+                for (uint32_t i = 0; i < count; ++i)
+                {
+                    const uint32_t raw = clut[(base + i) & 0x1FFu];
+                    const uint32_t a = (raw & 0x8000u) ? state.texa.ta1
+                                                       : ((state.texa.aem && (raw & 0x7FFFu) == 0u) ? 0u : state.texa.ta0);
+                    palette[i] = ((raw & 0x1Fu) << 3) | (((raw >> 5) & 0x1Fu) << 11) | (((raw >> 10) & 0x1Fu) << 19) | (a << 24);
+                }
+            }
+        }
+        std::vector<uint8_t> rgba(size_t(width) * height * 4u);
+        for (uint32_t y = 0; y < height; ++y)
+            for (uint32_t x = 0; x < width; ++x)
+            {
+                const uint32_t raw = m_cpu->ReadVram(psm, tex0.tbp0, tex0.tbw, x, y);
+                uint32_t c = raw;
+                if (palettized)
+                    c = palette[raw & 0xFFu];
+                else if (psm == PSM_CT24)
+                    c = (raw & 0x00FFFFFFu) | ((state.texa.aem && (raw & 0x00FFFFFFu) == 0u) ? 0u : (state.texa.ta0 << 24));
+                else if (is16Bit(static_cast<uint8_t>(psm)))
+                {
+                    const uint32_t a = (raw & 0x8000u) ? state.texa.ta1
+                                                       : ((state.texa.aem && (raw & 0x7FFFu) == 0u) ? 0u : state.texa.ta0);
+                    c = ((raw & 0x1Fu) << 3) | (((raw >> 5) & 0x1Fu) << 11) | (((raw >> 10) & 0x1Fu) << 19) | (a << 24);
+                }
+                std::memcpy(rgba.data() + (size_t(y) * width + x) * 4u, &c, 4u);
+            }
+        char name[64];
+        std::snprintf(name, sizeof(name), "%016llx-%016llx-%08x.png", static_cast<unsigned long long>(key.tex0Hash),
+                      static_cast<unsigned long long>(key.clutHash), key.bits);
+        std::string path = std::string(dir) + "/" + name;
+        ::Image image{rgba.data(), static_cast<int>(width), static_cast<int>(height), 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+        ExportImage(image, path.c_str());
+    }
+
     GLuint Renderer::replacementTexture(const GSDrawState &state)
     {
         const GSContext &ctx = state.context;
@@ -2172,6 +2245,9 @@ void main()
             key.clutHash = 0u;
         key.bits = gsrepl::makeBits(psm, tex0.tw, tex0.th, texa ? state.texa.ta0 : 0u, texa ? state.texa.aem : 0u,
                                     texa ? state.texa.ta1 : 0u);
+        if (const char *dumpDir = std::getenv("PS2X_TEXREPL_DUMP"); dumpDir && *dumpDir &&
+                                                                        m_dumpedTextures.insert(key).second)
+            dumpReplacementTexture(state, key);
         const auto file = m_replIndex->files.find(key);
         if (file == m_replIndex->files.end())
         {

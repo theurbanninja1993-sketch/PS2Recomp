@@ -39,9 +39,18 @@ void ps2PnachApply(const std::vector<PS2PnachEntry> &entries, uint8_t *ram, size
 
 // <mods folder>: PS2X_MODS_DIR, or "mods" next to the executable (created).
 std::string ps2ModsDirectory();
+// Button-prompt set folder: PS2X_PROMPTS_DIR, or "prompts" next to the
+// executable (created). Holds PCSX2-named glyph textures per device: xbox,
+// steam, keyboard, playstation, switch.
+std::string ps2PromptsDirectory();
 // Rescans the mods folder (enabled state from the settings) and applies
 // the enabled mods.
 void ps2ModsRefresh();
+// Button-prompt set: PCSX2-named textures in prompts/<set>/ next to the
+// executable (or PS2X_PROMPTS_DIR). Auto (the setting's default) follows the
+// active controller. Called once per frame: re-resolves Auto and rebuilds the
+// replacement index only when the resolved set changes.
+void ps2ModsRefreshButtonPromptsIfNeeded();
 const std::vector<PS2ModInfo> &ps2Mods();
 // Enables / disables a mod (persisted in the settings) and re-applies.
 void ps2ModsSetEnabled(const std::string &name, bool enabled);

@@ -2219,24 +2219,21 @@ namespace
         Xbox,
         Steam,
         PlayStation,
+        Switch,
         Generic
     };
 
     InputDeviceKind activeInputDevice()
     {
-        const int pad = ps2ActiveGamepad();
-        if (pad < 0)
-            return InputDeviceKind::Keyboard;
-        std::string name = GetGamepadName(pad);
-        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (name.find("xbox") != std::string::npos)
-            return InputDeviceKind::Xbox;
-        if (name.find("steam") != std::string::npos)
-            return InputDeviceKind::Steam;
-        if (name.find("dual") != std::string::npos || name.find("playstation") != std::string::npos ||
-            name.find("ps5") != std::string::npos || name.find("ps4") != std::string::npos || name.find("ps3") != std::string::npos)
-            return InputDeviceKind::PlayStation;
-        return InputDeviceKind::Generic;
+        switch (ps2InputDeviceKind())
+        {
+            case PS2InputDevice::Keyboard: return InputDeviceKind::Keyboard;
+            case PS2InputDevice::Xbox: return InputDeviceKind::Xbox;
+            case PS2InputDevice::Steam: return InputDeviceKind::Steam;
+            case PS2InputDevice::PlayStation: return InputDeviceKind::PlayStation;
+            case PS2InputDevice::Switch: return InputDeviceKind::Switch;
+            default: return InputDeviceKind::Generic;
+        }
     }
 
     const char *inputDeviceName(InputDeviceKind kind)
@@ -2247,6 +2244,7 @@ namespace
             case InputDeviceKind::Xbox: return "Xbox controller";
             case InputDeviceKind::Steam: return "Steam controller";
             case InputDeviceKind::PlayStation: return "PlayStation controller";
+            case InputDeviceKind::Switch: return "Switch controller";
             default: return "gamepad";
         }
     }
@@ -2259,7 +2257,7 @@ namespace
         {
             case InputDeviceKind::PlayStation: return "Circle";
             case InputDeviceKind::Keyboard: return nullptr;
-            default: return "B";
+            default: return "B"; // Xbox / Steam / Switch / generic pads
         }
     }
 
@@ -2828,6 +2826,21 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::EndTable();
                     if (!toggle.empty())
                         ps2ModsSetEnabled(toggle, toggleTo); // after drawing: rebuilds the list
+                }
+                ImGui::SeparatorText("Button prompts");
+                {
+                    static const char *const kPromptSets[] = {"Auto (active controller or keyboard)", "Xbox", "Steam",
+                                                               "Keyboard", "PlayStation (DualShock/DualSense)", "Switch", "Off"};
+                    int current = static_cast<int>(settings.buttonPrompts);
+                    if (ImGui::Combo("Prompt set", &current, kPromptSets, IM_ARRAYSIZE(kPromptSets)))
+                    {
+                        settings.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(current);
+                        changed = true;
+                        ps2ModsRefresh();
+                    }
+                    ImGui::TextDisabled("Glyphs in %s/<set>/ (PCSX2 texture names). They override "
+                                        "texture packs for the same textures.",
+                                        ps2PromptsDirectory().c_str());
                 }
                 if (ps2MusicStationSupported())
                 {

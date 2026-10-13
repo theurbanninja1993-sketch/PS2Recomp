@@ -90,6 +90,19 @@ struct PS2HostSettings
     bool radioOffEnabled = true; // hold D-pad Down / M toggles "Radio Off" (Mods tab)
     bool textureReplacement = true;     // apply texture packs from the mods folder
     bool pnachCheats = true;            // apply .pnach memory patches from enabled mods
+    // Button-prompt replacement set: PCSX2-named glyph textures in
+    // prompts/<set>/ next to the executable. Auto follows the active device.
+    enum class ButtonPrompts : int
+    {
+        Auto = 0,
+        Xbox,
+        Steam,
+        Keyboard,
+        PlayStation, // DualShock / DualSense
+        Switch,
+        Off,
+    };
+    ButtonPrompts buttonPrompts = ButtonPrompts::Auto;
     std::vector<std::string> disabledMods; // mod folder names switched off
     bool showAtLaunch = false; // open the settings before the game starts, every launch (always on the first)
 
