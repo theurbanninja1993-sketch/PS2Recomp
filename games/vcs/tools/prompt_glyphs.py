@@ -37,14 +37,14 @@ KEYBOARD_KEYS = {
     "start": "ESC", "select": "TAB",
     "map_target": "SPACE", "map_zoom_l": "Q", "map_zoom_r": "RMB",
 }
-# Shoulder (map zoom) pills for the console sets. The DualSense uses the
-# pack's own bumper glyph (grayed to the controller's tone) instead; the
-# DualShock's real bumpers are dark with light print, so it gets the dark
-# pill style like the Xbox/Steam/Switch sets.
+# Shoulder (map zoom) pills for the console sets. The PlayStation bumpers
+# are black with light print on both the DualSense and the DualShock 4, so
+# those sets use the dark pill with white L1/R1 labels too.
 SHOULDER_LABELS = {
     "xbox": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
     "steam": {"map_zoom_l": "LB", "map_zoom_r": "RB"},
     "switch": {"map_zoom_l": "L", "map_zoom_r": "R"},
+    "dualsense": {"map_zoom_l": "L1", "map_zoom_r": "R1"},
     "dualshock": {"map_zoom_l": "L1", "map_zoom_r": "R1"},
 }
 LETTER_COLORS = {
@@ -68,16 +68,6 @@ PS_WHITE_SVG = {
     "circle": "PlayStation/ps-Circle.svg",
     "square": "PlayStation/ps-Square.svg",
     "triangle": "PlayStation/ps-Triangle.svg",
-}
-# Shoulder prompts for the DualSense: the pack's bumper shape (the game's own
-# PS2 shoulder icons have a different silhouette). The pack draws it
-# near-white; the set darkens it to the controller's gray bumper tone.
-PS_SHOULDER_SVG = {
-    "map_zoom_l": "PlayStation/ps5-Left Back.svg",
-    "map_zoom_r": "PlayStation/ps5-Right Back.svg",
-}
-PS_SHOULDER_BRIGHTNESS = {
-    "dualsense": 0.72,
 }
 DPAD_SVG = {
     "dpad_up": "PlayStation/ps-D-PAD Up.svg",
@@ -220,13 +210,6 @@ def render_prompt_glyph(set_name: str, button: str, size: int, svg_root: str) ->
         return _keycap_glyph(KEYBOARD_KEYS[button], size) if button in KEYBOARD_KEYS else None
     if button in SHOULDER_LABELS.get(set_name, {}):
         return _shoulder_glyph(SHOULDER_LABELS[set_name][button], size)
-    if set_name == "dualsense" and button in PS_SHOULDER_SVG:
-        im = _render_ps_svg(svg_root, PS_SHOULDER_SVG[button], size)
-        factor = PS_SHOULDER_BRIGHTNESS.get(set_name, 1.0)
-        if factor != 1.0:
-            from PIL import ImageEnhance
-            im = ImageEnhance.Brightness(im).enhance(factor)  # RGB only; alpha kept
-        return im
     if button == "map_target":
         button = "square"  # the map's target toggle is the square button
     if button in PS_COLOR_SVG and set_name in ("dualsense", "dualshock"):
