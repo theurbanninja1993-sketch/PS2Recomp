@@ -409,10 +409,15 @@ texture packs from `mods/`, Windows build under Wine.
      replacement matcher sees as `<tex0Hash>-<clutHash>-<bits>.png`, the
      PCSX2 naming - i.e. what a pack file for that texture must be called.
      RGBA expansion is best effort (CLUT/16-bit via the same rules as the
-     hashing).
+     hashing). With **`PS2X_TEXREPL_DUMP_ALL=1`** it also captures textures
+     the matcher refuses (unsupported formats, region clamp): use it when
+     hunting glyphs that may be drawn differently. If a glyph never appears
+     even then, it is baked into other art (e.g. a shared sheet) rather than
+     being a separate texture.
    - **Prompt set layer** (new): PCSX2-named PNGs in `prompts/<set>/` next to
      the executable (or `PS2X_PROMPTS_DIR`), sets `xbox`, `steam`,
-     `keyboard`, `playstation`, `switch`. Loaded into the replacement index
+     `keyboard`, `dualsense`, `dualshock`, `switch`. Loaded into the
+     replacement index
      AFTER the mods on purpose (last file wins), so a user texture pack can
      never override the prompt glyphs - verified: 791 test textures, 511
      overriding the HD pack's keys.
