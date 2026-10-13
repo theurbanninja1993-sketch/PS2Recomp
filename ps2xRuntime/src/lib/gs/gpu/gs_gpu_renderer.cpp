@@ -2243,15 +2243,7 @@ void main()
             {
                 uint32_t begin = 0, end = 0;
                 bufferRange(tex0.tbp0, tex0.tbw, 1u << std::min<uint32_t>(tex0.th, 10u), static_cast<uint8_t>(psm), begin, end);
-                bool stale = false;
                 if (begin < end)
-                    for (uint32_t page = begin / kPageBytes; page <= std::min<uint32_t>((end - 1u) / kPageBytes, 511u); ++page)
-                        if (m_pageCpuStale[page])
-                        {
-                            stale = true;
-                            break;
-                        }
-                if (!stale && begin < end)
                 {
                     const bool texa = !palettized && psm != PSM_CT32;
                     gsrepl::Key key;
