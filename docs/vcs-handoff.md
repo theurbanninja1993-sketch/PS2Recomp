@@ -458,6 +458,21 @@ texture packs from `mods/`, Windows build under Wine.
      not part of the diagram texture, so that needs a runtime-generated
      diagram (compose per (device, layout) at index build or procedurally) -
      design noted, not started.
+   - **Font-embedded button symbols solved (2026-10-13).** The tutorial prompts
+     (Circle = melee, Square = brake/reverse, ...) are FONT GLYPHS in the
+     256x256 T8 UI atlas at tbp0=13592 (key
+     `3ece7b57667e958b-f663bcea3bca5023-00002213.png`) - found after the F9
+     captures proved every prompt screen samples only that sheet family and
+     the replayed captures surfaced the full 256px window. Cell coordinates
+     (owner-located, shape-verified): square (0,230), cross (24,230), circle
+     (46,230), triangle (212,206), ~22px each.
+     `tools/make_font_sheet.py` redraws just those cells per set (button art
+     from the AL2009man pack; keyboard = the port's default bindings,
+     W/LMB/S/E) and writes the whole atlas under
+     `prompts/<set>/<atlas key>.png`; every other pixel is byte-identical so
+     the rest of the text is untouched. The v2 note about shared-sheet
+     replacement now applies only for extending this (e.g. adding L1/R1 or
+     Start/Select symbols in the font if they exist).
    - The owner has the self-contained contact sheet at
      `texdump/_contact_sheet.html` (open with the full file:// path).
 
