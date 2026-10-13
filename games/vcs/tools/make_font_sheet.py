@@ -19,8 +19,11 @@ Usage:
 Writes prompts/<set>/3ece7b57667e958b-f663bcea3bca5023-00002213.png for
 xbox/steam/dualsense/dualshock/switch/keyboard.
 """
-import argparse, os, subprocess, struct
+import argparse, os, subprocess, struct, sys
 from PIL import Image, ImageOps, ImageDraw, ImageFont
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from prompt_glyphs import render_prompt_glyph
 
 SHEET_KEY = "3ece7b57667e958b-f663bcea3bca5023-00002213.png"
 CELLS = [
@@ -92,9 +95,9 @@ def main():
         for (x, y, w, h, button) in CELLS:
             draw.rectangle([x, y, x + w - 1, y + h - 1], fill=(0, 0, 0, 0))
             inner = max(8, min(w, h) - 2)
-            glyph_path = render_glyph(set_name, button, inner * 2 if set_name != "keyboard" else inner,
-                                      svg_root, pack_root)
-            glyph = Image.open(glyph_path).convert("RGBA")
+            glyph = render_prompt_glyph(set_name, button, inner * 2, svg_root)
+            if glyph is None:
+                continue
             glyph = ImageOps.contain(glyph, (inner, inner), Image.LANCZOS)
             px = x + (w - glyph.width) // 2
             py = y + (h - glyph.height) // 2

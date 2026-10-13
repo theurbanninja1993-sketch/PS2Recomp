@@ -36,6 +36,9 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from prompt_glyphs import render_prompt_glyph
+
 # PS2 shape -> per-set glyph (relative to the SVG pack root), square target
 # size; keyboard labels. Verified against the checked-out pack (2026-10-13):
 # - Xbox face buttons only exist as positional P1..P4 (diamond order
@@ -216,7 +219,20 @@ def main():
                 if btn in glyph_cache:
                     continue
                 size = cell["w"]  # glyphs are square
-                if set_name == "keyboard":
+                if btn in ("cross", "circle", "square", "triangle") and set_name in ("xbox", "steam", "dualsense",
+                                                                                      "dualshock", "switch", "keyboard"):
+                    # Bare high-contrast glyphs: the disc-style SVG art is
+                    # unreadable at prompt sizes (see prompt_glyphs.py).
+                    from PIL import Image as _Img, ImageOps as _Ops
+                    glyph = render_prompt_glyph(set_name, btn, size, args.svg)
+                    if glyph is None:
+                        continue
+                    glyph = _Ops.contain(glyph, (size, size), _Img.LANCZOS)
+                    tmp = os.path.join(outdir, f"_glyph_{btn}.png")
+                    canvas = _Img.new("RGBA", (size, size), (0, 0, 0, 0))
+                    canvas.alpha_composite(glyph, ((size - glyph.width) // 2, (size - glyph.height) // 2))
+                    canvas.save(tmp)
+                elif set_name == "keyboard":
                     label = mapping.get(btn, DEFAULT_KEYCAP)
                     tmp = os.path.join(outdir, f"_glyph_{btn}.png")
                     make_keycap(label, tmp, size, args.keyboard_font)
