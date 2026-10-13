@@ -5,6 +5,7 @@
 #include "runtime/gs/gs_texture_replacements.h"
 #include "runtime/ps2_host_settings.h"
 #include "runtime/ps2_memory.h" // PS2_RAM_SIZE
+#include "runtime/ps2_prompt_art.h"
 
 #include <algorithm>
 #include <cctype>
@@ -149,9 +150,13 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
     // when the resolved set changes (rare; the rebuild rescan is expensive).
     static std::string s_last;
     const std::string resolved = resolvedPromptSet(ps2HostSettings());
-    if (resolved == s_last)
-        return;
+    const bool setChanged = resolved != s_last;
     s_last = resolved;
+    // Keyboard keycaps follow the live key bindings; regenerating writes the
+    // runtime prompt-art folder, so the index must be rescanned too.
+    const bool artChanged = ps2PromptArtRefreshIfNeeded();
+    if (!setChanged && !artChanged)
+        return;
     ps2ModsRefresh();
 }
 
@@ -246,6 +251,31 @@ void ps2ModsRefresh()
             if (count != 0u)
                 std::cerr << "[prompts] " << set << ": " << count << " textures (" << overridden << " overriding mod packs)"
                           << std::endl;
+        }
+    }
+    // Runtime-generated prompt art (keyboard keycaps following the live key
+    // bindings): read last, so it overrides the shipped prompts/<set>/ art.
+    {
+        const std::string set = resolvedPromptSet(settings);
+        if (!set.empty())
+        {
+            const fs::path dir = fs::path(ps2PromptArtDirectory()) / set;
+            size_t count = 0;
+            for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec))
+            {
+                if (ec)
+                    break;
+                if (!it->is_regular_file(ec))
+                    continue;
+                if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
+                {
+                    index->files[*key] = it->path().string();
+                    ++count;
+                }
+            }
+            if (count != 0u)
+                std::cerr << "[prompts] " << set << ": " << count << " runtime-generated textures" << std::endl;
         }
     }
     g_mods = std::move(mods);
