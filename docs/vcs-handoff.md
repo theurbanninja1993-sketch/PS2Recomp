@@ -320,16 +320,48 @@ texture packs from `mods/`, Windows build under Wine.
      custom stop. `FRONTEND/DEFAULT/AUDPG.PSP` declares the radio selector as
      `<9c ad="10">` (= state count) with `S0..S9 = FEA_FM0..8 + FEA_NON`, and
      c81bf35 renames the 10th key `FEA_NON -> FEA_CSS` in the read buffer
-     (CD.cpp `readRegisteredCdSectors`), so the page side should already
-     offer a named 10th state. Open: (a) does the in-game audio menu show /
-     cycle the 10th option (an owner on-screen check is fastest), (b) does
-     choosing it carry into the radio - the option list/hook is ELF-side
-     (HOOK_USE_CUSTOM_TRACKS, index 12 in `FUN_003e2530`), (c) when tuned via
-     the menu, set the station the way the L1/R1 path does (slot 9 + flags).
-3. **Texture-pack overhead:** the CPU mirror of texture uploads
-   (`GSCpuBackend::UploadImage` → `GSMem::WriteRow`) still costs the render
-   thread ~+15 pts in streaming scenes. Next lever: a lazy mirror keyed by
-   upload content hash. Owner to re-test the airport area first.
+     (CD.cpp `readRegisteredCdSectors`). Owner check (2026-10-13): the
+     in-game audio menu still cycles only the nine real stations - no 10th
+     entry, nothing "Radio Off"/custom. So the page's 10th state is not what
+     the selector enumerates; the option list is built ELF-side.
+     - New findings (2026-10-13): the hook registry is `FUN_003e2530`
+       (0x3E2530, dispatcher over a jump table at vaddr **0x4C1D80**, 20
+       entries, each case returning the hook's name string from the table at
+       0x4C1BF8+): idx 12 = `HOOK_USE_CUSTOM_TRACKS` (name at 0x4C1CC8),
+       idx 13 = `HOOK_RADIO_STATION`. Next probes: find who builds the audio
+       page's option list (the option -> hook mapping) and whether the
+       custom-tracks availability gate hides the 10th station entry; when
+       found, the runtime can satisfy the gate (a music folder exists).
+       ELF note: single PT_LOAD, file offset + 0x1000 = vaddr (text/data).
+     - When tuned via the menu, it must set the station the way the L1/R1
+       path does (slot 9 + `g_vcsCustomStation`), else the vehicle tunes to
+       a normal station on entry.
+3. **Texture-pack overhead - measured and located (2026-10-13).** Owner
+   re-tested the airport: slight frame drops persist with the HD pack. A/B
+   on the fast-boot drive (Linux native, GPU renderer, `PS2X_PERF_LOG`):
+   the render thread runs **GsGpu ~44-57% with the pack vs ~24-30% without**
+   (~+20 pts), which tips the airport into late frames. New
+   `PS2X_TEXREPL_STATS` fields (added today) split it:
+   - **mirrorMs ~590-950 ms per 5 s period (~16-19% of the render thread)**
+     = `GSCpuBackend::UploadImage` decoding uploads into the CPU copy.
+   - **hashMs ~16-30 ms** = texture/CLUT hashing - negligible.
+   - Per-format bytes: **PSM 0x14 (T4, 4-bit palettized) is ~95%** of both
+     mirrored and hashed bytes (~140 MB per period; T8 ~2-9 MB, C32 ~6-9 MB
+     mirrored but never hashed). The hash reads the same bytes ~30x faster
+     (block-linear 256-byte reads + XXH3 vs the per-pixel swizzle
+     `WriteRowT` -> `PixelStorageTraits::Write` with nibble RMW).
+   - Design direction (the doc's "lazy mirror keyed by upload content"):
+     keep raw uploads in a side overlay (stream + transfer rect) and, for a
+     texture region fully covered by one upload, **synthesize the 256-byte
+     hash blocks from the stream via the fixed in-block column table**
+     (`ColumnTable4` etc.) instead of maintaining `m_vram` per pixel;
+     overlapping/mixed regions fall back to the current "CPU-stale =
+     hash miss" policy. In-block layouts are the GS column interleaves (the
+     column tables in `ps2_gs_memory.cpp`), NOT row-major - a naive block
+     memcpy would corrupt data. Estimated 5-10x on the mirror cost.
+   - Verification harness: `tools/gs_replay` frame diffs + comparing
+     `[texrepl]` hit/hash counts before/after (identical hits = identical
+     mirrored bytes).
 4. Mods: file overrides (replace disc files from a mod folder). `.pnach`
    memory patches are now applied (be626b9): PCSX2 `patch=1,EE,ADDR,TYPE,VALUE`
    byte/short/word lines from enabled mod folders are written to EE RAM each

@@ -30,6 +30,17 @@ namespace gsgpu
             ~ScopeTimer() { total += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); }
         };
 
+        // PS2X_TEXREPL_STATS: replacement-related render-thread time (seconds),
+        // reported and reset on each stats line. mirror = decoding uploads into
+        // the CPU copy that hashing reads; hash = texture/CLUT hashing.
+        double g_texreplMirrorSecs = 0.0;
+        double g_texreplHashSecs = 0.0;
+        // Bytes behind those costs, per GS format (PSM & 0x3F): mirrored =
+        // upload stream bytes decoded into the CPU copy; hashed = bytes the
+        // texture hash read. Decides which formats an optimization helps.
+        uint64_t g_texreplMirrorBytes[64] = {};
+        uint64_t g_texreplHashBytes[64] = {};
+
         constexpr uint32_t kLocalMemoryBytes = 4u * 1024u * 1024u;
         constexpr uint32_t kPageBytes = 8192u;
         constexpr uint32_t kMaxTargetHeight = 1024u;
@@ -1838,7 +1849,11 @@ void main()
         flushBatch();
         dispatchHostToLocal(data, pixels, streamBytes);
         if (replacementsActive())
+        {
+            ScopeTimer timer{g_texreplMirrorSecs};
             m_cpu->UploadImage(data, sizeBytes);
+            g_texreplMirrorBytes[m_transfer.bitbltbuf.dpsm & 0x3Fu] += streamBytes;
+        }
 
         const auto &buf = m_transfer.bitbltbuf;
         uint32_t begin = 0, end = 0;
@@ -2041,6 +2056,7 @@ void main()
             for (uint32_t y = 0; y < height; y += bsy)
                 for (uint32_t x = 0; x < width; x += bsx)
                     XXH3_64bits_update(&st, m_vram + (GSMem::PixelByteAddress(psm, tbp, tbw, x, y) & ~255u), 256u);
+            g_texreplHashBytes[psm & 0x3Fu] += static_cast<uint64_t>(width / bsx) * (height / bsy) * 256u;
             return XXH3_64bits_digest(&st);
         }
         const bool palettized = isPalettized(static_cast<uint8_t>(psm));
@@ -2069,6 +2085,7 @@ void main()
             }
             XXH3_64bits_update(&st, row.data(), row.size());
         }
+        g_texreplHashBytes[psm & 0x3Fu] += static_cast<uint64_t>(width) * height * (palettized ? 1u : 4u);
         return XXH3_64bits_digest(&st);
     }
 
@@ -2140,12 +2157,19 @@ void main()
         HashedTexture &hashed = m_textureHashes[texKey];
         if (hashed.generation != generation)
         {
+            ScopeTimer timer{g_texreplHashSecs};
             hashed.hash = hashTextureMemory(state);
             hashed.generation = generation;
         }
         gsrepl::Key key;
         key.tex0Hash = hashed.hash;
-        key.clutHash = palettized ? hashClut(state) : 0u;
+        if (palettized)
+        {
+            ScopeTimer timer{g_texreplHashSecs};
+            key.clutHash = hashClut(state);
+        }
+        else
+            key.clutHash = 0u;
         key.bits = gsrepl::makeBits(psm, tex0.tw, tex0.th, texa ? state.texa.ta0 : 0u, texa ? state.texa.aem : 0u,
                                     texa ? state.texa.ta1 : 0u);
         const auto file = m_replIndex->files.find(key);
@@ -2185,10 +2209,35 @@ void main()
             static const bool s_stats = std::getenv("PS2X_TEXREPL_STATS") != nullptr;
             static uint32_t s_presents = 0;
             if (s_stats && ++s_presents % 300u == 0u)
+            {
                 std::cerr << "[texrepl] draws=" << m_statReplDraws << " hits=" << m_statReplHits << " misses=" << m_statReplMisses
                           << " loaded=" << m_statReplLoaded << " hashed=" << m_statReplHashes
                           << " textures=" << m_textureHashes.size() << " pendingUploads=" << m_replPendingUploads.size()
-                          << std::endl;
+                          << " mirrorMs=" << static_cast<int>(g_texreplMirrorSecs * 1000.0)
+                          << " hashMs=" << static_cast<int>(g_texreplHashSecs * 1000.0);
+                for (int pass = 0; pass < 2; ++pass)
+                {
+                    uint64_t *bytes = pass == 0 ? g_texreplMirrorBytes : g_texreplHashBytes;
+                    std::cerr << (pass == 0 ? " mirrorTop=" : " hashTop=");
+                    for (int n = 0; n < 3; ++n)
+                    {
+                        int best = -1;
+                        for (int psm = 0; psm < 64; ++psm)
+                            if (bytes[psm] != 0u && (best < 0 || bytes[psm] > bytes[best]))
+                                best = psm;
+                        if (best < 0)
+                            break;
+                        std::cerr << (n ? "," : "") << "psm" << std::hex << best << std::dec << ":" << (bytes[best] >> 20)
+                                  << "MB";
+                        bytes[best] = 0u;
+                    }
+                }
+                std::memset(g_texreplMirrorBytes, 0, sizeof(g_texreplMirrorBytes));
+                std::memset(g_texreplHashBytes, 0, sizeof(g_texreplHashBytes));
+                g_texreplMirrorSecs = 0.0;
+                g_texreplHashSecs = 0.0;
+                std::cerr << std::endl;
+            }
         }
         PresentationFrame frame;
         if (m_gpu && m_scale > 1u)
