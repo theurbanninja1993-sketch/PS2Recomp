@@ -1247,6 +1247,25 @@ void main()
             if (source)
             {
                 textureSource = source == &color ? feedbackCopy(color) : source->texture;
+                // PS2X_TEXREPL_DUMP_ALL: a texture sampled as a render target
+                // never reaches the matcher, so dump it here too (best effort
+                // from the CPU copy when the target's content is GPU-drawn).
+                static const bool s_dumpTargets =
+                    std::getenv("PS2X_TEXREPL_DUMP_ALL") != nullptr && std::getenv("PS2X_TEXREPL_DUMP") != nullptr;
+                if (s_dumpTargets)
+                {
+                    const GSTex0Reg &tex0 = ctx.tex0;
+                    const uint32_t psm = tex0.psm & 0x3Fu;
+                    const bool palettized = isPalettized(static_cast<uint8_t>(psm));
+                    const bool texa = !palettized && psm != PSM_CT32;
+                    gsrepl::Key key;
+                    key.tex0Hash = hashTextureMemory(state);
+                    key.clutHash = palettized ? hashClut(state) : 0u;
+                    key.bits = gsrepl::makeBits(static_cast<uint8_t>(psm), tex0.tw, tex0.th, texa ? state.texa.ta0 : 0u,
+                                                texa ? state.texa.aem : 0u, texa ? state.texa.ta1 : 0u);
+                    if (m_dumpedTextures.insert(key).second)
+                        dumpReplacementTexture(state, key);
+                }
             }
             else if (replacementsActive() && (replacement = replacementTexture(state)) != 0)
             {
