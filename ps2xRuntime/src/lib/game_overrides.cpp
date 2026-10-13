@@ -412,10 +412,6 @@ namespace
     // the custom stop and Radio Off share value 9 and this flag says which one
     // is selected. The music folder plays while it is set (in a vehicle).
     std::atomic<bool> g_vcsCustomStation{false};
-    // True while the runtime's radio is switched off (D-pad Down held): the game
-    // stays on its silent slot and we simply stop playing the music folder. The
-    // "Radio Off" message is drawn by the runtime, not by the game.
-    std::atomic<bool> g_vcsRadioMuted{false};
     // True while the plain "Radio Off" stop is selected (the custom stop and off
     // share the silent slot, so they need separate flags for the pop-up names).
     std::atomic<bool> g_vcsOffStation{false};
@@ -1181,7 +1177,7 @@ namespace
         // vehicle and the runtime's radio is not switched off.
         ps2MusicStationSetQuery([](const uint8_t *rdram)
                                 { return g_vcsRadioStation.load(std::memory_order_relaxed) == 9u &&
-                                         !g_vcsRadioMuted.load(std::memory_order_relaxed) && vcsPlayerInVehicle(rdram); });
+                                         vcsPlayerInVehicle(rdram); });
 
         g_vcsOrigMovieFinished = runtime.lookupFunction(0x0031A6A8u);
         runtime.replaceFunction(0x0031A6A8u, &vcsMovieFinished);

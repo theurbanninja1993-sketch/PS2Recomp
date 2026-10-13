@@ -2,6 +2,7 @@
 
 extern std::atomic<bool> g_ps2DumpRamRequest; // ps2_runtime.cpp
 #include "runtime/ps2_host_settings.h"
+#include "runtime/ps2_music_station.h"
 #include "ps2_host_backend.h"
 #include <atomic>
 #include <mutex>
@@ -161,6 +162,34 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[2] = 0xFF;
     data[3] = 0xFF;
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+    // Radio on/off: hold D-pad Down on the controller or "M" on the keyboard for
+    // two seconds. This reads the host button directly rather than the layout's
+    // mapping, so it behaves the same on the Classic and Modern layouts.
+    {
+        static double s_holdSince = 0.0;
+        static bool s_fired = false;
+        const int pad = ps2ActiveGamepad();
+        const bool held =
+            (pad >= 0 && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN)) || IsKeyDown(KEY_M);
+        if (held)
+        {
+            const double now = GetTime();
+            if (s_holdSince == 0.0)
+                s_holdSince = now;
+            else if (!s_fired && now - s_holdSince >= 2.0)
+            {
+                s_fired = true;
+                ps2MusicStationSetRadioOff(!ps2MusicStationRadioOff());
+                std::fprintf(stderr, "[pad] radio %s\n", ps2MusicStationRadioOff() ? "off" : "on");
+            }
+        }
+        else
+        {
+            s_holdSince = 0.0;
+            s_fired = false;
+        }
+    }
+
     // Controller buttons still held when the menu closes (Circle / Options
     // closing it) stay with the menu until released.
     static bool s_padHeldByMenu = false;
@@ -220,7 +249,10 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             s_padHeldByMenu = false;
         if (!s_padHeldByMenu)
             for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
-                if (hostDown[b])
+                // The D-pad is deliberately unmapped: it used to duplicate the
+                // left stick. D-pad Down doubles as the radio on/off hold (above).
+                if (hostDown[b] && b != ps2controls::PadUp && b != ps2controls::PadDown &&
+                    b != ps2controls::PadLeft && b != ps2controls::PadRight)
                     press(settings.gamepadMap[context][b]);
 
         float lx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_X);
