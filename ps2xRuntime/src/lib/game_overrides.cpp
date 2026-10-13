@@ -536,14 +536,101 @@ namespace
     const char *const kButtonTokens[VcsBtnTokenCount] = {"L1", "R1", "L2", "R2", "L3", "R3",
                                                          "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "SELECT", "START"};
 
-    struct VcsButtonLabelSet
+    // Host-button names per prompt set (host enum order: A, B, X, Y, LB, RB,
+    // LT, RT, LS, RS, View, Menu, D-pad...). The gamepad sets rename the face
+    // buttons positionally; the PlayStation sets keep the game's own PS2
+    // vocabulary (classic mappings leave their text unchanged).
+    const char *const kHostLabelsXbox[ps2controls::kHostButtonCount] = {
+        "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "LS", "RS", "VIEW", "MENU",
+        "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right"};
+    const char *const kHostLabelsSwitch[ps2controls::kHostButtonCount] = {
+        "B", "A", "Y", "X", "L", "R", "ZL", "ZR", "LS", "RS", "MINUS", "PLUS",
+        "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right"};
+    const char *const kHostLabelsPs[ps2controls::kHostButtonCount] = {
+        "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2", "L3", "R3", "SELECT", "START",
+        "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right"};
+
+    // VcsButtonToken -> PS2 pad button index (ps2controls order).
+    const int kVcsTokenPs2[VcsBtnTokenCount] = {10, 11, 8, 9, 1, 2, 14, 13, 15, 12, 0, 3};
+
+    // Keyboard: the action that best represents `ps2Button` for prompt text.
+    // The button-name strings live in menus, so menu actions come first; the
+    // rest follows the current pad context (on foot / in a vehicle).
+    int vcsKeyboardAction(int ps2Button)
     {
-        const char *label[VcsBtnTokenCount];
-    };
-    const VcsButtonLabelSet kButtonLabelsXbox{{"LB", "RB", "LT", "RT", "LS", "RS", "A", "B", "X", "Y", "VIEW", "MENU"}};
-    // Switch layouts put B at the bottom and A at the right, X at the top and
-    // Y at the left; sticks clicks are left as-is (no short standard label).
-    const VcsButtonLabelSet kButtonLabelsSwitch{{"L", "R", "ZL", "ZR", nullptr, nullptr, "B", "A", "Y", "X", "MINUS", "PLUS"}};
+        namespace pc = ps2controls;
+        const bool driving = pc::currentContext() == pc::InVehicle;
+        switch (ps2Button)
+        {
+        case 14: return pc::MenuAccept; // Cross
+        case 13: return pc::Fire; // Circle
+        case 15: return driving ? pc::MoveBackward : pc::Jump; // Square
+        case 12: return pc::MenuBack; // Triangle
+        case 10: return driving ? pc::Horn : pc::Interact; // L1
+        case 11: return driving ? pc::Handbrake : pc::Aim; // R1
+        case 8:
+        case 9: return pc::NextWeapon; // L2 / R2
+        case 2: return pc::LookBehind; // R3
+        case 0: return pc::CameraMode; // Select
+        default: return pc::kNone; // L3, Start
+        }
+    }
+
+    // The text a token site should show for the current prompt set and
+    // bindings. Empty = leave the game's own text alone.
+    std::string vcsButtonLabel(int token)
+    {
+        namespace pc = ps2controls;
+        const std::string set = ps2CurrentPromptSet();
+        if (set.empty())
+            return {};
+        const int ps2 = kVcsTokenPs2[token];
+        if (set == "keyboard")
+        {
+            const int action = vcsKeyboardAction(ps2);
+            if (action >= 0)
+            {
+                const auto &keys = ps2HostSettings().keys[action];
+                if (std::string s = pc::promptBindingName(keys[0]); !s.empty())
+                    return s;
+                if (std::string s = pc::promptBindingName(keys[1]); !s.empty())
+                    return s;
+            }
+            return {};
+        }
+        const int host = pc::hostButtonForPs2(ps2, pc::currentContext());
+        if (host == pc::kNone)
+            return {};
+        if (set == "xbox" || set == "steam")
+            return kHostLabelsXbox[host];
+        if (set == "switch")
+            return kHostLabelsSwitch[host];
+        return kHostLabelsPs[host]; // dualsense / dualshock
+    }
+
+    // Changes to the keyboard bindings, gamepad map or pad context invalidate
+    // the applied text (the owner asked for prompts that always match).
+    uint64_t vcsMappingSignature()
+    {
+        const PS2HostSettings &s = ps2HostSettings();
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&h](int v)
+        {
+            h ^= static_cast<uint64_t>(static_cast<uint32_t>(v));
+            h *= 1099511628211ull;
+        };
+        for (int a = 0; a < ps2controls::kActionCount; ++a)
+        {
+            mix(s.keys[a][0]);
+            mix(s.keys[a][1]);
+        }
+        for (int c = 0; c < ps2controls::kContextCount; ++c)
+            for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
+                mix(s.gamepadMap[c][b]);
+        mix(static_cast<int>(s.gamepadLayout));
+        mix(ps2controls::currentContext());
+        return h;
+    }
 
     struct VcsButtonTextSite
     {
@@ -555,13 +642,64 @@ namespace
     };
     std::vector<VcsButtonTextSite> g_vcsButtonSites;
     std::unordered_set<uint32_t> g_vcsButtonAddrs;
+    // Strings that embed the PS2 face-button symbols as text tokens ("Hold
+    // ~X~ to display the map options."). The tokens render as font glyphs, so
+    // console sets need no rewrite; the keyboard set gets the bound key names
+    // because one keycap cannot stand for the menu meaning (ENTER, not W).
+    struct VcsMenuPromptSite
+    {
+        uint32_t addr = 0;
+        std::string original;
+    };
+    std::vector<VcsMenuPromptSite> g_vcsMenuPromptSites;
+    std::unordered_set<uint32_t> g_vcsMenuPromptAddrs;
     std::string g_vcsButtonAppliedSet = "<init>";
     size_t g_vcsButtonAppliedCount = 0;
+    size_t g_vcsMenuPromptAppliedCount = 0;
+    uint64_t g_vcsMappingAppliedSig = 0;
     bool g_vcsButtonLogged = false;
 
     inline uint16_t vcsUtf16At(const uint8_t *rdram, uint32_t a)
     {
         return static_cast<uint16_t>(rdram[a] | (rdram[a + 1] << 8));
+    }
+
+    // A '~X~' / '~O~' token at `tokenAddr`: cache the whole containing string
+    // once (the scanner visits every offset, so embedded tokens are seen too).
+    void vcsTryMenuPromptSite(const uint8_t *rdram, uint32_t tokenAddr)
+    {
+        if (tokenAddr < 0x00100002u)
+            return;
+        const uint16_t sym = vcsUtf16At(rdram, tokenAddr + 2u);
+        if (vcsUtf16At(rdram, tokenAddr + 4u) != '~' || (sym != 'X' && sym != 'O'))
+            return;
+        const uint16_t before = vcsUtf16At(rdram, tokenAddr - 2u);
+        const uint16_t after = vcsUtf16At(rdram, tokenAddr + 6u);
+        const bool okBefore = before == 0u || before == ' ' || before == '(';
+        const bool okAfter = after == 0u || after == ' ' || after == '.' || after == ')' || after == ',' ||
+                             after == '!' || after == '+' || after == '?';
+        if (!okBefore || !okAfter)
+            return;
+        uint32_t start = tokenAddr;
+        for (int back = 0; back < 160 && vcsUtf16At(rdram, start - 2u) != 0u; ++back)
+            start -= 2u;
+        if (start < 0x00100000u)
+            return;
+        if (!g_vcsMenuPromptAddrs.insert(start).second || g_vcsMenuPromptSites.size() >= 192u)
+            return;
+        VcsMenuPromptSite site;
+        site.addr = start;
+        for (int i = 0; i < 160; ++i)
+        {
+            const uint16_t c = vcsUtf16At(rdram, start + static_cast<uint32_t>(i) * 2u);
+            if (c == 0u)
+                break;
+            site.original.push_back(static_cast<char>(c < 256u ? c : '?'));
+        }
+        if (site.original.size() >= 160u || (site.original.find("~X~") == std::string::npos &&
+                                             site.original.find("~O~") == std::string::npos))
+            return;
+        g_vcsMenuPromptSites.push_back(std::move(site));
     }
 
     void vcsFindButtonText(const uint8_t *rdram)
@@ -573,10 +711,17 @@ namespace
         if (s_cooldown-- > 0)
             return;
         s_cooldown = 60;
-        // One pass over RAM. Cheap first-char filter keeps it fast.
+        // One pass over RAM. Cheap first-char filter keeps it fast. '~' finds
+        // the embedded menu tokens (~X~ / ~O~), which sit anywhere in their
+        // string, so that branch walks back to the string start itself.
         for (uint32_t a = 0x00100000u; a + 128u < PS2_RAM_SIZE; a += 2u)
         {
             const uint16_t first = vcsUtf16At(rdram, a);
+            if (first == '~')
+            {
+                vcsTryMenuPromptSite(rdram, a);
+                continue;
+            }
             if (first != 'L' && first != 'R' && first != 'C' && first != 'S' && first != 'T')
                 continue;
             int token = -1, tokenLen = 0;
@@ -648,28 +793,43 @@ namespace
         if (!g_vcsStationNames.found) // waits for the loaded GXT
             return;
         vcsFindButtonText(rdram);
-        if (g_vcsButtonSites.empty())
+        if (g_vcsButtonSites.empty() && g_vcsMenuPromptSites.empty())
             return;
         const std::string set = ps2CurrentPromptSet();
-        if (set == g_vcsButtonAppliedSet && g_vcsButtonSites.size() == g_vcsButtonAppliedCount)
+        const uint64_t sig = vcsMappingSignature();
+        if (set == g_vcsButtonAppliedSet && g_vcsButtonSites.size() == g_vcsButtonAppliedCount &&
+            g_vcsMenuPromptSites.size() == g_vcsMenuPromptAppliedCount && sig == g_vcsMappingAppliedSig)
             return; // nothing new; sites can appear later with their menus
-        const VcsButtonLabelSet *labels = nullptr;
-        if (set == "xbox" || set == "steam")
-            labels = &kButtonLabelsXbox;
-        else if (set == "switch")
-            labels = &kButtonLabelsSwitch;
-        // dualsense / dualshock / keyboard / Original: the game's own text stays.
         for (VcsButtonTextSite &site : g_vcsButtonSites)
         {
-            const char *label = labels ? labels->label[site.token] : nullptr;
+            const std::string label = vcsButtonLabel(site.token);
             uint16_t buf[128];
             int n = 0;
-            if (label != nullptr)
-                for (const char *p = label; *p != 0 && n < 120; ++p)
-                    buf[n++] = static_cast<uint16_t>(static_cast<uint8_t>(*p));
-            const int tailFrom = label != nullptr ? site.tokenLen : 0;
-            for (int i = tailFrom; i < site.originalLen && n < 120; ++i)
-                buf[n++] = site.original[i];
+            if (!label.empty())
+            {
+                for (char ch : label)
+                    if (n < 120)
+                        buf[n++] = static_cast<uint16_t>(static_cast<uint8_t>(ch));
+                for (int i = site.tokenLen; i < site.originalLen && n < 120; ++i)
+                    buf[n++] = site.original[i];
+                if (n > site.originalLen && static_cast<int>(label.size()) <= site.originalLen)
+                {
+                    // A longer label ("BKSP" for "L2"): keep just the label
+                    // rather than truncating the sentence.
+                    n = 0;
+                    for (char ch : label)
+                        if (n < 120)
+                            buf[n++] = static_cast<uint16_t>(static_cast<uint8_t>(ch));
+                }
+                if (n > site.originalLen)
+                    n = -1; // does not fit: leave the game's own text
+            }
+            if (n < 0 || label.empty())
+            {
+                n = 0;
+                for (int i = 0; i < site.originalLen && n < 120; ++i)
+                    buf[n++] = site.original[i];
+            }
             buf[n] = 0;
             for (int i = 0; i <= site.originalLen; ++i)
             {
@@ -678,11 +838,65 @@ namespace
                 rdram[site.addr + static_cast<uint32_t>(i) * 2u + 1u] = static_cast<uint8_t>(v >> 8);
             }
         }
+        // Menu strings that embed the symbol tokens: the keyboard's keycap
+        // glyph stands for the gameplay meaning, so rewrite the text to the
+        // key that works on that screen (ENTER on the map options, ...).
+        for (VcsMenuPromptSite &site : g_vcsMenuPromptSites)
+        {
+            std::string text = site.original;
+            if (set == "keyboard")
+            {
+                auto replaceAll = [](std::string &s, const std::string &from, const std::string &to)
+                {
+                    bool any = false;
+                    for (size_t pos = s.find(from); pos != std::string::npos; pos = s.find(from, pos + to.size()))
+                    {
+                        s.replace(pos, from.size(), to);
+                        any = true;
+                    }
+                    return any;
+                };
+                const std::string cross = vcsButtonLabel(VcsBtnCross);
+                const std::string circle = vcsButtonLabel(VcsBtnCircle);
+                bool changed = false;
+                if (!cross.empty())
+                    changed |= replaceAll(text, "~X~", cross);
+                if (!circle.empty())
+                    changed |= replaceAll(text, "~O~", circle);
+                if (changed && text.size() > site.original.size())
+                {
+                    // The rewrite must fit the original allocation; try
+                    // shorter phrasings ("...to display map options.").
+                    std::string alt = text;
+                    replaceAll(alt, " the ", " ");
+                    if (alt.size() > site.original.size())
+                    {
+                        std::string trimmed = alt;
+                        while (!trimmed.empty() && trimmed.back() == '.')
+                            trimmed.pop_back();
+                        alt = std::move(trimmed);
+                    }
+                    text = alt.size() <= site.original.size() ? alt : site.original;
+                }
+                else if (!changed)
+                {
+                    text = site.original;
+                }
+            }
+            for (size_t i = 0; i <= site.original.size(); ++i)
+            {
+                const uint16_t v = i < text.size() ? static_cast<uint16_t>(static_cast<uint8_t>(text[i])) : 0u;
+                rdram[site.addr + static_cast<uint32_t>(i) * 2u] = static_cast<uint8_t>(v & 0xFFu);
+                rdram[site.addr + static_cast<uint32_t>(i) * 2u + 1u] = static_cast<uint8_t>(v >> 8);
+            }
+        }
         g_vcsButtonAppliedSet = set;
         g_vcsButtonAppliedCount = g_vcsButtonSites.size();
+        g_vcsMenuPromptAppliedCount = g_vcsMenuPromptSites.size();
+        g_vcsMappingAppliedSig = sig;
         if (std::getenv("PS2X_PROMPT_TRACE") != nullptr)
-            std::cerr << "[prompts] button-name text -> " << (set.empty() ? "original" : set) << " (" << g_vcsButtonSites.size()
-                      << " strings)" << std::endl;
+            std::cerr << "[prompts] button-name text -> " << (set.empty() ? "original" : set) << " ("
+                      << g_vcsButtonSites.size() << " tokens, " << g_vcsMenuPromptSites.size() << " menu strings)" << std::endl;
     }
 
     uint32_t vcsRadioEntity(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

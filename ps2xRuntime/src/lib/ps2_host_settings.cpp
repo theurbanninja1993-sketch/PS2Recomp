@@ -33,6 +33,45 @@ namespace ps2controls
 
     namespace
     {
+        std::atomic<int> g_currentContext{OnFoot};
+    }
+
+    void setCurrentContext(int context)
+    {
+        g_currentContext.store(context, std::memory_order_relaxed);
+    }
+
+    int currentContext()
+    {
+        return g_currentContext.load(std::memory_order_relaxed);
+    }
+
+    int hostButtonForPs2(int ps2Button, int context)
+    {
+        if (ps2Button < 0 || ps2Button >= kPs2ButtonCount)
+            return kNone;
+        if (context < 0 || context >= kContextCount)
+            context = OnFoot;
+        int classic[kContextCount][kHostButtonCount];
+        presetGamepad(GamepadLayout::Classic, classic);
+        const PS2HostSettings &settings = ps2HostSettings();
+        int first = kNone, remapped = kNone;
+        for (int b = 0; b < kHostButtonCount; ++b)
+        {
+            if (settings.gamepadMap[context][b] != ps2Button)
+                continue;
+            if (first == kNone)
+                first = b;
+            // A button that only serves this PS2 input in a remapped layout is
+            // the more honest answer ("Modern": RT fires, not B).
+            if (remapped == kNone && settings.gamepadMap[context][b] != classic[context][b])
+                remapped = b;
+        }
+        return remapped != kNone ? remapped : first;
+    }
+
+    namespace
+    {
         enum Ps2 : int
         {
             Select = 0, L3, R3, Start, Up, Right, Down, Left, L2, R2, L1, R1, Triangle, Circle, Cross, Square
@@ -162,6 +201,54 @@ namespace ps2controls
         case KEY_PERIOD: return ".";
         case KEY_SLASH: return "/";
         default: return "Key " + std::to_string(binding);
+        }
+    }
+
+    std::string promptBindingName(int binding)
+    {
+        if (binding == kNone)
+            return {};
+        if (binding >= kMouseBase)
+        {
+            static const char *kMouse[] = {"LMB", "RMB", "MMB", "M4", "M5", "M6", "M7"};
+            const int button = binding - kMouseBase;
+            return button >= 0 && button < 7 ? kMouse[button] : std::string("MOUSE");
+        }
+        if ((binding >= KEY_A && binding <= KEY_Z) || (binding >= KEY_ZERO && binding <= KEY_NINE))
+            return std::string(1, static_cast<char>(binding));
+        if (binding >= KEY_F1 && binding <= KEY_F12)
+            return "F" + std::to_string(binding - KEY_F1 + 1);
+        if (binding >= KEY_KP_0 && binding <= KEY_KP_9)
+            return "NUM " + std::to_string(binding - KEY_KP_0);
+        switch (binding)
+        {
+        case KEY_SPACE: return "SPACE";
+        case KEY_ESCAPE: return "ESC";
+        case KEY_ENTER:
+        case KEY_KP_ENTER: return "ENTER";
+        case KEY_TAB: return "TAB";
+        case KEY_BACKSPACE: return "BKSP";
+        case KEY_LEFT_SHIFT:
+        case KEY_RIGHT_SHIFT: return "SHIFT";
+        case KEY_LEFT_CONTROL:
+        case KEY_RIGHT_CONTROL: return "CTRL";
+        case KEY_LEFT_ALT:
+        case KEY_RIGHT_ALT: return "ALT";
+        case KEY_UP: return "UP";
+        case KEY_DOWN: return "DOWN";
+        case KEY_LEFT: return "LEFT";
+        case KEY_RIGHT: return "RIGHT";
+        case KEY_MINUS: return "-";
+        case KEY_EQUAL: return "=";
+        case KEY_LEFT_BRACKET: return "[";
+        case KEY_RIGHT_BRACKET: return "]";
+        case KEY_BACKSLASH: return "\\";
+        case KEY_SEMICOLON: return ";";
+        case KEY_APOSTROPHE: return "'";
+        case KEY_COMMA: return ",";
+        case KEY_PERIOD: return ".";
+        case KEY_SLASH: return "/";
+        default: return "KEY";
         }
     }
 }

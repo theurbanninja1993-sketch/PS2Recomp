@@ -470,6 +470,26 @@ texture packs from `mods/`, Windows build under Wine.
      Menu directions are bound to the arrow keys). The font-atlas cells
      use the same keycaps. `keyboard/` = 6 textures + sheet + previews +
      manifest; no controller diagram (intentional).
+   - **Button-name text follows the live mappings (2026-10-13 late).** The
+     GXT button words in menus (the map screen's "L1 and R1 buttons",
+     Empire menus' "CROSS - ...", the controls lists) now resolve at
+     display time: gamepad sets ask `ps2controls::hostButtonForPs2(ps2)` -
+     the host button that currently reaches that PS2 button in the current
+     context, preferring Modern/custom remaps over the classic identity
+     (so "Modern" shows RT for fire, not B); keyboard sets use the action
+     that presses it (`vcsKeyboardAction`: menu actions first - the map
+     options line reads ENTER - then the on-foot / in-vehicle action of the
+     pad context). Text is re-applied whenever the prompt set, a binding,
+     the gamepad map/layout or the pad context changes
+     (`vcsMappingSignature`; the pad backend publishes
+     `ps2controls::setCurrentContext`). Keyboard menu strings that embed
+     the symbol tokens ("Hold ~X~ to display the map options.") are
+     rewritten to the bound key name with a fit-check ("Hold ENTER to
+     display map options."); console sets keep the tokens because their
+     glyphs already follow the set. Limitation: the *glyph* textures stay
+     positional (baked per set), so with Modern/custom layouts an icon can
+     still show the classic button - runtime art generation would be the
+     follow-up. `PS2X_PROMPT_TRACE=1` logs the site counts.
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,

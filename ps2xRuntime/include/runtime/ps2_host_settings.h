@@ -21,6 +21,13 @@ namespace ps2controls
         PadUp, PadDown, PadLeft, PadRight, kHostButtonCount
     };
     const char *hostButtonName(int button);
+    // The host button that currently reaches `ps2Button` in `context`,
+    // preferring remapped buttons over the classic identity (kNone if none).
+    int hostButtonForPs2(int ps2Button, int context);
+    // Pad context (OnFoot / InVehicle), updated by the pad backend each
+    // frame; button-prompt text re-resolves when it changes.
+    void setCurrentContext(int context);
+    int currentContext();
 
     enum Context : int
     {
@@ -51,6 +58,9 @@ namespace ps2controls
     void defaultKeys(int keys[kActionCount][2]);
     // Display name of a binding ("W", "Mouse Left", "-" for none).
     std::string bindingName(int binding);
+    // Compact binding name for on-screen prompts ("W", "LMB", "ENTER",
+    // "BKSP", "UP"); empty when the binding is unset.
+    std::string promptBindingName(int binding);
 }
 
 // Player-facing host settings (display, mouse), edited in the in-game

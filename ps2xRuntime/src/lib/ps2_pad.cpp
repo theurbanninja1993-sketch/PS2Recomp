@@ -263,6 +263,7 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     }
     const PS2HostSettings &settings = ps2HostSettings();
     const int context = driving ? ps2controls::InVehicle : ps2controls::OnFoot;
+    ps2controls::setCurrentContext(context);
 
     // Gamepad: each host button maps to a PS2 button per context (the
     // Classic / Modern / Custom layout in the settings), sticks as they are.
