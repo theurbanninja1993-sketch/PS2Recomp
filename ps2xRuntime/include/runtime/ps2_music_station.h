@@ -20,13 +20,11 @@ void ps2MusicStationUpdate(const uint8_t *rdram);
 void ps2MusicStationNextTrack();
 void ps2MusicStationRescan();
 
-// The runtime's own radio on/off switch (D-pad Down held for a couple of
-// seconds). While off, the music folder is paused and the runtime shows its own
-// "Radio Off" message - the game has no part in it.
+// The runtime's own radio on/off switch (D-pad Down / M held ~0.75 s). While
+// off, the game is re-tuned to its silent slot (so its own "Radio Off" pop-up
+// shows) and the music folder pauses.
 void ps2MusicStationSetRadioOff(bool off);
 bool ps2MusicStationRadioOff();
-// GetTime() of the last on/off switch, for the overlay message.
-double ps2MusicStationRadioOffSince();
 
 std::string ps2MusicStationDirectory();
 size_t ps2MusicStationTrackCount();

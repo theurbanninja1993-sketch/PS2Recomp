@@ -26,7 +26,6 @@ namespace
     // The runtime's own radio on/off switch (D-pad Down held): set by the pad
     // backend, read by the music update, the game query and the overlay.
     std::atomic<bool> g_radioOff{false};
-    std::atomic<double> g_radioOffSince{0.0};
     bool g_skip = false;
     std::string g_title;
     double g_startedAt = -100.0;
@@ -161,17 +160,11 @@ void ps2MusicStationRescan()
 void ps2MusicStationSetRadioOff(bool off)
 {
     g_radioOff.store(off, std::memory_order_relaxed);
-    g_radioOffSince.store(GetTime(), std::memory_order_relaxed);
 }
 
 bool ps2MusicStationRadioOff()
 {
     return g_radioOff.load(std::memory_order_relaxed);
-}
-
-double ps2MusicStationRadioOffSince()
-{
-    return g_radioOffSince.load(std::memory_order_relaxed);
 }
 
 void ps2MusicStationUpdate(const uint8_t *rdram)

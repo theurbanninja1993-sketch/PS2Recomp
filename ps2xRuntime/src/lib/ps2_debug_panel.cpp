@@ -2244,11 +2244,7 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     double trackStarted = 0.0;
     const std::string track = ps2MusicStationNowPlaying(trackStarted);
     const bool showTrack = !track.empty() && GetTime() - trackStarted < 4.0;
-    // Runtime radio on/off (D-pad Down / M held for two seconds): the game knows
-    // nothing about it (it stays on its silent slot), so we show our own message
-    // for a couple of seconds - the "Radio Off" the game itself would show.
-    const bool showRadioOff = ps2MusicStationRadioOff() && GetTime() - ps2MusicStationRadioOffSince() < 2.0;
-    if (!m_visible && !settingsOpen && !showHint && !showTrack && !showRadioOff)
+    if (!m_visible && !settingsOpen && !showHint && !showTrack)
     {
         return;
     }
@@ -2271,21 +2267,6 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
             ImGui::SetWindowFontScale(scale);
             ImGui::Text("%s", ps2MusicStationName());
             ImGui::TextDisabled("%s", track.c_str());
-        }
-        ImGui::End();
-    }
-    if (showRadioOff && !settingsOpen)
-    {
-        const float scale = std::max(1.0f, static_cast<float>(GetScreenHeight()) / 720.0f);
-        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth()) * 0.5f, 16.0f * scale), ImGuiCond_Always,
-                                ImVec2(0.5f, 0.0f));
-        ImGui::SetNextWindowBgAlpha(0.55f);
-        if (ImGui::Begin("##radio-off", nullptr,
-                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
-                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
-        {
-            ImGui::SetWindowFontScale(scale);
-            ImGui::TextUnformatted("Radio Off");
         }
         ImGui::End();
     }

@@ -258,7 +258,8 @@ texture packs from `mods/`, Windows build under Wine.
      shows "Custom"; the toggle's re-tune shows "Radio Off".
    - **Radio Off toggle (af935e3, a13b850, 83a69dc, f3d6ca3):** D-pad Down
      (host button, both layouts) or `M` held ~0.75 s toggles the runtime
-     radio off/on; a "Radio Off" overlay shows for 2 s. Off = push the
+     radio off/on; the game's own station pop-up shows "Radio Off" (slot 9's
+     name while the runtime radio is off). Off = push the
      game to slot 9 **once** (desired/playing/last bytes + the station
      field), then leave it alone - the game's own update holds the silent
      slot, so no station audio plays while the engine/atmosphere keep going,
