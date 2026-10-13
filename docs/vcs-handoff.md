@@ -308,11 +308,24 @@ texture packs from `mods/`, Windows build under Wine.
      removed earlier at the owner's request).
    - `ps2_music_station.cpp` runs the folder (raylib streams; F10 skips a
      track, Mods tab has on/off, volume, shuffle, open folder, rescan).
-   - Remaining (owner may or may not want these): the frontend audio page's
-     RADIO STATION selector only cycles the nine real stations (S9/S10
-     unreachable - would need an extra selector state); a controller
-     next-track button (F10 only); pausing the music with the game pause;
-     a settings toggle for Radio Off.
+   - Done (2026-10-13, commit 19ad92f): track skip on D-pad Right/Left single
+     press (F10 = keyboard next) with real previous-track support; the music
+     pauses with the game's own pause menu and resumes on the same track
+     (pause flag **0x4CD2AC**, set 1/0 by the open/close handlers at
+     0x2F4D64 / 0x2F4D70 on the START press, gates the station query); a
+     Mods tab settings toggle for the Radio Off hold (`radio_off_enabled`);
+     input device prompts (Xbox / Steam / PlayStation / keyboard wording in
+     the Mods music help, now-playing overlay, settings footer).
+   - Remaining (one item): the **frontend audio page selector** for the
+     custom stop. `FRONTEND/DEFAULT/AUDPG.PSP` declares the radio selector as
+     `<9c ad="10">` (= state count) with `S0..S9 = FEA_FM0..8 + FEA_NON`, and
+     c81bf35 renames the 10th key `FEA_NON -> FEA_CSS` in the read buffer
+     (CD.cpp `readRegisteredCdSectors`), so the page side should already
+     offer a named 10th state. Open: (a) does the in-game audio menu show /
+     cycle the 10th option (an owner on-screen check is fastest), (b) does
+     choosing it carry into the radio - the option list/hook is ELF-side
+     (HOOK_USE_CUSTOM_TRACKS, index 12 in `FUN_003e2530`), (c) when tuned via
+     the menu, set the station the way the L1/R1 path does (slot 9 + flags).
 3. **Texture-pack overhead:** the CPU mirror of texture uploads
    (`GSCpuBackend::UploadImage` → `GSMem::WriteRow`) still costs the render
    thread ~+15 pts in streaming scenes. Next lever: a lazy mirror keyed by
