@@ -1254,11 +1254,17 @@ namespace
     // CCam vectors (Front +0x10, Source +0x20 / +0x50, Up +0x60) the look
     // offset rotated for this frame's rendering; put back before the next
     // camera update so the game's camera logic never builds on the offset.
+    // The camera vectors (Front +0x10, Source +0x20, its copy +0x50, Up
+    // +0x60) our rotation replaced, plus what we left there: the game's own
+    // camera update must see its own values again, but only if it has not
+    // rewritten them itself in the meantime (comparing the written bytes is
+    // exact, unlike a frame-count guess which depends on how fast the host
+    // presents relative to the game's camera updates).
     struct VcsCamBackup
     {
         uint32_t cam = 0;
-        uint64_t frame = 0; // presented frame it was taken (stale ones are dropped)
-        uint8_t bytes[0x60] = {};
+        uint8_t original[0x60] = {};
+        uint8_t written[0x60] = {};
     };
     VcsCamBackup g_vcsCamBackup[3];
 
@@ -1306,19 +1312,18 @@ namespace
             const char *path = std::getenv("PS2X_CARLOOK_DEBUG");
             return path ? std::fopen(path, "a") : nullptr;
         }();
-        const uint64_t now = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
         for (VcsCamBackup &backup : g_vcsCamBackup)
         {
-            if (backup.cam != 0u && now <= backup.frame + 4u)
-            {
-                if (s_log)
-                    std::fprintf(s_log, "f=%llu restore cam=0x%x age=%llu\n", (unsigned long long)now, backup.cam,
-                                 (unsigned long long)(now - backup.frame));
-                std::memcpy(rdram + backup.cam + 0x10u, backup.bytes, sizeof(backup.bytes));
-            }
-            else if (backup.cam != 0u && s_log)
-                std::fprintf(s_log, "f=%llu restore SKIPPED cam=0x%x age=%llu (vectors left rotated!)\n",
-                             (unsigned long long)now, backup.cam, (unsigned long long)(now - backup.frame));
+            if (backup.cam == 0u)
+                continue;
+            const bool untouched =
+                std::memcmp(rdram + backup.cam + 0x10u, backup.written, sizeof(backup.written)) == 0;
+            if (s_log)
+                std::fprintf(s_log, "f=%llu restore cam=0x%x %s\n",
+                             (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), backup.cam,
+                             untouched ? "applied" : "skipped (the game rewrote them)");
+            if (untouched)
+                std::memcpy(rdram + backup.cam + 0x10u, backup.original, sizeof(backup.original));
             backup.cam = 0u;
         }
     }
@@ -1526,8 +1531,7 @@ namespace
 
         VcsCamBackup &backup = g_vcsCamBackup[0];
         backup.cam = cam;
-        backup.frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
-        std::memcpy(backup.bytes, rdram + cam + 0x10u, sizeof(backup.bytes));
+        std::memcpy(backup.original, rdram + cam + 0x10u, sizeof(backup.original));
         for (uint32_t off : {0x10u, 0x60u}) // Front, Up
         {
             float *v = c + off / 4u;
@@ -1558,7 +1562,7 @@ namespace
             const char *env = std::getenv("PS2X_CARLOOK_WALLS");
             return env == nullptr || std::atoi(env) != 0;
         }();
-        if (s_wallCheck && g_vcsCarWall.clamp && g_vcsCarWall.cam == cam && frame <= g_vcsCarWall.frame + 4u)
+        if (s_wallCheck && g_vcsCarWall.clamp && g_vcsCarWall.cam == cam)
         {
             for (uint32_t off : {0x20u, 0x50u})
                 std::memcpy(c + off / 4u, g_vcsCarWall.position, sizeof(g_vcsCarWall.position));
@@ -1568,6 +1572,13 @@ namespace
                 std::memcpy(c + 0x60 / 4u, g_vcsCarWall.up, sizeof(g_vcsCarWall.up));
             }
         }
+        // What we leave behind, so the next camera update can tell whether the
+        // game has rewritten these fields itself.
+        std::memcpy(backup.written, rdram + cam + 0x10u, sizeof(backup.written));
+        if (s_log)
+            std::fprintf(s_log, "f=%llu rotate cam=0x%x yaw=%.3f pitch=%.3f clamp=%d pos=(%.2f,%.2f,%.2f)\n",
+                         (unsigned long long)frame, cam, look.yaw, look.pitch,
+                         (s_wallCheck && g_vcsCarWall.clamp && g_vcsCarWall.cam == cam) ? 1 : 0, c[8], c[9], c[10]);
     }
 
     void vcsMeasureCarWall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t cam)
