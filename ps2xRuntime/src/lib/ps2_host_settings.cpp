@@ -105,10 +105,10 @@ namespace ps2controls
         // Menus keep the classic map in every layout: menu navigation must not
         // depend on the gameplay bindings (and vice versa). One modern
         // convention on top: B is the back button. The game's own menus read
-        // Triangle as back, so B sends Triangle and Y takes over Circle.
+        // Triangle as back, so B sends Triangle; X and Y keep the base game's
+        // Square (target) and Triangle (legend) roles on the map.
         int *menus = map[Menus];
         menus[PadB] = Triangle;
-        menus[PadY] = Circle;
     }
 
     const char *actionName(int action)
