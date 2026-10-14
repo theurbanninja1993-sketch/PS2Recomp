@@ -2619,7 +2619,9 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 changed |= ImGui::RadioButton("Stretch", &aspect, 2);
                 settings.aspect = static_cast<PS2HostSettings::Aspect>(aspect);
                 if (settings.aspect == PS2HostSettings::Aspect::Widescreen)
-                    ImGui::TextDisabled("Also set Widescreen ON in the game's Display options.");
+                    ImGui::TextDisabled("The game's own Widescreen option is switched on automatically.");
+                else
+                    ImGui::TextDisabled("The game's own Widescreen option is switched off automatically.");
 
                 changed |= ImGui::Checkbox("Smooth scaling", &settings.smoothFiltering);
 

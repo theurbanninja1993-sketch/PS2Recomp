@@ -1507,6 +1507,30 @@ namespace
 
     // Cutscenes keep the original framing: TheCamera.Cams[0].Mode
     // (0x6F4540) is MODE_FLYBY (17) while one plays (4 = on foot).
+    // The game's own widescreen option follows the port's aspect setting
+    // (16:9 turns it on, 4:3 / Stretch turn it off), so the owner does not
+    // have to set both. The flag is a game global (Display options) still to
+    // be located by RAM diffing F8 dumps with the option on and off;
+    // PS2X_WIDESCREEN_FLAG=<hex> overrides the address for testing. Zero =
+    // not found yet: nothing is written.
+    void vcsApplyWidescreen(uint8_t *rdram)
+    {
+        static const uint32_t s_flag = []()
+        {
+            if (const char *env = std::getenv("PS2X_WIDESCREEN_FLAG"))
+                return static_cast<uint32_t>(std::strtoul(env, nullptr, 16));
+            return 0u;
+        }();
+        if (s_flag == 0u || static_cast<size_t>(s_flag) + 4u > PS2_RAM_SIZE)
+            return;
+        const bool on = ps2HostSettings().aspect == PS2HostSettings::Aspect::Widescreen;
+        const uint32_t value = on ? 1u : 0u;
+        uint32_t current = 0;
+        std::memcpy(&current, rdram + s_flag, 4);
+        if (current != value)
+            std::memcpy(rdram + s_flag, &value, 4);
+    }
+
     bool vcsCutsceneCamera(const uint8_t *rdram)
     {
         uint16_t mode = 0;
@@ -1598,6 +1622,8 @@ namespace
         vcsKeepCustomName(rdram);
         // Button-name text ("L1", "CROSS", ...) follows the prompt set too.
         vcsApplyButtonText(rdram);
+        // The game's widescreen option follows the port's aspect setting.
+        vcsApplyWidescreen(rdram);
         // Radio Off re-tune: push the game to its silent slot exactly once, on
         // the first frame after the radio switches off, then leave the station
         // alone - the game's own update then holds the silent slot (no station
