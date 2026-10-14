@@ -239,6 +239,12 @@ inline uint8_t ps2PathWatchExtractByteFromWrite(uint32_t writeAddr, uint32_t wat
     return static_cast<uint8_t>((valueHi >> ((byteIndex - 8u) * 8u)) & 0xFFu);
 }
 
+// PS2X_WATCH_BOOL_WRITES: log every guest store of a small value (0/1) into
+// the game's data range, with the writing PC. Used to pin down game flags
+// (e.g. the display settings the frontend reads back). Debug aid only.
+extern bool g_ps2TraceBoolWrites;
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+
 inline void ps2TraceGuestWrite(uint8_t *rdram,
                                uint32_t guestAddr,
                                uint32_t size,
@@ -248,13 +254,16 @@ inline void ps2TraceGuestWrite(uint8_t *rdram,
                                const R5900Context *ctx)
 {
     (void)rdram;
-    (void)guestAddr;
-    (void)size;
-    (void)valueLo;
     (void)valueHi;
-    (void)op;
-    (void)ctx;
-    // TODO we dont need this anymore so on next release it will be deleted
+    if (!g_ps2TraceBoolWrites || size > 4u || valueLo > 1u)
+        return;
+    const uint32_t addr = guestAddr & PS2_RAM_MASK;
+    if (addr < 0x00100000u || addr >= 0x02000000u)
+        return;
+    static FILE *s_out = std::fopen("boolwrites.log", "a");
+    std::fprintf(s_out != nullptr ? s_out : stderr, "[ww] f=%llu pc=0x%08x %s addr=0x%06x val=%llu\n",
+                 (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed),
+                 ctx != nullptr ? ctx->pc : 0u, op, addr, (unsigned long long)valueLo);
 }
 
 extern uint32_t g_ps2WriteWatchAddr;

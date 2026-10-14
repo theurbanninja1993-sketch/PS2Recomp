@@ -1400,6 +1400,7 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
 
 
 std::atomic<bool> g_ps2DumpRamRequest{false}; // F8 RAM snapshot (ps2_pad.cpp)
+bool g_ps2TraceBoolWrites = std::getenv("PS2X_WATCH_BOOL_WRITES") != nullptr;
 
 #if defined(__linux__)
 // PS2X_PC_SAMPLE=<file>[,<startFrame>]: SIGPROF-based sampling of the guest PC on
