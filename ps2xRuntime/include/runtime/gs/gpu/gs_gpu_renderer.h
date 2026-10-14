@@ -162,6 +162,7 @@ namespace gsgpu
         {
             GLuint texture = 0;
             bool requested = false;
+            uint64_t stamp = 0; // the file's stamp the texture was loaded from
         };
         struct HashedTexture
         {

@@ -176,7 +176,8 @@ namespace
                     if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
                     {
                         overridden += index->files.find(*key) != index->files.end() ? 1u : 0u;
-                        index->files[*key] = it->path().string();
+                        const std::string path = it->path().string();
+                        index->files[*key] = gsrepl::Entry{path, gsrepl::stampForFile(path), true};
                         ++count;
                     }
                 }
@@ -200,7 +201,8 @@ namespace
                         continue;
                     if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
                     {
-                        index->files[*key] = it->path().string();
+                        const std::string path = it->path().string();
+                        index->files[*key] = gsrepl::Entry{path, gsrepl::stampForFile(path), true};
                         ++count;
                     }
                 }
@@ -276,7 +278,10 @@ void ps2ModsRefresh()
             {
                 ++mod.textures;
                 if (mod.enabled)
-                    index->files[*key] = it->path().string();
+                {
+                    const std::string path = it->path().string();
+                    index->files[*key] = gsrepl::Entry{path, gsrepl::stampForFile(path), false};
+                }
             }
             else if (lowerEndsWith(fileName, ".pnach"))
             {

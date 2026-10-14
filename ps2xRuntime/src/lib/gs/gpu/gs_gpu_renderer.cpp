@@ -2020,10 +2020,26 @@ void main()
             m_replResultCount.store(0u, std::memory_order_relaxed);
         }
         m_replPendingUploads.clear();
-        for (auto &entry : m_replacements)
-            if (entry.second.texture != 0)
-                gl.glDeleteTextures(1, &entry.second.texture);
-        m_replacements.clear();
+        // Keep the uploads whose file is unchanged: rewriting the prompt art
+        // must not reload the (possibly huge) texture pack with it.
+        for (auto it = m_replacements.begin(); it != m_replacements.end();)
+        {
+            bool keep = false;
+            if (m_replIndex)
+            {
+                const auto file = m_replIndex->files.find(it->first);
+                keep = file != m_replIndex->files.end() && it->second.texture != 0 &&
+                       file->second.stamp == it->second.stamp;
+            }
+            if (keep)
+            {
+                ++it;
+                continue;
+            }
+            if (it->second.texture != 0)
+                gl.glDeleteTextures(1, &it->second.texture);
+            it = m_replacements.erase(it);
+        }
         m_textureHashes.clear();
         m_clutHashKey = ~0ull;
         if (!replacementsActive())
@@ -2412,17 +2428,17 @@ void main()
         if (!replacement.requested)
         {
             replacement.requested = true;
-            // Small replacements (the prompt art) load inline, so a pad
-            // context change swaps the prompts within the same frame instead
-            // of showing the previous keys until the worker catches up. The
-            // worker handles the big texture-pack files in the background.
-            std::error_code sizeEc;
-            const auto fileSize = fs::file_size(file->second, sizeEc);
-            if (!sizeEc && fileSize <= 256u * 1024u)
+            replacement.stamp = file->second.stamp;
+            // The prompt art loads inline, so a pad context change swaps the
+            // prompts within the same frame instead of showing the previous
+            // keys until the worker catches up. Pack textures always load on
+            // the worker: loading them here would stall the render thread
+            // while new textures stream in.
+            if (file->second.inlineLoad)
             {
                 gsrepl::Image image;
                 std::string error;
-                if (gsrepl::loadImage(file->second, image, error) && !image.levels.empty())
+                if (gsrepl::loadImage(file->second.path, image, error) && !image.levels.empty())
                 {
                     GL &gl = m_context.gl;
                     GLuint texture = 0;
@@ -2449,12 +2465,12 @@ void main()
                     ++m_statReplLoaded;
                     return replacement.texture;
                 }
-                std::cerr << "[gs:gpu] replacement " << file->second << ": " << error << std::endl;
+                std::cerr << "[gs:gpu] replacement " << file->second.path << ": " << error << std::endl;
                 return 0; // stays "requested": the game's own art shows
             }
             {
                 std::lock_guard lock(m_replMutex);
-                m_replRequests.emplace_back(key, file->second);
+                m_replRequests.emplace_back(key, file->second.path);
             }
             m_replCv.notify_one();
         }

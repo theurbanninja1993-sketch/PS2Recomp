@@ -45,10 +45,26 @@ namespace gsrepl
     // level variants are not supported (ignored).
     std::optional<Key> parseFileName(const std::string &fileName);
 
+    // Size + write time of a replacement file. The renderer keeps an
+    // uploaded replacement while this is unchanged, so rewriting the prompt
+    // art no longer reloads every texture-pack file.
+    uint64_t stampForFile(const std::string &path);
+
+    // One replacement texture of the enabled mods.
+    struct Entry
+    {
+        std::string path;
+        uint64_t stamp = 0;
+        // The prompt art: small files that load inline on the render thread at
+        // the first draw that needs them (a context flip must not show the old
+        // keys). Pack textures always load on the worker.
+        bool inlineLoad = false;
+    };
+
     // Every replacement texture of the enabled mods.
     struct Index
     {
-        std::unordered_map<Key, std::string, KeyHash> files;
+        std::unordered_map<Key, Entry, KeyHash> files;
     };
 
     // The index in use (null or empty: no replacement). Swapped by the mod

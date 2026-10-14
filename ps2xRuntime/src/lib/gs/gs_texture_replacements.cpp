@@ -8,6 +8,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 
@@ -221,6 +222,17 @@ namespace gsrepl
     {
         std::lock_guard lock(g_mutex);
         return g_index;
+    }
+
+    uint64_t stampForFile(const std::string &path)
+    {
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(path, ec);
+        if (ec)
+            return 0u;
+        const auto time = std::filesystem::last_write_time(path, ec);
+        const uint64_t t = ec ? 0u : static_cast<uint64_t>(time.time_since_epoch().count());
+        return (t * 1000003ull) ^ static_cast<uint64_t>(size);
     }
 
     void setCurrent(std::shared_ptr<const Index> index)
