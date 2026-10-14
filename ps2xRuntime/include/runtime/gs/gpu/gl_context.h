@@ -10,6 +10,7 @@
 #define GSGPU_DEFINED_APIENTRY
 #endif
 #include <GL/glcorearb.h>
+#include <atomic>
 
 #include <string>
 
@@ -108,6 +109,14 @@ namespace gsgpu
 #undef GSGPU_DECLARE
     };
 
+    // The host window's native GL context (raylib's), published by the main
+    // thread before the renderer starts. When set, the renderer creates its
+    // context in that context's share group, so the composed display texture
+    // can be handed to the host and drawn directly - no readback, no upload.
+    // Linux: GLXContext + Display*, Windows: HGLRC + HDC.
+    extern std::atomic<uintptr_t> g_hostSharedGlContext;
+    extern std::atomic<uintptr_t> g_hostSharedGlDisplay;
+
     // Owns the context. create() makes it current on the calling thread and
     // loads `gl`; all GL use must stay on that thread.
     class GLContext
@@ -124,9 +133,17 @@ namespace gsgpu
 
         GL gl;
 
+        // True when the context shares the host window's share group, so the
+        // renderer's textures can be drawn by the host.
+        [[nodiscard]] bool sharedWithHost() const { return m_shared; }
+
     private:
+        bool createGlxShared(std::string &error);
         void *m_display = nullptr; // EGLDisplay (Windows: the hidden HWND)
         void *m_context = nullptr; // EGLContext (Windows: HGLRC)
         void *m_dc = nullptr;      // Windows: the window's HDC
+        void *m_window = nullptr;  // GLX: the hidden X window (the drawable)
+        void *m_glxOwnDisplay = nullptr; // GLX: our own X connection
+        bool m_shared = false;
     };
 }

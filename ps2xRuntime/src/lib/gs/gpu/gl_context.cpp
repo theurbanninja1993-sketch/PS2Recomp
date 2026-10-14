@@ -8,6 +8,12 @@
 
 #include "runtime/gs/gpu/gl_context.h"
 
+namespace gsgpu
+{
+    std::atomic<uintptr_t> g_hostSharedGlContext{0u};
+    std::atomic<uintptr_t> g_hostSharedGlDisplay{0u};
+}
+
 #if defined(_WIN32)
 
 namespace gsgpu
@@ -102,14 +108,24 @@ namespace gsgpu
                                       WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
             return createContextAttribs ? createContextAttribs(dc, nullptr, attributes) : nullptr;
         };
-        HGLRC context = nullptr;
+        // Share with the host window's context when it published one (the
+        // game): the composed display texture can then be drawn by the host
+        // with no readback or re-upload.
+        auto shareContext = reinterpret_cast<HGLRC>(g_hostSharedGlContext.load(std::memory_order_relaxed));
         const int requestedMinor = []()
         {
             const char *env = std::getenv("PS2X_GL_VERSION");
             return env != nullptr ? std::atoi(env) : 6;
         }();
+        HGLRC context = nullptr;
         for (int minor = requestedMinor; minor >= 5 && context == nullptr; --minor)
-            context = createCoreContext(4, minor);
+            context = createContextAttribs ? [&]
+            {
+                const int attributes[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, minor,
+                                          WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
+                return createContextAttribs(dc, shareContext, attributes);
+            }() : nullptr;
+        m_shared = context != nullptr && shareContext != nullptr;
         wglMakeCurrent(nullptr, nullptr);
         wglDeleteContext(legacy);
         if (!context || !wglMakeCurrent(dc, context))
@@ -158,6 +174,8 @@ namespace gsgpu
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <GL/glx.h>
+#include <X11/Xlib.h>
 
 namespace gsgpu
 {
@@ -182,8 +200,103 @@ namespace gsgpu
         destroy();
     }
 
+    // A GLX context sharing the host window's (raylib's, X11/GLX): the
+    // renderer's composed display texture can then be drawn by the host with
+    // no readback or re-upload. Rendering goes to FBOs; the tiny override-
+    // redirect X window below only provides the drawable GL requires.
+    bool GLContext::createGlxShared(std::string &error)
+    {
+        const auto hostContext = reinterpret_cast<GLXContext>(g_hostSharedGlContext.load(std::memory_order_relaxed));
+        if (hostContext == nullptr)
+        {
+            error = "no host GL context";
+            return false;
+        }
+        Display *display = XOpenDisplay(nullptr); // our own connection: own thread
+        if (display == nullptr)
+        {
+            error = "XOpenDisplay failed";
+            return false;
+        }
+        static int fbAttribs[] = {GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT, GLX_DOUBLEBUFFER, True,
+                                  GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8, GLX_ALPHA_SIZE, 8, None};
+        int fbCount = 0;
+        GLXFBConfig *configs = glXChooseFBConfig(display, DefaultScreen(display), fbAttribs, &fbCount);
+        if (configs == nullptr || fbCount == 0)
+        {
+            XCloseDisplay(display);
+            error = "no GLX FBConfig";
+            return false;
+        }
+        auto createAttribs =
+            reinterpret_cast<PFNGLXCREATECONTEXTATTRIBSARBPROC>(glXGetProcAddressARB(reinterpret_cast<const GLubyte *>("glXCreateContextAttribsARB")));
+        if (createAttribs == nullptr)
+        {
+            XCloseDisplay(display);
+            error = "no glXCreateContextAttribsARB";
+            return false;
+        }
+        const int requestedMinor = []()
+        {
+            const char *env = std::getenv("PS2X_GL_VERSION");
+            return env != nullptr ? std::atoi(env) : 6;
+        }();
+        GLXContext context = nullptr;
+        for (int minor = requestedMinor; minor >= 5 && context == nullptr; --minor)
+        {
+            const int attributes[] = {GLX_CONTEXT_MAJOR_VERSION_ARB, 4, GLX_CONTEXT_MINOR_VERSION_ARB, minor,
+                                      GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB, None};
+            context = createAttribs(display, configs[0], hostContext, True, attributes);
+        }
+        if (context == nullptr)
+        {
+            XCloseDisplay(display);
+            error = "glXCreateContextAttribsARB (shared, GL 4.5 core) failed";
+            return false;
+        }
+        XSetWindowAttributes attributes{};
+        attributes.override_redirect = True;
+        Window window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, 16, 16, 0, CopyFromParent, InputOutput,
+                                      CopyFromParent, CWOverrideRedirect, &attributes);
+        if (window == 0 || !glXMakeContextCurrent(display, window, window, context))
+        {
+            if (window != 0)
+                XDestroyWindow(display, window);
+            glXDestroyContext(display, context);
+            XCloseDisplay(display);
+            error = "glXMakeContextCurrent failed";
+            return false;
+        }
+        m_glxOwnDisplay = display;
+        m_window = reinterpret_cast<void *>(static_cast<uintptr_t>(window));
+        m_display = display;
+        m_context = context;
+        m_shared = true;
+
+#define GSGPU_LOAD(type, name)                                                       \
+    gl.name = reinterpret_cast<type>(glXGetProcAddressARB(reinterpret_cast<const GLubyte *>(#name))); \
+    if (!gl.name)                                                                    \
+    {                                                                                \
+        error = "missing GL function " #name;                                        \
+        destroy();                                                                   \
+        return false;                                                                \
+    }
+        GSGPU_GL_FUNCTIONS(GSGPU_LOAD)
+#undef GSGPU_LOAD
+        return true;
+    }
+
     bool GLContext::create(std::string &error)
     {
+        // Share with the host window's context when the host published one
+        // (the game); tools without a window (gs_replay) fall back to EGL.
+        if (g_hostSharedGlContext.load(std::memory_order_relaxed) != 0u)
+        {
+            if (createGlxShared(error))
+                return true;
+            std::fprintf(stderr, "[gs:gpu] GL sharing unavailable (%s); using a surfaceless context\n", error.c_str());
+            error.clear();
+        }
         EGLDisplay display = surfacelessDisplay();
         if (display == EGL_NO_DISPLAY)
         {
@@ -250,6 +363,22 @@ namespace gsgpu
 
     void GLContext::destroy()
     {
+        if (m_glxOwnDisplay != nullptr)
+        {
+            auto *display = static_cast<Display *>(m_glxOwnDisplay);
+            glXMakeContextCurrent(display, None, None, nullptr);
+            if (m_context != nullptr)
+                glXDestroyContext(display, static_cast<GLXContext>(m_context));
+            if (m_window != nullptr)
+                XDestroyWindow(display, static_cast<Window>(reinterpret_cast<uintptr_t>(m_window)));
+            XCloseDisplay(display);
+            m_glxOwnDisplay = nullptr;
+            m_window = nullptr;
+            m_context = nullptr;
+            m_display = nullptr;
+            m_shared = false;
+            return;
+        }
         if (!m_display)
             return;
         auto display = static_cast<EGLDisplay>(m_display);

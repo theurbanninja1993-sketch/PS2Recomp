@@ -22,6 +22,12 @@ namespace gsgpu
 // times the GS size; 0 = no request). Set from the host settings; applied
 // between frames. PS2X_GS_SCALE sets the starting value.
 extern std::atomic<uint32_t> g_gsGpuScaleRequest;
+namespace gsgpu
+{
+    // Publishes the host window's native GL context (see gl_context.h); call
+    // from the main thread once the window exists.
+    void publishHostGlContext();
+}
 // Host window size in pixels, published by the main thread (0 = unknown).
 // The upscaled display readback is capped to it.
 extern std::atomic<uint32_t> g_gsGpuPresentWidth;

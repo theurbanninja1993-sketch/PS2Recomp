@@ -869,7 +869,7 @@ void main()
             const auto *renderer = reinterpret_cast<const char *>(m_context.gl.glGetString(GL_RENDERER));
             const auto *version = reinterpret_cast<const char *>(m_context.gl.glGetString(GL_VERSION));
             std::cerr << "[gs:gpu] OpenGL " << (version ? version : "?") << " on " << (renderer ? renderer : "?")
-                      << std::endl;
+                      << (m_context.sharedWithHost() ? " [shares the window's context]" : " [own context]") << std::endl;
             m_gpu = std::getenv("PS2X_GS_GPU_CPU") == nullptr; // debug: keep the CPU path
             if (m_gpu)
                 initGpuObjects();

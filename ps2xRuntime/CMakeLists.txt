@@ -602,9 +602,11 @@ endif()
 target_include_directories(ps2_runtime PRIVATE "${xxhash_SOURCE_DIR}")
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
-# GPU GS renderer: headless GL 4.6 via EGL (Linux) / a hidden window's WGL context (Windows).
+# GPU GS renderer: GL 4.5+ via EGL surfaceless (tools) or a GLX context sharing
+# the host window's (the game, so the composed display texture can be drawn
+# directly) on Linux / a hidden window's WGL context on Windows.
 if(UNIX AND NOT APPLE AND NOT PS2X_IS_ANDROID)
-    target_link_libraries(ps2_runtime PUBLIC EGL)
+    target_link_libraries(ps2_runtime PUBLIC EGL X11 GLX)
 elseif(WIN32)
     target_link_libraries(ps2_runtime PUBLIC opengl32 gdi32)
 endif()

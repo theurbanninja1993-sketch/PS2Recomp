@@ -13,6 +13,46 @@
 #include <iostream>
 #include <utility>
 
+// The window's GL context (raylib's, via GLFW) so the renderer can join its
+// share group and hand the composed display texture straight to the host.
+#if defined(__linux__) && !defined(PS2X_IS_ANDROID)
+#define GLFW_EXPOSE_NATIVE_X11
+#define GLFW_EXPOSE_NATIVE_GLX
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+#elif defined(_WIN32)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#define GLFW_EXPOSE_NATIVE_WGL
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+#endif
+
+#include "runtime/gs/gpu/gl_context.h"
+
+namespace gsgpu
+{
+    // Called on the host (main) thread once the window exists and its context
+    // is current. Safe to call again on a resize/recreate.
+    void publishHostGlContext()
+    {
+#if defined(__linux__) && !defined(PS2X_IS_ANDROID)
+        GLFWwindow *window = glfwGetCurrentContext();
+        if (window == nullptr)
+            return;
+        g_hostSharedGlContext.store(reinterpret_cast<uintptr_t>(glfwGetGLXContext(window)), std::memory_order_relaxed);
+        g_hostSharedGlDisplay.store(reinterpret_cast<uintptr_t>(glfwGetX11Display()), std::memory_order_relaxed);
+#elif defined(_WIN32)
+        GLFWwindow *window = glfwGetCurrentContext();
+        if (window == nullptr)
+            return;
+        g_hostSharedGlContext.store(reinterpret_cast<uintptr_t>(glfwGetWGLContext(window)), std::memory_order_relaxed);
+        g_hostSharedGlDisplay.store(reinterpret_cast<uintptr_t>(glfwGetWGLContext(window)), std::memory_order_relaxed);
+#else
+        (void)0;
+#endif
+    }
+}
+
 namespace
 {
     // Bound on queued commands so the producer can't run unboundedly ahead.
