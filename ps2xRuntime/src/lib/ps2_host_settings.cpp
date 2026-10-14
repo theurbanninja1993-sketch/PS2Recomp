@@ -117,7 +117,7 @@ namespace ps2controls
             "Move forward / accelerate", "Move back / brake", "Move / steer left", "Move / steer right", "Sprint",
             "Jump", "Fire / attack", "Aim / lock on", "Action", "Next weapon", "Enter / exit vehicle", "Handbrake",
             "Horn", "Camera mode", "Look behind", "Pause", "Menu: accept", "Menu: back", "Menu: up", "Menu: down",
-            "Menu: left", "Menu: right", "Map: target"};
+            "Menu: left", "Menu: right", "Map: target", "Skip cutscene"};
         return action >= 0 && action < kActionCount ? kNames[action] : "?";
     }
 
@@ -155,6 +155,7 @@ namespace ps2controls
         set(MenuLeft, KEY_LEFT, KEY_A);
         set(MenuRight, KEY_RIGHT, KEY_D);
         set(MapTarget, KEY_SPACE); // Square on the map; Backspace is Triangle (back / legend)
+        set(SkipCutscene, KEY_ENTER, KEY_KP_ENTER); // Cross, like every GTA cutscene skip
     }
 
     std::string bindingName(int binding)

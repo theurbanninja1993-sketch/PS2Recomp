@@ -365,6 +365,9 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         }
         if (held(pc::Pause))
             press(Start);
+        // Cutscene skip: Cross, in every context (cutscenes are not menus).
+        if (held(pc::SkipCutscene))
+            press(Cross);
         if (!inMenu)
         {
             if (held(pc::EnterVehicle))

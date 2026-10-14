@@ -2834,8 +2834,9 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::EndTable();
                 }
                 ImGui::SeparatorText("Menu keys");
-                ImGui::TextDisabled("Used in the game's menus only, independent of the gameplay bindings above. "
-                                    "The wheel zooms the map; Backspace sends Triangle (back, and the map legend).");
+                ImGui::TextDisabled("Used in the game's menus, independent of the gameplay bindings above. "
+                                    "The wheel zooms the map; Backspace sends Triangle (back, and the map legend). "
+                                    "Skip cutscene works during cutscenes too (it sends Cross).");
                 if (ImGui::BeginTable("menu-keys", 3,
                                       ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit,
                                       ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
