@@ -367,8 +367,15 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             press(Start);
         // Cutscene skip: Cross, but only while a cutscene plays (when the
         // probe is wired), so it cannot fire during normal gameplay.
-        if (held(pc::SkipCutscene) &&
-            (m_cutsceneProbe == nullptr || (m_cutsceneRdram != nullptr && m_cutsceneProbe(m_cutsceneRdram))))
+        const bool cutscene =
+            m_cutsceneProbe == nullptr || (m_cutsceneRdram != nullptr && m_cutsceneProbe(m_cutsceneRdram));
+        static bool s_lastCutscene = false;
+        if (m_cutsceneProbe != nullptr && cutscene != s_lastCutscene)
+        {
+            s_lastCutscene = cutscene;
+            std::fprintf(stderr, "[pad] cutscene=%d\n", cutscene ? 1 : 0);
+        }
+        if (held(pc::SkipCutscene) && cutscene)
             press(Cross);
         if (!inMenu)
         {

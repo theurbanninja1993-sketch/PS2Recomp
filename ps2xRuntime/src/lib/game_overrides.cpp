@@ -411,6 +411,25 @@ namespace
         return rdram != nullptr && rdram[0x004CD2ACu] != 0u;
     }
 
+    // Whether a cutscene is playing. Found by RAM-diffing F8 dumps taken
+    // during cutscenes (B/C) and in gameplay (A/D): the flag is 1 in the
+    // cutscene dumps and 0 in the gameplay ones. PS2X_CUTSCENE_FLAG=<hex>
+    // overrides the address for testing (read as a 32-bit word).
+    bool vcsInCutscene(const uint8_t *rdram)
+    {
+        static const uint32_t s_flag = []()
+        {
+            if (const char *env = std::getenv("PS2X_CUTSCENE_FLAG"))
+                return static_cast<uint32_t>(std::strtoul(env, nullptr, 16));
+            return 0x006F4D14u;
+        }();
+        if (rdram == nullptr || static_cast<size_t>(s_flag) + 4u > PS2_RAM_SIZE)
+            return false;
+        uint32_t value = 0;
+        std::memcpy(&value, rdram + s_flag, 4);
+        return value != 0u;
+    }
+
     // The current in-vehicle radio station: 0..8 = the nine real stations,
     // 9 = the game's silent "Radio Off" slot. The station field is at +0x2BA
     // of the audio/vehicle entity (not byte 0x4E4755, which is overloaded with
@@ -1641,6 +1660,7 @@ namespace
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
         runtime.padBackend().setMenuProbe(&vcsPauseMenuOpen, runtime.memory().getRDRAM());
+        runtime.padBackend().setCutsceneProbe(&vcsInCutscene, runtime.memory().getRDRAM());
         g_vcsFnRadioEntity = runtime.lookupFunction(0x001B5768u);
         if ((g_vcsOrigRadioUpdate = runtime.lookupFunction(0x0018AAD8u)))
             runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);
