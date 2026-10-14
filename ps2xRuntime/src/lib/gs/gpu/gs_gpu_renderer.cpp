@@ -2547,7 +2547,17 @@ void main()
                 emitTexreplStats();
         }
         PresentationFrame frame;
-        if (m_gpu && m_scale > 1u)
+        // PS2X_GS_GPU_COMPOSE=1 (default on): compose the display on the GPU
+        // at scale 1 as well. The CPU fallback costs a full local-memory
+        // readback plus a CPU merge every frame; the GPU path composes into a
+        // texture and transfers only the display. Set to 0 for the CPU
+        // reference path.
+        static const bool s_gpuComposeLowScale = []()
+        {
+            const char *env = std::getenv("PS2X_GS_GPU_COMPOSE");
+            return env == nullptr || std::atoi(env) != 0;
+        }();
+        if (m_gpu && (m_scale > 1u || s_gpuComposeLowScale))
         {
             // Upscaled: compose from the render targets; local memory (and
             // the CPU composition) only for displays the GPU didn't draw.
