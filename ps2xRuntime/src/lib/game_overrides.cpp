@@ -1269,6 +1269,23 @@ namespace
     };
     VcsCarWall g_vcsCarWall;
 
+    // pIgnoreEntity (0x4CD184) has to be set around the raycast. A yield
+    // inside the guest call skips our restore (EeDispatcherTransfer unwinds
+    // this frame), so remember what to put back and re-assert it at the start
+    // of the next camera hook - the game's own raycasts would otherwise keep
+    // ignoring the player's vehicle.
+    uint32_t g_vcsIgnoreSaved = 0u;
+    bool g_vcsIgnoreDirty = false;
+
+    void vcsCarLookRecoverIgnore(uint8_t *rdram)
+    {
+        if (g_vcsIgnoreDirty)
+        {
+            std::memcpy(rdram + 0x004CD184u, &g_vcsIgnoreSaved, 4);
+            g_vcsIgnoreDirty = false;
+        }
+    }
+
     void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam, R5900Context *ctx, PS2Runtime *runtime);
     void vcsMeasureCarWall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t cam);
 
@@ -1308,6 +1325,7 @@ namespace
 
     void vcsFollowCarCam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        vcsCarLookRecoverIgnore(rdram);
         VcsCarLook &look = g_vcsCarLook;
         static FILE *s_log = []() -> FILE *
         {
@@ -1349,6 +1367,7 @@ namespace
 
     void vcsAfterCamProcess(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        vcsCarLookRecoverIgnore(rdram);
         const uint32_t cam = getRegU32(ctx, 4);
         static FILE *s_log = []() -> FILE *
         {
@@ -1402,6 +1421,8 @@ namespace
         uint32_t oldIgnore = 0;
         std::memcpy(&oldIgnore, rdram + 0x004CD184u, 4);
         std::memcpy(rdram + 0x004CD184u, &ignoreEntity, 4);
+        g_vcsIgnoreSaved = oldIgnore;
+        g_vcsIgnoreDirty = true;
         std::memset(rdram + sp, 0, 0xC0u);
         std::memcpy(rdram + sp + 0x40u, from, 12);
         std::memcpy(rdram + sp + 0x50u, to, 12);
@@ -1422,6 +1443,7 @@ namespace
         if (blocked)
             std::memcpy(hit, rdram + sp + 0x60u, 12);
         std::memcpy(rdram + 0x004CD184u, &oldIgnore, 4);
+        g_vcsIgnoreDirty = false;
         *ctx = saved;
         return blocked && std::isfinite(hit[0] + hit[1] + hit[2]);
     }
