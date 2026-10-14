@@ -2639,10 +2639,13 @@ void main()
         // composed into one of two exactly-sized textures the host draws
         // directly: no readback, no upload. (Otherwise the growing texture
         // below feeds the CPU readback path.)
+        // Opt-in: see the note in gl_context.cpp (the shared texture makes the
+        // two contexts synchronise, which cost more than the readback it saved
+        // in a GPU-heavy cutscene).
         static const bool s_sharePresent = []()
         {
             const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
-            return env == nullptr || std::atoi(env) != 0;
+            return env != nullptr && std::atoi(env) != 0;
         }();
         const bool sharePresent = s_sharePresent && m_context.sharedWithHost();
         if (sharePresent)

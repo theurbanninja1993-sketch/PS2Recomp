@@ -288,9 +288,17 @@ namespace gsgpu
 
     bool GLContext::create(std::string &error)
     {
-        // Share with the host window's context when the host published one
-        // (the game); tools without a window (gs_replay) fall back to EGL.
-        if (g_hostSharedGlContext.load(std::memory_order_relaxed) != 0u)
+        // Sharing the window's context lets the renderer hand the composed
+        // display over as a texture (no readback/upload), but it makes the two
+        // contexts synchronise on that texture, so it is opt-in:
+        // PS2X_GS_PRESENT_SHARE=1. Off (the default) the renderer keeps its own
+        // surfaceless context and the host uploads the readback as before.
+        static const bool s_allowShare = []()
+        {
+            const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
+            return env != nullptr && std::atoi(env) != 0;
+        }();
+        if (s_allowShare && g_hostSharedGlContext.load(std::memory_order_relaxed) != 0u)
         {
             if (createGlxShared(error))
                 return true;
