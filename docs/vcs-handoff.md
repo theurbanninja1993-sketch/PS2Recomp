@@ -105,6 +105,29 @@ classic/modern gamepad layouts, mods), first-launch menu, controller support
 menu), mouse look on foot and in vehicles (wall/ground collision), PCSX2
 texture packs from `mods/`, Windows build under Wine.
 
+### Vehicle mouse look: the wall raycast must run after the game's own body
+
+Owner-reported world flicker (2026-10-14, "geometry flickering in and out of
+existence") in vehicles only, gone when the look offset decays. Captures
+proved the *game* was not sending the world (the CPU rasterizer replay of the
+same capture has the same empty frames), and the bad state persists in
+stretches (up to ~50 frames) - its culling follows a broken camera state.
+
+Cause: the "camera stops at walls" raycast (644407a) called the guest
+`CWorld::ProcessLineOfSight` (0x1908C0) from inside the 0x2A2ED0 hook, i.e.
+*before* the game's own 0x2A2ED0 body (which builds TheCamera). A guest call
+that yields throws `EeDispatcherTransfer` (see `EeScheduler`), which unwinds
+the host frames - so the game's body for that frame was skipped and the
+camera state was left culled, until a frame whose offset was zero (driving).
+
+Fix: the rotation stays in the hook (it must precede the camera build), the
+*measurement* moved into `vcsMeasureCarWall` **after** `g_vcsOrigAfterCamProcess`,
+and its result (pull position, or the overhead pose with Front/Up) is applied
+by the next frame's rotation - a one-frame lag, invisible in practice. A
+yield in the raycast now costs only that frame's clamp. `PS2X_CARLOOK_WALLS=0`
+disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
+(rotate/restore/skip/measure/LOS).
+
 ## Open work, in rough priority
 
 1. **Release packaging (source-only).** A prebuilt exe would distribute

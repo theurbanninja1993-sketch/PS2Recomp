@@ -1252,7 +1252,25 @@ namespace
     };
     VcsCamBackup g_vcsCamBackup[3];
 
+    // The wall result the rotation applies one frame later: the pose the
+    // camera should be pulled to (and, when there is no room beside the
+    // vehicle, the overhead pose with its Front/Up). Measured on entry to the
+    // next frame's rotation, i.e. after the game's own camera processing, so
+    // a yield in the raycast costs nothing but the next frame's clamp.
+    struct VcsCarWall
+    {
+        uint32_t cam = 0;
+        uint64_t frame = 0;
+        bool clamp = false;
+        float position[3] = {};
+        bool raised = false;
+        float front[3] = {};
+        float up[3] = {};
+    };
+    VcsCarWall g_vcsCarWall;
+
     void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam, R5900Context *ctx, PS2Runtime *runtime);
+    void vcsMeasureCarWall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t cam);
 
     void vcsRestoreCamBackups(uint8_t *rdram)
     {
@@ -1344,7 +1362,11 @@ namespace
         if (cam == g_vcsCarLook.vehicleCam &&
             g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) <= g_vcsCarLook.vehicleFrame + 1u)
             vcsRotateVehicleCam(rdram, cam, ctx, runtime);
+        // The game's own processing builds TheCamera (and the RenderWare
+        // camera) from the rotated vectors; only after it may the wall
+        // raycast run (a guest call that can yield and unwind this frame).
         g_vcsOrigAfterCamProcess(rdram, ctx, runtime);
+        vcsMeasureCarWall(rdram, ctx, runtime, cam);
     }
 
     // The main RenderWare camera and the FOV state (see vcsSetViewWindow).
@@ -1489,64 +1511,111 @@ namespace
         }
 
         // The game's own wall check ran before the offset: swinging the
-        // camera around could put it inside a wall. Pull it in front of
-        // whatever is between the vehicle and the new position.
-        // PS2X_CARLOOK_WALLS=0 disables it (the guest raycast call is
-        // suspected of breaking the game's camera/visibility state).
+        // camera around could put it inside a wall. The correction for that
+        // is measured *after* the game's camera processing - see
+        // vcsMeasureCarWall - and applied here one frame later. It must not
+        // be measured here: the raycast is a guest call, and one that yields
+        // (the scheduler's EeDispatcherTransfer) unwinds this host frame,
+        // which skipped the game's own 0x2A2ED0 body below it and left the
+        // camera state culled (the vehicle "world flickering" bug).
+        // PS2X_CARLOOK_WALLS=0 turns the whole wall stop off.
         static const bool s_wallCheck = []()
         {
             const char *env = std::getenv("PS2X_CARLOOK_WALLS");
             return env == nullptr || std::atoi(env) != 0;
         }();
-        float hit[3];
-        if (s_wallCheck && vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, c + 8, target, hit))
+        if (s_wallCheck && g_vcsCarWall.clamp && g_vcsCarWall.cam == cam && frame <= g_vcsCarWall.frame + 4u)
         {
-            if (s_log)
-                std::fprintf(s_log, "f=%llu LOS blocked cam=(%.2f,%.2f,%.2f) hit=(%.2f,%.2f,%.2f) pivot=(%.2f,%.2f,%.2f)\n",
-                             (unsigned long long)frame, c[8], c[9], c[10], hit[0], hit[1], hit[2], pivot[0], pivot[1],
-                             pivot[2]);
-            float toPivot[3] = {pivot[0] - hit[0], pivot[1] - hit[1], pivot[2] - hit[2]};
-            const float length = std::sqrt(toPivot[0] * toPivot[0] + toPivot[1] * toPivot[1] + toPivot[2] * toPivot[2]);
-            constexpr float kWallGap = 0.3f;
-            const float pull = length > kWallGap ? kWallGap / length : 0.0f;
-            float position[3];
-            for (int i = 0; i < 3; ++i)
-                position[i] = hit[i] + toPivot[i] * pull;
-            // Too little room (a wall right beside the vehicle): rise above
-            // the vehicle and look down at it instead of ending up inside
-            // it - unless that is blocked too (a low ceiling).
-            constexpr float kMinDistance = 1.6f;
-            const float dx = position[0] - pivot[0], dy = position[1] - pivot[1], dz = position[2] - pivot[2];
-            const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (distance < kMinDistance)
+            for (uint32_t off : {0x20u, 0x50u})
+                std::memcpy(c + off / 4u, g_vcsCarWall.position, sizeof(g_vcsCarWall.position));
+            if (g_vcsCarWall.raised)
             {
-                float raised[3] = {position[0], position[1], position[2] + (kMinDistance - distance) * 1.5f};
-                float ceiling[3];
-                if (s_wallCheck && !vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, raised, target, ceiling))
+                std::memcpy(c + 4, g_vcsCarWall.front, sizeof(g_vcsCarWall.front));
+                std::memcpy(c + 0x60 / 4u, g_vcsCarWall.up, sizeof(g_vcsCarWall.up));
+            }
+        }
+    }
+
+    void vcsMeasureCarWall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t cam)
+    {
+        VcsCarLook &look = g_vcsCarLook;
+        VcsCarWall &wall = g_vcsCarWall;
+        wall.cam = cam;
+        wall.frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        wall.clamp = false;
+        wall.raised = false;
+        static const bool s_wallCheck = []()
+        {
+            const char *env = std::getenv("PS2X_CARLOOK_WALLS");
+            return env == nullptr || std::atoi(env) != 0;
+        }();
+        static FILE *s_log = []() -> FILE *
+        {
+            const char *path = std::getenv("PS2X_CARLOOK_DEBUG");
+            return path ? std::fopen(path, "a") : nullptr;
+        }();
+        if (!s_wallCheck || (look.yaw == 0.0f && look.pitch == 0.0f))
+            return;
+        if (cam < 0x00100000u || cam + 0x80u > PS2_RAM_SIZE)
+            return;
+        uint32_t target = 0;
+        std::memcpy(&target, rdram + cam + 0x70u, 4);
+        if (target < 0x00100000u || target + 0x40u > PS2_RAM_SIZE)
+            return;
+        float *c = reinterpret_cast<float *>(rdram + cam);
+        float pivot[3];
+        std::memcpy(pivot, rdram + target + 0x30u, 12);
+        float hit[3];
+        if (s_log)
+            std::fprintf(s_log, "f=%llu measure cam=(%.2f,%.2f,%.2f) pivot=(%.2f,%.2f,%.2f)\n",
+                         (unsigned long long)wall.frame, c[8], c[9], c[10], pivot[0], pivot[1], pivot[2]);
+        if (!vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, c + 8, target, hit))
+            return;
+        if (s_log)
+            std::fprintf(s_log, "f=%llu LOS blocked hit=(%.2f,%.2f,%.2f)\n",
+                         (unsigned long long)wall.frame, hit[0], hit[1], hit[2]);
+        float toPivot[3] = {pivot[0] - hit[0], pivot[1] - hit[1], pivot[2] - hit[2]};
+        const float length = std::sqrt(toPivot[0] * toPivot[0] + toPivot[1] * toPivot[1] + toPivot[2] * toPivot[2]);
+        constexpr float kWallGap = 0.3f;
+        const float pull = length > kWallGap ? kWallGap / length : 0.0f;
+        float position[3];
+        for (int i = 0; i < 3; ++i)
+            position[i] = hit[i] + toPivot[i] * pull;
+        // Too little room (a wall right beside the vehicle): rise above the
+        // vehicle and look down at it instead of ending up inside it - unless
+        // that is blocked too (a low ceiling).
+        constexpr float kMinDistance = 1.6f;
+        const float dx = position[0] - pivot[0], dy = position[1] - pivot[1], dz = position[2] - pivot[2];
+        const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance < kMinDistance)
+        {
+            float raised[3] = {position[0], position[1], position[2] + (kMinDistance - distance) * 1.5f};
+            float ceiling[3];
+            if (!vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, raised, target, ceiling))
+            {
+                std::memcpy(position, raised, sizeof(position));
+                const float lookAt[3] = {pivot[0], pivot[1], pivot[2] + 0.3f};
+                float f[3] = {lookAt[0] - position[0], lookAt[1] - position[1], lookAt[2] - position[2]};
+                const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                if (fl > 1.0e-3f)
                 {
-                    std::memcpy(position, raised, sizeof(position));
-                    const float lookAt[3] = {pivot[0], pivot[1], pivot[2] + 0.3f};
-                    float f[3] = {lookAt[0] - position[0], lookAt[1] - position[1], lookAt[2] - position[2]};
-                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
-                    if (fl > 1.0e-3f)
+                    for (float &x : f)
+                        x /= fl;
+                    // Up: world Z made perpendicular to Front.
+                    float u[3] = {-f[2] * f[0], -f[2] * f[1], 1.0f - f[2] * f[2]};
+                    const float ul = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+                    if (ul > 1.0e-3f)
                     {
-                        for (float &x : f)
-                            x /= fl;
-                        // Up: world Z made perpendicular to Front.
-                        float u[3] = {-f[2] * f[0], -f[2] * f[1], 1.0f - f[2] * f[2]};
-                        const float ul = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
-                        if (ul > 1.0e-3f)
-                        {
-                            std::memcpy(c + 4, f, sizeof(f));
-                            for (int i = 0; i < 3; ++i)
-                                c[0x60 / 4 + i] = u[i] / ul;
-                        }
+                        std::memcpy(wall.front, f, sizeof(f));
+                        for (int i = 0; i < 3; ++i)
+                            wall.up[i] = u[i] / ul;
+                        wall.raised = true;
                     }
                 }
             }
-            for (uint32_t off : {0x20u, 0x50u})
-                std::memcpy(c + off / 4u, position, sizeof(position));
         }
+        std::memcpy(wall.position, position, sizeof(position));
+        wall.clamp = true;
     }
 
     // Field of view: RwCameraSetViewWindow(camera, &viewWindow) (0x18F2D8;
