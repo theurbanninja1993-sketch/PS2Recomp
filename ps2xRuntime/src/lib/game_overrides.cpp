@@ -1515,14 +1515,17 @@ namespace
 
         // Looking up swings the camera down around the vehicle: stop it at
         // the ground (taken as a little below the vehicle's centre).
-        constexpr float kGroundBelowPivot = 0.3f;
+        // The entity's origin sits on the road for a vehicle, so the floor
+        // must be *above* it: 0.3 below put the camera under the road (the
+        // green plane seen from underneath when looking up near the ground).
+        constexpr float kGroundAbovePivot = 0.25f;
         auto cameraZ = [&](float pitch)
         {
             float o[3] = {offset0[0], offset0[1], offset0[2]};
             rotate(o, pitch);
             return pivot[2] + o[2];
         };
-        const float floorZ = pivot[2] - kGroundBelowPivot;
+        const float floorZ = pivot[2] + kGroundAbovePivot;
         if (look.pitch > 0.0f && cameraZ(look.pitch) < floorZ)
         {
             float lo = 0.0f, hi = look.pitch;
@@ -1641,6 +1644,19 @@ namespace
         if (s_log)
             std::fprintf(s_log, "f=%llu LOS blocked hit=(%.2f,%.2f,%.2f)\n",
                          (unsigned long long)wall.frame, hit[0], hit[1], hit[2]);
+        // A hit behind the vehicle, or far past the camera, is not a wall the
+        // camera should be pulled in front of: ignore it rather than move the
+        // camera somewhere arbitrary.
+        const float toCam[3] = {camera[0] - pivot[0], camera[1] - pivot[1], camera[2] - pivot[2]};
+        const float toHit[3] = {hit[0] - pivot[0], hit[1] - pivot[1], hit[2] - pivot[2]};
+        const float camLen2 = toCam[0] * toCam[0] + toCam[1] * toCam[1] + toCam[2] * toCam[2];
+        const float along = toCam[0] * toHit[0] + toCam[1] * toHit[1] + toCam[2] * toHit[2];
+        if (camLen2 <= 1.0e-6f || along < 0.0f || along > camLen2 * 1.25f)
+        {
+            wall.clamp = false;
+            wall.raised = false;
+            return;
+        }
         float toPivot[3] = {pivot[0] - hit[0], pivot[1] - hit[1], pivot[2] - hit[2]};
         const float length = std::sqrt(toPivot[0] * toPivot[0] + toPivot[1] * toPivot[1] + toPivot[2] * toPivot[2]);
         constexpr float kWallGap = 0.8f;
