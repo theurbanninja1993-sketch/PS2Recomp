@@ -365,6 +365,31 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
    the render thread runs **GsGpu ~44-57% with the pack vs ~24-30% without**
    (~+20 pts), which tips the airport into late frames. New
    `PS2X_TEXREPL_STATS` fields (added today) split it:
+   - **Compatibility/perf sweep (2026-10-14, after "runs on as many machines
+     as possible").** `gs_replay` on the airport capture, texture pack on,
+     from the same start: **scale 1 348 -> 151 ms, scale 4 360 -> 272 ms**,
+     CPU rasterizer 6.20 -> 6.08 s (54 presents). Four changes:
+     - **The upscaled frame was round-tripped through the CPU twice**: a full
+       readback of the composed frame, then a zero-fill + row copy + upload
+       back on the main thread. The readback is now capped to the host window
+       (published by the main thread, `PS2X_GS_PRESENT_SIZE` overrides) with a
+       GPU downscale, `copyLatchedHostPresentationFrame` hands the latch over
+       (swap) instead of copying, and the host uploads it straight when it
+       fills the texture. Present 5.13 -> 2.68 ms/frame at scale 4; the capped
+       frame is an exact box filter of the 4x compose (mean diff 0.19/255).
+     - **The display is composed on the GPU at scale 1 too** (it only did so
+       above scale 1, so the default configuration paid a full 4 MB readback
+       plus a CPU merge every frame). Equivalent output (0.26/255 average,
+       <=9/255 single pixel), identical replacement counters and vram hash.
+       `PS2X_GS_GPU_COMPOSE=0` restores the CPU compose.
+     - **Repeat presents are skipped.** The game renders ~30 Hz and presents
+       60 Hz, so half the presents carry no GS input at all: the GS frontend
+       tracks an input sequence and skips the recompose, and the frame id lets
+       the host keep the texture it has instead of re-uploading (a latch with
+       nothing new no longer clears the screen either).
+     - `vcsKeepCustomName` searched all of RAM **every frame** until the GXT
+       names appeared (twice over: the station keys and "Radio Off"); now at
+       most every 60 frames, like the button-text search.
    - **Fix 1 landed (2026-10-14): T4 uploads are mirrored whole blocks.**
      Every VCS T4 upload is aligned to 32x16 tiles (= whole 256-byte GS
      blocks: 100% of 2883 T4 transfers on the airport capture, 10.25 MB of
