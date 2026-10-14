@@ -7,6 +7,7 @@
 #include <map>
 #include <cstdlib>
 #include "runtime/ee_scheduler.h"
+#include "runtime/ps2_platform.h"
 
 #include "ps2_log.h"
 #include "ps2_runtime_macros.h"
@@ -594,8 +595,8 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
     const auto now = std::chrono::steady_clock::now();
     const double seconds = std::chrono::duration<double>(now - s_lastTime).count();
     s_lastTime = now;
-    std::fprintf(s_file, "frame=%llu late=%llu/600 lostMs=%d", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()),
-                 static_cast<unsigned long long>(s_late), static_cast<int>(s_lostMs));
+    std::fprintf(s_file, "frame=%llu late=%llu/600 lostMs=%d rss=%zuMB", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()),
+                 static_cast<unsigned long long>(s_late), static_cast<int>(s_lostMs), ps2ProcessResidentMb());
     {
         // Audio frames produced / dropped (host ring full) this period: real
         // time is ~480480 per 600 VBlanks.

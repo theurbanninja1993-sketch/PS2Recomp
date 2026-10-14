@@ -4,12 +4,15 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #include <shellapi.h>
 #endif
 
 #include "runtime/ps2_platform.h"
 
 #include <thread>
+#include <unistd.h>
+#include <cstdio>
 #include "ThreadNaming.h"
 
 #include <cstdlib>
@@ -47,6 +50,27 @@ void ps2SetHostThread()
 bool ps2IsHostThread()
 {
     return g_hostThread == std::this_thread::get_id();
+}
+
+size_t ps2ProcessResidentMb()
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters{};
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+        return counters.WorkingSetSize / (1024u * 1024u);
+    return 0u;
+#else
+    FILE *file = std::fopen("/proc/self/statm", "r");
+    if (file == nullptr)
+        return 0u;
+    long total = 0, resident = 0;
+    const int read = std::fscanf(file, "%ld %ld", &total, &resident);
+    std::fclose(file);
+    if (read != 2)
+        return 0u;
+    const long pageKb = sysconf(_SC_PAGESIZE) / 1024;
+    return static_cast<size_t>(resident) * static_cast<size_t>(pageKb > 0 ? pageKb : 4) / 1024u;
+#endif
 }
 
 std::filesystem::path ps2ConfigDirectory()

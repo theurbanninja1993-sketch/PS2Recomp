@@ -1,6 +1,7 @@
 #ifndef PS2_PLATFORM_H
 #define PS2_PLATFORM_H
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
 
@@ -22,6 +23,10 @@ std::filesystem::path ps2ConfigDirectory();
 // frame and a gap in the audio - so it is deferred to the host thread.
 void ps2SetHostThread();
 bool ps2IsHostThread();
+
+// Resident memory of this process in MB (0 when unavailable). Reported in the
+// perf log: a footprint that keeps climbing over a session is a leak.
+size_t ps2ProcessResidentMb();
 
 // Opens a folder in the desktop's file manager.
 void ps2OpenFolder(const std::string &path);
