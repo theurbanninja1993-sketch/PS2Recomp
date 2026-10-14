@@ -289,14 +289,14 @@ namespace gsgpu
     bool GLContext::create(std::string &error)
     {
         // Sharing the window's context lets the renderer hand the composed
-        // display over as a texture (no readback/upload), but it makes the two
-        // contexts synchronise on that texture, so it is opt-in:
-        // PS2X_GS_PRESENT_SHARE=1. Off (the default) the renderer keeps its own
-        // surfaceless context and the host uploads the readback as before.
+        // display over as a texture: no readback, no upload, no CPU copies.
+        // PS2X_GS_PRESENT_SHARE=0 keeps the renderer on its own surfaceless
+        // context (with the readback path) - the fallback if a driver shares
+        // badly, and the only option in tools (gs_replay has no window).
         static const bool s_allowShare = []()
         {
             const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
-            return env != nullptr && std::atoi(env) != 0;
+            return env == nullptr || std::atoi(env) != 0;
         }();
         if (s_allowShare && g_hostSharedGlContext.load(std::memory_order_relaxed) != 0u)
         {
