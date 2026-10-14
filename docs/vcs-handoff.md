@@ -601,14 +601,17 @@ texture packs from `mods/`, Windows build under Wine.
      Rescan and on mod toggles.
    - **Prompt flips are now same-frame (2026-10-13 late).** The wrong keys
      for a moment when opening the map (owner: "E for back" then Backspace)
-     had two more sources: the menu debounce still waited two frames (now
-     one - the first frame that sees the pause flag rewrites), and the
-     replacement textures reloaded through the async worker, so the map
-     kept the gameplay keycaps until it caught up. Replacement files up to
-     256 KB (all the prompt art) now load inline on the render thread at
-     the first draw that needs them; big pack textures still use the
-     worker. This also removed the reload latency on vehicle entry/exit
-     (relevant to the slowdown report).
+     had three sources: the menu debounce still waited two frames (now one),
+     the replacement textures reloaded through the async worker (files up to
+     256 KB - all the prompt art - now load inline on the render thread at
+     the first draw that needs them), and the pause flag is set after the
+     port reads the pad, so the art was always one frame late. A fresh Start
+     press now predicts the toggle for the art only
+     (`ps2PromptArtSetContext`; the pad mapping keeps the real context until
+     the flag is seen) and the prompt layers rebuild at the pad read, early
+     in the frame, so the new art lands before that frame's draw. Big pack
+     textures still use the worker. This also removed the reload latency on
+     vehicle entry/exit (relevant to the slowdown report).
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,
