@@ -490,6 +490,20 @@ texture packs from `mods/`, Windows build under Wine.
      positional (baked per set), so with Modern/custom layouts an icon can
      still show the classic button - runtime art generation would be the
      follow-up. `PS2X_PROMPT_TRACE=1` logs the site counts.
+   - **Menu layout decoupled from gameplay (2026-10-13 late).** The game's
+     pause menu / map is a third pad context (`ps2controls::Menus`), probed
+     from the game's own pause flag (`0x004CD2AC`, the same flag the Custom
+     Soundtracks query reads) and wired like the vehicle probe. The menu map
+     stays classic PS2 in every preset, so Modern / custom remaps never
+     change how the menus navigate, and menu-only edits never leak into
+     gameplay. The Gamepad buttons table gained the **In menus** column; the
+     runtime prompt art resolves the keyboard cells to the menu actions
+     (Enter / Backspace / arrows) while a menu is open, and the controller
+     art falls back to the classic glyphs (identical to the shipped art).
+     Open with the owner: whether Backspace / B should send Circle or
+     Triangle in menus (currently Triangle), and the map's own roles (the
+     game's legend shows Square = Target; the owner listed Triangle =
+     target / Square = legend).
    - **Map-screen icons covered (2026-10-13 late).** The map legend draws
      its button icons as their own textures; miss logging + single-key
      colour tests on the owner's capture 6209 found them:
@@ -527,6 +541,16 @@ texture packs from `mods/`, Windows build under Wine.
        dropped mappings fall back to the shipped art.
      - Validated with a standalone hidden-window raylib harness for all six
        sets plus a Modern-layout case; both executables relinked.
+   - **Tutorial cells filled (2026-10-13 late).** The HUD tutorials draw the
+     button cells small (a ~32px atlas block at about 0.7x on screen), so
+     the flat shoulder pill (44% of the cell height) left the L2/R2 hints
+     (shoulders bound to face buttons, e.g. Modern driving: LT/RT) only a
+     few pixels tall. Pills drawn into the sheet cells now fill 80% of the
+     cell; the map icons keep the flat shoulder look. Verified by
+     replaying the owner's two vehicle tutorials (1996 = "Press X to
+     accelerate", 2520 = "Press Square to use the vehicle's brakes") with
+     the owner's settings (DualSense + Modern): the prompts now read as
+     large L2/R2 pills.
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,
