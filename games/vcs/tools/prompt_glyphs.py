@@ -35,7 +35,7 @@ KEYBOARD_KEYS = {
     "dpad_up": "\u2191", "dpad_down": "\u2193",
     "dpad_left": "\u2190", "dpad_right": "\u2192",
     "start": "ESC", "select": "TAB",
-    "map_target": "SPACE", "map_zoom_l": "Q", "map_zoom_r": "RMB",
+    "map_target": "SPACE", "map_zoom_l": "MOUSE WHEEL", "map_zoom_r": "",
 }
 # Shoulder (map zoom) pills for the console sets: dark pill, light label.
 # The PlayStation bumpers are black with light print on both the DualSense
@@ -143,48 +143,53 @@ def _svg_with_style(svg: bytes, style: str) -> bytes:
 
 def _keycap_glyph(label: str, size: int) -> Image.Image:
     """Keyboard prompts: a keycap with the binding label. Long labels
-    ("ENTER", "BKSP", "RMB") use a wide key, like a real Enter key, so the
-    text stays legible instead of squeezed into a square."""
+    ("ENTER", "BKSP", "RMB") use a wide key, like a real Enter key, and
+    two-word labels ("MOUSE WHEEL") stack, so the text stays legible instead
+    of squeezed into a square. An empty label is a blank (hidden) prompt."""
     ss = 4
     big = size * ss
     im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    if not label:
+        return im.resize((size, size), Image.LANCZOS)
     d = ImageDraw.Draw(im)
     pad = max(2, big // 16)
     rim = max(ss, big // 16)
-    if len(label) >= 3:
-        key_h = int(big * 0.58)
-        top = (big - key_h) // 2
-        d.rounded_rectangle([pad, top, big - pad - 1, top + key_h],
-                            radius=max(4, key_h // 4),
-                            fill=(32, 38, 46, 255), outline=(138, 148, 166, 255),
-                            width=rim)
-        fs = int(key_h * 0.9)
-        font = _font(fs)
-        bbox = d.textbbox((0, 0), label, font=font)
-        target = (big - 2 * pad - 2 * rim) * 0.96
-        if bbox[2] - bbox[0] > target:
-            fs = max(8, int(fs * target / (bbox[2] - bbox[0])))
-            font = _font(fs)
-            bbox = d.textbbox((0, 0), label, font=font)
-        tx = (big - (bbox[2] - bbox[0])) // 2 - bbox[0]
-        ty = (big - (bbox[3] - bbox[1])) // 2 - bbox[1]
-        d.text((tx, ty), label, font=font, fill=(232, 236, 242, 255))
-        return im.resize((size, size), Image.LANCZOS)
-    d.rounded_rectangle([pad, pad, big - pad - 1, big - pad - 1],
-                        radius=max(4, big // 6),
+    line1, line2 = label, ""
+    if " " in label and len(label) > 6:
+        line1, line2 = label.split(" ", 1)
+    wide = not line2 and len(line1) >= 3
+    key_h = int(big * 0.58) if wide else big - 2 * pad - 1
+    top = (big - key_h) // 2
+    d.rounded_rectangle([pad, top, big - pad - 1, top + key_h],
+                        radius=max(4, key_h // 4) if wide else max(4, big // 6),
                         fill=(32, 38, 46, 255), outline=(138, 148, 166, 255),
                         width=rim)
-    frac = 0.55 if len(label) == 1 else 0.45
-    font = _font(int(big * frac))
-    bbox = d.textbbox((0, 0), label, font=font)
-    target = (big - 2 * pad) * 0.78
-    if bbox[2] - bbox[0] > target:
-        fs = max(8, int(int(big * frac) * target / (bbox[2] - bbox[0])))
-        font = _font(fs)
-        bbox = d.textbbox((0, 0), label, font=font)
-    tx = (big - (bbox[2] - bbox[0])) // 2 - bbox[0]
-    ty = int(big * 0.5) - (bbox[3] - bbox[1]) // 2 - bbox[1]
-    d.text((tx, ty), label, font=font, fill=(232, 236, 242, 255))
+    inner_w = big - 2 * pad - 2 * rim
+    inner_h = key_h - 2 * rim
+
+    def draw_line(text: str, cy: int, max_fs: float):
+        font = _font(int(max_fs))
+        bbox = d.textbbox((0, 0), text, font=font)
+        target = inner_w * (0.96 if wide else 0.9)
+        if bbox[2] - bbox[0] > target:
+            fs = max(8, int(max_fs * target / (bbox[2] - bbox[0])))
+            font = _font(fs)
+            bbox = d.textbbox((0, 0), text, font=font)
+        tx = (big - (bbox[2] - bbox[0])) // 2 - bbox[0]
+        ty = cy - (bbox[3] - bbox[1]) // 2 - bbox[1]
+        d.text((tx, ty), text, font=font, fill=(232, 236, 242, 255))
+
+    if line2:
+        fs = inner_h * 0.5
+        for text in (line1, line2):
+            font = _font(int(fs))
+            bbox = d.textbbox((0, 0), text, font=font)
+            if bbox[2] - bbox[0] > inner_w * 0.9:
+                fs = fs * (inner_w * 0.9) / (bbox[2] - bbox[0])
+        draw_line(line1, int(big * 0.5 - fs * 0.55), fs)
+        draw_line(line2, int(big * 0.5 + fs * 0.55), fs)
+    else:
+        draw_line(line1, big // 2, inner_h * 1.2 if wide else big * 0.5)
     return im.resize((size, size), Image.LANCZOS)
 
 

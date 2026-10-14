@@ -265,18 +265,44 @@ namespace
         Image img = GenImageColor(size, size, BLANK);
         const float pad = static_cast<float>(std::max(2, size / 16));
         const float rim = static_cast<float>(std::max(2, size / 16));
+        // Two-word labels ("MOUSE WHEEL") stack so each line stays legible.
+        std::string line1 = label;
+        std::string line2;
+        const size_t space = label.find(' ');
+        if (space != std::string::npos && label.size() > 6)
+        {
+            line1 = label.substr(0, space);
+            line2 = label.substr(space + 1);
+        }
         // Long labels ("ENTER", "BKSP", "RMB") read better on a wide key, like
         // a real Enter / Backspace key: the key uses the full tile width and
         // the label gets the key's full height instead of a square's.
-        const bool wide = label.size() >= 3;
+        const bool wide = line2.empty() && line1.size() >= 3;
         const float keyH = wide ? size * 0.58f : static_cast<float>(size) - 2 * pad - 1;
         const float keyY = (size - keyH) * 0.5f;
         const Rectangle rec = {pad, keyY, static_cast<float>(size) - 2 * pad - 1, keyH};
         roundedRect(&img, rec, wide ? keyH * 0.3f : rec.width * 0.22f, kPillRim);
         const Rectangle inner = {rec.x + rim, rec.y + rim, rec.width - 2 * rim, rec.height - 2 * rim};
         roundedRect(&img, inner, wide ? inner.height * 0.3f : inner.width * 0.2f, kPillFill);
-        drawCenteredText(&img, font, label.c_str(), wide ? inner.height * 1.2f : size * 0.5f, size / 2, size / 2,
-                         inner.width * (wide ? 0.96f : 0.8f), kLabelLight);
+        if (!line2.empty())
+        {
+            float fs = inner.height * 0.5f;
+            for (const std::string &line : {line1, line2})
+            {
+                const Vector2 m = MeasureTextEx(font, line.c_str(), fs, 0);
+                if (m.x > inner.width * 0.9f && m.x > 0.0f)
+                    fs *= inner.width * 0.9f / m.x;
+            }
+            drawCenteredText(&img, font, line1.c_str(), fs, size / 2, static_cast<int>(size * 0.5f - fs * 0.55f),
+                             inner.width * 0.9f, kLabelLight);
+            drawCenteredText(&img, font, line2.c_str(), fs, size / 2, static_cast<int>(size * 0.5f + fs * 0.55f),
+                             inner.width * 0.9f, kLabelLight);
+        }
+        else
+        {
+            drawCenteredText(&img, font, line1.c_str(), wide ? inner.height * 1.2f : size * 0.5f, size / 2, size / 2,
+                             inner.width * (wide ? 0.96f : 0.8f), kLabelLight);
+        }
         return img;
     }
 
@@ -522,7 +548,15 @@ bool ps2PromptArtRefreshIfNeeded()
     auto glyphFor = [&](int ps2Button, int size, bool cell = false) -> Image
     {
         if (keyboard)
+        {
+            // The map zoom is the mouse wheel for the keyboard set: one prompt
+            // on the first icon, nothing on the second (the pair collapses).
+            if (ps2Button == 10)
+                return makeKeycap("MOUSE WHEEL", size, font);
+            if (ps2Button == 11)
+                return GenImageColor(size, size, BLANK);
             return makeKeycap(bindingLabel(keyboardActionFor(ps2Button)), size, font);
+        }
         const int host = hostButtonForPs2(ps2Button, context);
         if (host == kNone)
         {

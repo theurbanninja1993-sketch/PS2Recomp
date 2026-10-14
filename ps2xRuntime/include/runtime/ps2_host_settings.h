@@ -55,7 +55,7 @@ namespace ps2controls
     {
         MoveForward, MoveBackward, MoveLeft, MoveRight, Sprint, Jump, Fire, Aim, Interact, NextWeapon,
         EnterVehicle, Handbrake, Horn, CameraMode, LookBehind, Pause, MenuAccept, MenuBack, MenuUp,
-        MenuDown, MenuLeft, MenuRight, kActionCount
+        MenuDown, MenuLeft, MenuRight, MapTarget, kActionCount
     };
     const char *actionName(int action);
     void defaultKeys(int keys[kActionCount][2]);

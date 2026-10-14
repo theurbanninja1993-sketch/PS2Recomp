@@ -117,7 +117,7 @@ namespace ps2controls
             "Move forward / accelerate", "Move back / brake", "Move / steer left", "Move / steer right", "Sprint",
             "Jump", "Fire / attack", "Aim / lock on", "Action", "Next weapon", "Enter / exit vehicle", "Handbrake",
             "Horn", "Camera mode", "Look behind", "Pause", "Menu: accept", "Menu: back", "Menu: up", "Menu: down",
-            "Menu: left", "Menu: right"};
+            "Menu: left", "Menu: right", "Map: target"};
         return action >= 0 && action < kActionCount ? kNames[action] : "?";
     }
 
@@ -148,10 +148,13 @@ namespace ps2controls
         set(Pause, KEY_ESCAPE, KEY_P);
         set(MenuAccept, KEY_ENTER, KEY_KP_ENTER);
         set(MenuBack, KEY_BACKSPACE);
-        set(MenuUp, KEY_UP);
-        set(MenuDown, KEY_DOWN);
-        set(MenuLeft, KEY_LEFT);
-        set(MenuRight, KEY_RIGHT);
+        // The menu keys: the arrows plus WASD (the menu context ignores the
+        // gameplay bindings, so the movement keys need their own menu row).
+        set(MenuUp, KEY_UP, KEY_W);
+        set(MenuDown, KEY_DOWN, KEY_S);
+        set(MenuLeft, KEY_LEFT, KEY_A);
+        set(MenuRight, KEY_RIGHT, KEY_D);
+        set(MapTarget, KEY_SPACE); // Square on the map; Backspace is Triangle (back / legend)
     }
 
     std::string bindingName(int binding)

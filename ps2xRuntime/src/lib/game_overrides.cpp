@@ -577,10 +577,13 @@ namespace
             case 14: return pc::MenuAccept; // Cross
             case 13:
             case 12: return pc::MenuBack; // Circle / Triangle
+            case 15: return pc::MapTarget; // Square: Target On/Off on the map
             case 4: return pc::MenuUp;
             case 6: return pc::MenuDown;
             case 7: return pc::MenuLeft;
             case 5: return pc::MenuRight;
+            case 10:
+            case 11: return pc::kNone; // the wheel zooms the map; no key label
             default: break;
             }
         }
@@ -675,6 +678,7 @@ namespace
     {
         uint32_t addr = 0;
         std::string original;
+        int kind = 0; // 0 = a "~X~" symbol string, 1 = the map zoom pair
     };
     std::vector<VcsMenuPromptSite> g_vcsMenuPromptSites;
     std::unordered_set<uint32_t> g_vcsMenuPromptAddrs;
@@ -800,6 +804,24 @@ namespace
             if (!g_vcsButtonAddrs.insert(a).second)
                 continue; // already collected in an earlier pass
             g_vcsButtonSites.push_back(site);
+            // The map's zoom hint ("L1 and R1 buttons..."): with the keyboard
+            // set the wheel is the zoom, so the whole pair collapses to one
+            // prompt. Registered as a whole-string site, applied last.
+            if (token == VcsBtnL1 && site.originalLen > 0)
+            {
+                std::string orig;
+                for (int i = 0; i < site.originalLen; ++i)
+                    orig.push_back(static_cast<char>(site.original[i] < 256u ? site.original[i] : '?'));
+                if (orig.rfind("L1 and R1 buttons", 0) == 0 && g_vcsMenuPromptAddrs.insert(a).second &&
+                    g_vcsMenuPromptSites.size() < 192u)
+                {
+                    VcsMenuPromptSite pair;
+                    pair.addr = a;
+                    pair.original = std::move(orig);
+                    pair.kind = 1;
+                    g_vcsMenuPromptSites.push_back(std::move(pair));
+                }
+            }
             if (g_vcsButtonSites.size() >= 256u)
                 break;
             // Do not skip the rest of the string: a later token ("R1" in
@@ -869,7 +891,17 @@ namespace
         for (VcsMenuPromptSite &site : g_vcsMenuPromptSites)
         {
             std::string text = site.original;
-            if (set == "keyboard")
+            if (site.kind == 1)
+            {
+                // The map zoom pair: one wheel prompt for the keyboard set.
+                // The console sets keep the per-word labels ("LB and RB
+                // buttons"), so only the keyboard set writes this string.
+                if (set == "keyboard")
+                    text = "Mouse Wheel";
+                else if (!set.empty())
+                    continue;
+            }
+            else if (set == "keyboard")
             {
                 auto replaceAll = [](std::string &s, const std::string &from, const std::string &to)
                 {

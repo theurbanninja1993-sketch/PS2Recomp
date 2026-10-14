@@ -342,54 +342,47 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         {
             Select = 0, L3, R3, Start, Up, Right, Down, Left, L2, R2, L1, R1, Triangle, Circle, Cross, Square
         };
-        // Menus and common actions.
-        if (held(pc::MenuUp))
-            press(Up);
-        if (held(pc::MenuDown))
-            press(Down);
-        if (held(pc::MenuLeft))
-            press(Left);
-        if (held(pc::MenuRight))
-            press(Right);
-        if (held(pc::MenuAccept))
-            press(Cross);
-        if (held(pc::MenuBack))
-            press(Triangle);
+        // Menus and common actions. The menu keys work in the game's menus
+        // only (their own row of bindings), and the gameplay bindings do not
+        // leak into the menus.
+        const bool inMenu = context == ps2controls::Menus;
+        if (inMenu)
+        {
+            if (held(pc::MenuUp))
+                press(Up);
+            if (held(pc::MenuDown))
+                press(Down);
+            if (held(pc::MenuLeft))
+                press(Left);
+            if (held(pc::MenuRight))
+                press(Right);
+            if (held(pc::MenuAccept))
+                press(Cross);
+            if (held(pc::MenuBack))
+                press(Triangle);
+            if (held(pc::MapTarget))
+                press(Square); // the map's Target On/Off
+        }
         if (held(pc::Pause))
             press(Start);
-        if (held(pc::EnterVehicle))
-            press(Triangle);
-        if (held(pc::CameraMode))
-            press(Select);
-        if (held(pc::LookBehind))
-            press(R3);
-        if (held(pc::Fire))
-            press(Circle);
+        if (!inMenu)
+        {
+            if (held(pc::EnterVehicle))
+                press(Triangle);
+            if (held(pc::CameraMode))
+                press(Select);
+            if (held(pc::LookBehind))
+                press(R3);
+            if (held(pc::Fire))
+                press(Circle);
+        }
 
         // Left stick: WASD; in vehicles forward / back are the pedals. In the
-        // game's menus WASD navigates like the arrow keys (discrete D-pad
-        // steps, no analog stick) and the mouse wheel zooms the map (R1 in,
-        // L1 out).
-        const bool inMenu = context == ps2controls::Menus;
+        // game's menus the wheel zooms the map (R1 in, L1 out); navigation is
+        // the menu keys above (arrows plus WASD).
         float moveX = 0.0f, moveY = 0.0f;
         if (inMenu)
         {
-            if (held(pc::MoveForward))
-                press(Up);
-            if (held(pc::MoveBackward))
-                press(Down);
-            if (held(pc::MoveLeft))
-                press(Left);
-            if (held(pc::MoveRight))
-                press(Right);
-            if (held(pc::Sprint))
-                press(Cross);
-            if (held(pc::Jump))
-                press(Square);
-            if (held(pc::Interact))
-                press(L1);
-            if (held(pc::Aim))
-                press(R1);
             int zoom = m_wheelSteps.exchange(0, std::memory_order_relaxed);
             if (zoom == 0)
             {

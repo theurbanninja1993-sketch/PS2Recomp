@@ -2805,6 +2805,47 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::TableHeadersRow();
                     for (int action = 0; action < pc::kActionCount; ++action)
                     {
+                        if (action >= pc::MenuAccept)
+                            continue; // the menu keys have their own section
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(pc::actionName(action));
+                        for (int slot = 0; slot < 2; ++slot)
+                        {
+                            ImGui::TableNextColumn();
+                            ImGui::PushID(action * 2 + slot);
+                            const bool capturing = m_captureAction == action && m_captureSlot == slot;
+                            const std::string label =
+                                capturing ? std::string("Press a key...") : pc::bindingName(settings.keys[action][slot]);
+                            if (ImGui::Button(label.c_str(), ImVec2(-FLT_MIN, 0.0f)))
+                            {
+                                m_captureAction = capturing ? -1 : action;
+                                m_captureSlot = slot;
+                            }
+                            if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+                            {
+                                settings.keys[action][slot] = pc::kNone;
+                                m_captureAction = -1;
+                                changed = true;
+                            }
+                            ImGui::PopID();
+                        }
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::SeparatorText("Menu keys");
+                ImGui::TextDisabled("Used in the game's menus only, independent of the gameplay bindings above. "
+                                    "The wheel zooms the map; Backspace sends Triangle (back, and the map legend).");
+                if (ImGui::BeginTable("menu-keys", 3,
+                                      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit,
+                                      ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+                {
+                    ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch);
+                    ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
+                    ImGui::TableSetupColumn("Alternate", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
+                    ImGui::TableHeadersRow();
+                    for (int action = pc::MenuAccept; action < pc::kActionCount; ++action)
+                    {
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
                         ImGui::TextUnformatted(pc::actionName(action));
