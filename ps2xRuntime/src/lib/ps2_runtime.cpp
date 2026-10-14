@@ -462,8 +462,18 @@ namespace
     }
 }
 
-static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
+// `outDraw` is the texture the caller should draw: `tex` (the host's own, for
+// the CPU frames) or the renderer's shared display texture when it composes on
+// the GPU in the window's context - then there is nothing to upload at all.
+static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight, Texture2D &outDraw)
 {
+    // The texture the caller draws persists between frames: a repeat present
+    // (or a frame the renderer composed on the GPU) must keep drawing what was
+    // last handed over, whether that is raylib's own texture or the renderer's.
+    static Texture2D s_lastDraw{};
+    if (s_lastDraw.id == 0)
+        s_lastDraw = tex;
+    outDraw = s_lastDraw;
     static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
     static bool s_hasLatchedInitialFrame = false;
     static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
@@ -493,6 +503,31 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         return;
     }
 
+    // The renderer composed this frame into a texture it shares with us: draw
+    // it directly (no readback, no upload).
+    {
+        uint32_t glWidth = 0u, glHeight = 0u;
+        const uint32_t glTexture = rt->gs().latchedHostPresentationGlTexture(glWidth, glHeight);
+        if (glTexture != 0u && glWidth != 0u && glHeight != 0u)
+        {
+            static Texture2D s_shared{};
+            s_shared.id = glTexture;
+            s_shared.width = static_cast<int>(glWidth);
+            s_shared.height = static_cast<int>(glHeight);
+            s_shared.mipmaps = 1;
+            s_shared.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+            // The renderer keeps the shared texture's filtering in step with the
+            // "smooth filtering" setting (see updateSharedPresentFilter).
+            s_lastDraw = s_shared;
+            outDraw = s_lastDraw;
+            outWidth = glWidth;
+            outHeight = glHeight;
+            s_lastWidth = glWidth;
+            s_lastHeight = glHeight;
+            s_hasUploadedFrame = true;
+            return;
+        }
+    }
     s_scratch.clear();
     uint32_t width = 0u;
     uint32_t height = 0u;
@@ -517,6 +552,8 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
             outHeight = s_lastHeight != 0u ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
             return;
         }
+        s_lastDraw = tex; // a CPU frame: draw the host's own texture again
+        outDraw = s_lastDraw;
         Image blank = GenImageColor(tex.width, tex.height, BLACK); // the texture may have grown (upscaling)
         UpdateTexture(tex, blank.data);
         UnloadImage(blank);
@@ -532,6 +569,8 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     static uint64_t s_lastUploadedFrameId = 0u;
     if (frameId != 0u && frameId == s_lastUploadedFrameId)
     {
+        s_lastDraw = tex;
+        outDraw = s_lastDraw;
         outWidth = width;
         outHeight = height;
         s_lastWidth = width;
@@ -583,6 +622,8 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         s_scratch.size() == static_cast<size_t>(width) * height * 4u)
     {
         UpdateTexture(tex, s_scratch.data());
+        s_lastDraw = tex;
+        outDraw = s_lastDraw;
         outWidth = width;
         outHeight = height;
         s_hasUploadedFrame = true;
@@ -611,6 +652,8 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     }
 
     UpdateTexture(tex, s_uploadBuffer.data());
+    s_lastDraw = tex;
+    outDraw = s_lastDraw;
     outWidth = width;
     outHeight = height;
     s_hasUploadedFrame = true;
@@ -3146,7 +3189,8 @@ void PS2Runtime::run()
             if (g_gsGpuPresentHeight.load(std::memory_order_relaxed) != windowHeight)
                 g_gsGpuPresentHeight.store(windowHeight, std::memory_order_relaxed);
         }
-        UploadFrame(frameTex, this, presentWidth, presentHeight);
+        Texture2D presentDraw = frameTex;
+        UploadFrame(frameTex, this, presentWidth, presentHeight, presentDraw);
 
         m_padBackend.updateHostInput();
         if (IsKeyPressed(KEY_F10))
@@ -3192,7 +3236,7 @@ void PS2Runtime::run()
             (screenHeight - dstHeight) * 0.5f,
             dstWidth,
             dstHeight};
-        DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        DrawTexturePro(presentDraw, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);

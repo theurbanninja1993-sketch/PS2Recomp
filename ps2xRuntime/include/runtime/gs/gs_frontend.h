@@ -135,6 +135,13 @@ public:
     void setDebugHistoryPaused(bool paused);
     bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
     void latchHostPresentationFrame();
+    // The composed display as a GL texture, when the GPU renderer shares the
+    // host window's context: the host draws it directly instead of uploading
+    // pixels. Returns 0 when the frame is a CPU one (then use
+    // copyLatchedHostPresentationFrame). The texture belongs to the renderer
+    // and stays valid until it is reused a couple of frames later.
+    uint32_t latchedHostPresentationGlTexture(uint32_t &outWidth, uint32_t &outHeight) const;
+
     // Hands the latched frame to the caller (no copy when it is already packed
     // at its width, which the upscaled GPU path always is), so this is not
     // const: it takes the frame.
@@ -239,6 +246,9 @@ private:
     uint32_t m_hostPresentationSourceFbp = 0;
     bool m_hostPresentationUsedPreferred = false;
     bool m_hasHostPresentationFrame = false;
+    uint32_t m_hostPresentationGlTexture = 0; // non-zero: a GPU frame (no pixels)
+    uint32_t m_hostPresentationGlWidth = 0;
+    uint32_t m_hostPresentationGlHeight = 0;
     // Every GS input (packet, register, image upload) bumps the sequence; the
     // frame id only changes when a new picture is actually latched, so the
     // host can skip recomposing and re-uploading a repeat present.

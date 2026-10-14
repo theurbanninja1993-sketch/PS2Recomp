@@ -236,6 +236,13 @@ namespace gsgpu
         // Downscale target for the presentation readback (see upscalePresentation).
         GLuint m_readbackTexture = 0, m_readbackFramebuffer = 0;
         uint32_t m_readbackWidth = 0, m_readbackHeight = 0;
+        // Double-buffered composed display handed to the host as a texture when
+        // the renderer shares the window's GL context (no readback, no upload).
+        GLuint m_presentShared[2] = {0u, 0u};
+        GLuint m_presentSharedFramebuffer[2] = {0u, 0u};
+        uint32_t m_presentSharedWidth = 0, m_presentSharedHeight = 0;
+        GLint m_presentSharedFilter = 0; // GL_LINEAR / GL_NEAREST, follows the setting
+        int m_presentSharedIndex = 0;
         GLuint m_vao = 0, m_emptyVao = 0;
         GLuint m_vbo = 0;
         size_t m_vboCapacity = 0;

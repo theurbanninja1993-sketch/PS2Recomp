@@ -299,10 +299,18 @@ struct PresentationFrame
     uint32_t displayFbp = 0;
     uint32_t sourceFbp = 0;
     bool usedPreferred = false;
+    // When the renderer shares the host window's GL context it hands the
+    // composed display over as a GL texture instead of CPU pixels, and the
+    // host draws that directly (no readback, no upload).
+    uint32_t glTexture = 0;
+    uint32_t glWidth = 0;
+    uint32_t glHeight = 0;
 
     explicit operator bool() const
     {
-        return !pixels.empty() && width != 0u && height != 0u;
+        if (width == 0u || height == 0u)
+            return false;
+        return !pixels.empty() || glTexture != 0u;
     }
 };
 

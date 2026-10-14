@@ -3,6 +3,7 @@
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
+#include "runtime/ps2_host_settings.h" // smoothFiltering: the shared display texture's filter
 
 #include "raylib.h" // PS2X_TEXREPL_DUMP: ExportImage writes the dumped PNGs
 
@@ -2634,7 +2635,65 @@ void main()
         const uint32_t s = m_scale;
         const uint32_t width = std::max(crt1 ? c1.width : 0u, crt2 ? c2.width : 0u) * s;
         const uint32_t height = std::max(crt1 ? c1.height : 0u, crt2 ? c2.height : 0u) * s;
-        if (m_presentTexture == 0 || m_presentWidth < width || m_presentHeight < height)
+        // When the renderer shares the host window's context, the display is
+        // composed into one of two exactly-sized textures the host draws
+        // directly: no readback, no upload. (Otherwise the growing texture
+        // below feeds the CPU readback path.)
+        static const bool s_sharePresent = []()
+        {
+            const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
+            return env == nullptr || std::atoi(env) != 0;
+        }();
+        const bool sharePresent = s_sharePresent && m_context.sharedWithHost();
+        if (sharePresent)
+        {
+            // The host draws this texture with raylib, so its filtering has to
+            // follow the "smooth filtering" setting here (raylib only sets
+            // parameters on textures it loaded itself).
+            const GLint filter = ps2HostSettings().smoothFiltering ? GL_LINEAR : GL_NEAREST;
+            if (filter != m_presentSharedFilter)
+            {
+                m_presentSharedFilter = filter;
+                for (GLuint texture : m_presentShared)
+                {
+                    if (texture == 0)
+                        continue;
+                    gl.glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, filter);
+                    gl.glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, filter);
+                }
+            }
+        }
+        if (sharePresent && (m_presentShared[0] == 0 || m_presentSharedWidth != width || m_presentSharedHeight != height))
+        {
+            for (int i = 0; i < 2; ++i)
+            {
+                if (m_presentShared[i] != 0)
+                    gl.glDeleteTextures(1, &m_presentShared[i]);
+                if (m_presentSharedFramebuffer[i] != 0)
+                    gl.glDeleteFramebuffers(1, &m_presentSharedFramebuffer[i]);
+                m_presentShared[i] = 0;
+                m_presentSharedFramebuffer[i] = 0;
+            }
+            m_presentSharedWidth = width;
+            m_presentSharedHeight = height;
+            for (int i = 0; i < 2; ++i)
+            {
+                gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_presentShared[i]);
+                gl.glTextureStorage2D(m_presentShared[i], 1, GL_RGBA8, static_cast<GLsizei>(width),
+                                      static_cast<GLsizei>(height));
+                // The host samples this with raylib; it can override the filter.
+                gl.glTextureParameteri(m_presentShared[i], GL_TEXTURE_MIN_FILTER,
+                                       m_presentSharedFilter != 0 ? m_presentSharedFilter : GL_LINEAR);
+                gl.glTextureParameteri(m_presentShared[i], GL_TEXTURE_MAG_FILTER,
+                                       m_presentSharedFilter != 0 ? m_presentSharedFilter : GL_LINEAR);
+                gl.glTextureParameteri(m_presentShared[i], GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                gl.glTextureParameteri(m_presentShared[i], GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                gl.glCreateFramebuffers(1, &m_presentSharedFramebuffer[i]);
+                gl.glNamedFramebufferTexture(m_presentSharedFramebuffer[i], GL_COLOR_ATTACHMENT0, m_presentShared[i], 0);
+                gl.glNamedFramebufferDrawBuffer(m_presentSharedFramebuffer[i], GL_COLOR_ATTACHMENT0);
+            }
+        }
+        if (!sharePresent && (m_presentTexture == 0 || m_presentWidth < width || m_presentHeight < height))
         {
             if (m_presentTexture != 0)
             {
@@ -2673,7 +2732,8 @@ void main()
         gl.glProgramUniform2f(p.id, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, top.target->texture);
         gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
-        gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_presentFramebuffer);
+        gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER,
+                             sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer);
         gl.glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
         gl.glDisable(GL_SCISSOR_TEST);
         gl.glDisable(GL_BLEND);
@@ -2681,6 +2741,23 @@ void main()
         gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         gl.glBindVertexArray(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (sharePresent)
+        {
+            // Make the write visible to the host's context (it draws this
+            // texture next frame; the context's own ordering keeps the GPU
+            // work ahead of the sample).
+            gl.glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+            gl.glFlush();
+            frame.glTexture = m_presentShared[m_presentSharedIndex];
+            frame.glWidth = width;
+            frame.glHeight = height;
+            frame.width = width;
+            frame.height = height;
+            frame.rowPixels = width;
+            frame.displayFbp = frame.sourceFbp = (crt1 ? c1 : c2).target->block / 32u;
+            m_presentSharedIndex ^= 1;
+            return;
+        }
 
         // The readback is the expensive part of the present and the frame is
         // only ever shown at the host window's size: when the window is
