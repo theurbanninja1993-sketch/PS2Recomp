@@ -16,6 +16,15 @@ extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+
+// GLFW's gamepad mappings (from SDL's database, generated into mappings.h at
+// build time) only carry the device revisions it knew about. A pad whose
+// firmware reports a different revision matches nothing: it is detected, but
+// every button and axis reads zero. GLFW can be handed extra mappings at
+// runtime, which is how those are fixed without rebuilding.
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 namespace
 {
@@ -88,8 +97,55 @@ void ps2SetPreferredGamepad(const std::string &name)
     g_preferredPad = name;
 }
 
+// Adds mappings GLFW does not ship, plus an optional user file, once per run.
+// Call after GLFW is initialised (i.e. after InitWindow) and before reading
+// pads: glfwUpdateGamepadMappings re-evaluates already-connected joysticks.
+static void applyExtraGamepadMappings()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    // Xbox One S pad over USB reporting firmware revision 0x0517: the database
+    // has 0x0408 / 0x0301 / 0x0000 for product 0x02ea on Linux, so this one
+    // matched nothing (owner's pad, 2026-10-14). Body copied from the closest
+    // sibling ("Microsoft Xbox One S pad - Wired").
+    static const char *kSupplement =
+        "030000005e040000ea02000017050000,Microsoft X-Box One S pad,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,"
+        // A pad reporting no revision at all for the same product.
+        "030000005e040000ea02000000000000,Xbox One S pad (no revision),a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,";
+    if (!glfwUpdateGamepadMappings(kSupplement))
+        std::fprintf(stderr, "[pad] extra gamepad mappings rejected\n");
+    // <config>/ps2recomp/gamecontrollerdb.txt: SDL-style lines to drop in for
+    // pads GLFW does not know (any entry whose guid matches a connected pad).
+    std::error_code error;
+    const std::filesystem::path userFile =
+        std::filesystem::path(ps2HostSettingsPath()).parent_path() / "gamecontrollerdb.txt";
+    if (std::filesystem::exists(userFile, error))
+    {
+        if (FILE *f = std::fopen(userFile.string().c_str(), "rb"))
+        {
+            std::string text;
+            char buffer[4096];
+            size_t read = 0;
+            while ((read = std::fread(buffer, 1, sizeof(buffer), f)) > 0)
+                text.append(buffer, read);
+            std::fclose(f);
+            if (!text.empty() && glfwUpdateGamepadMappings(text.c_str()))
+                std::fprintf(stderr, "[pad] loaded %s\n", userFile.string().c_str());
+            else if (!text.empty())
+                std::fprintf(stderr, "[pad] %s rejected\n", userFile.string().c_str());
+        }
+    }
+}
+
 int ps2ActiveGamepad()
 {
+    applyExtraGamepadMappings();
     int active = -1;
     {
         std::lock_guard lock(g_preferredPadMutex);
