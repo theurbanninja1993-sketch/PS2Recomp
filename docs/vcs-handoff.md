@@ -548,19 +548,30 @@ texture packs from `mods/`, Windows build under Wine.
        second icon blank; the map's "L1 and R1 buttons" hint reads "Mouse
        Wheel"), and Q / RMB no longer press L1/R1.
      - **The game's Widescreen option follows the port's aspect setting**
-       (2026-10-13 late). Two layers, both from F8 RAM diffs with the
-       option off/on:
-       - **0x486E28** = the render flag (1 = widescreen active). It is also
-         set while a cutscene plays, so the port's off state leaves it alone
-         in cutscenes (the first dump round read 1 everywhere because those
-         dumps were during the opening cutscenes). This is the one the game
-         actually renders from - the earlier config bytes below turned out
-         to be derived copies the game rewrites.
-       - 0x6F2889 / 0x6F288D / 0x6F2A49 / 0x6F2A4D = display-config bits
-         (0x20 set for 4:3, clear for widescreen), written as well.
-       The port clears/sets both every frame from the aspect setting
-       (`PS2X_WIDESCREEN_FLAG` / `PS2X_WIDESCREEN_BYTE` override the
-       addresses; 0 writes nothing). Owner verification pending.
+       (2026-10-13 late). The option state itself is the only thing that
+       needs writing: a 32-bit flag at ***(0x48F3D0) + 0x30** (0 = 4:3,
+       1 = 16:9). It was pinned with a guest-store trace (`PS2X_WATCH_BOOL_WRITES`,
+       now filtered to the static data range + F7 markers in `boolwrites.log`):
+       the in-game toggle stores it via the menu setter at 0x2AF660
+       (`sw a1, 0x30(a0)`), and the game re-derives everything else from it
+       every frame, so the port must not write the derived values:
+       - 0x487488 = the 2D/HUD aspect (1.33333 / 1.77778, 1.66667 during
+         cutscenes) by 0x2653F0;
+       - the camera half-FOV pair at CCam(*(0x51E490)) + 0x60 / + 0x64
+         (tan(FOV/2) and tan(FOV/2)/aspect) and 0x742AC4, applied by the
+         renderer every frame via 0x1AB9E0;
+       - the HUD layout scale (0.85 / 0.68) read live from the getter
+         0x2AF658 by 0x2AF7C8 / 0x31DB20 and friends;
+       - the frontend's "Widescreen On/Off" text (the option page value
+         dispatcher at 0x2AEC9C reads the same getter).
+       Earlier attempts wrote the derived values (0x487488, 0x742AC4,
+       0x486E28) and were overwritten every frame - and would have broken
+       the cutscene aspect. 0x486E28 is also derived per frame now, so the
+       port no longer writes it; only the display-config bit 0x20 of
+       0x6F2889 / 0x6F288D / 0x6F2A49 / 0x6F2A4D is still replicated
+       (the game only writes it at toggle time). `PS2X_WIDESCREEN_FLAG`
+       overrides those addresses; `PS2X_WIDESCREEN_LOG=1` prints each
+       option write. Owner verification pending.
    - **Map-screen icons covered (2026-10-13 late).** The map legend draws
      its button icons as their own textures; miss logging + single-key
      colour tests on the owner's capture 6209 found them:

@@ -1509,14 +1509,24 @@ namespace
     // (0x6F4540) is MODE_FLYBY (17) while one plays (4 = on foot).
     // The game's own widescreen option follows the port's aspect setting
     // (16:9 turns it on, 4:3 / Stretch turn it off), so the owner does not
-    // have to set both. Two layers, both found by RAM diffing F8 dumps with
-    // the option off and on:
-    //  - the render flag 0x486E28 (1 = widescreen active; also set while a
-    //    cutscene plays, so the off state leaves it alone in cutscenes), and
-    //  - the display-config bit 0x20 of 0x6F2889 / 0x6F288D / 0x6F2A49 /
-    //    0x6F2A4D (set for 4:3, clear for widescreen).
-    // PS2X_WIDESCREEN_FLAG=<hex[,hex]> / PS2X_WIDESCREEN_BYTE=<hex[,hex]>
-    // override the addresses for testing; 0 writes nothing.
+    // have to set both.
+    //
+    // The option itself lives at *(0x48F3D0) + 0x30 (32-bit: 0 = 4:3,
+    // 1 = 16:9). Writing it is exactly what the in-game Display Options
+    // toggle does (menu setter 0x2AF660); everything else follows from it
+    // live, every frame:
+    //  - the 2D/HUD aspect 0x487488 (1.33333 / 1.77778, forced to 1.66667
+    //    while a cutscene plays) by 0x2653F0,
+    //  - the 3D camera half-FOV pair at CCam + 0x60 / + 0x64 (tan(FOV/2)
+    //    and tan(FOV/2) / aspect) and the renderer aspect 0x742AC4,
+    //  - the HUD layout scale (0.85 for 4:3, 0.68 for 16:9),
+    //  - the frontend's "Widescreen On/Off" text.
+    // The pointer is allocated at boot, so re-read it each frame and skip
+    // until it is valid. The display-config bit 0x20 of 0x6F2889 /
+    // 0x6F288D / 0x6F2A49 / 0x6F2A4D is only written by the game at
+    // toggle time, so the port keeps replicating it.
+    // PS2X_WIDESCREEN_FLAG=<hex[,hex]> overrides those addresses for
+    // testing; 0 writes nothing.
     void vcsApplyWidescreen(uint8_t *rdram)
     {
         static const std::vector<uint32_t> s_bits = []()
@@ -1540,62 +1550,27 @@ namespace
             }
             return std::vector<uint32_t>{0x006F2889u, 0x006F288Du, 0x006F2A49u, 0x006F2A4Du};
         }();
-        static const std::vector<uint32_t> s_bytes = []()
-        {
-            std::vector<uint32_t> flags;
-            if (const char *env = std::getenv("PS2X_WIDESCREEN_BYTE"))
-            {
-                const std::string text(env);
-                size_t start = 0;
-                while (start < text.size())
-                {
-                    const size_t comma = text.find(',', start);
-                    const std::string part = text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-                    if (!part.empty())
-                        flags.push_back(static_cast<uint32_t>(std::strtoul(part.c_str(), nullptr, 16)));
-                    if (comma == std::string::npos)
-                        break;
-                    start = comma + 1;
-                }
-                return flags;
-            }
-            return std::vector<uint32_t>{0x00486E28u};
-        }();
-        // The aspect ratio the game renders and scales the HUD from:
-        // 1.33333 = 4:3, 1.77778 = 16:9 (plus its copy). Found as the only
-        // float that changed exactly that way with the option in both dump
-        // rounds. PS2X_WIDESCREEN_ASPECT=<hex[,hex]> overrides.
-        static const std::vector<uint32_t> s_aspect = []()
-        {
-            std::vector<uint32_t> flags;
-            if (const char *env = std::getenv("PS2X_WIDESCREEN_ASPECT"))
-            {
-                const std::string text(env);
-                size_t start = 0;
-                while (start < text.size())
-                {
-                    const size_t comma = text.find(',', start);
-                    const std::string part = text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-                    if (!part.empty())
-                        flags.push_back(static_cast<uint32_t>(std::strtoul(part.c_str(), nullptr, 16)));
-                    if (comma == std::string::npos)
-                        break;
-                    start = comma + 1;
-                }
-                return flags;
-            }
-            return std::vector<uint32_t>{0x00487488u, 0x00742AC4u};
-        }();
         const bool widescreen = ps2HostSettings().aspect == PS2HostSettings::Aspect::Widescreen;
-        for (const uint32_t addr : s_aspect)
+
+        // The game's own option state. This is the single source everything
+        // else is derived from, so writing it is the whole job; the derived
+        // values (0x487488, 0x742AC4, the camera FOV pair, the HUD scale)
+        // must not be written - the game recomputes them every frame and
+        // would fight us (and cutscenes use their own 1.66667).
+        uint32_t option = 0;
+        std::memcpy(&option, rdram + 0x0048F3D0u, sizeof(option));
+        if (option >= 0x00100000u && static_cast<size_t>(option) + 0x34u <= PS2_RAM_SIZE)
         {
-            if (addr < 0x00100000u || static_cast<size_t>(addr) + 4u > PS2_RAM_SIZE)
-                continue;
-            const float aspect = widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
-            float current = 0.0f;
-            std::memcpy(&current, rdram + addr, 4);
-            if (current != aspect)
-                std::memcpy(rdram + addr, &aspect, 4);
+            const uint32_t value = widescreen ? 1u : 0u;
+            uint32_t current = 0;
+            std::memcpy(&current, rdram + option + 0x30u, sizeof(current));
+            if (current != value)
+            {
+                std::memcpy(rdram + option + 0x30u, &value, sizeof(value));
+                if (std::getenv("PS2X_WIDESCREEN_LOG") != nullptr)
+                    std::cerr << "[ws] game option at 0x" << std::hex << (option + 0x30u) << std::dec
+                              << " = " << value << std::endl;
+            }
         }
         for (const uint32_t addr : s_bits)
         {
@@ -1606,20 +1581,9 @@ namespace
             if (rdram[addr] != value)
                 rdram[addr] = value;
         }
-        for (const uint32_t addr : s_bytes)
-        {
-            if (addr < 0x00100000u || static_cast<size_t>(addr) + 1u > PS2_RAM_SIZE)
-                continue;
-            if (!widescreen && vcsInCutscene(rdram))
-                continue; // the game forces widescreen for cutscenes; leave it
-            const uint8_t value = widescreen ? 1u : 0u;
-            if (rdram[addr] != value)
-                rdram[addr] = value;
-        }
-        // Trigger the game's own "video settings changed" apply, which is what
-        // actually latches the aspect into the viewport and HUD (the frontend
-        // toggle writes these two flags). Once per setting change, and on the
-        // first frame so a launch with 16:9 already applies.
+        // Nudge the game's own "video settings changed" apply once per
+        // setting change (the frontend toggle sets these two flags), so the
+        // display state is re-read even if some path only looks on change.
         static int s_lastWidescreen = -1;
         const int wanted = widescreen ? 1 : 0;
         if (wanted != s_lastWidescreen)
