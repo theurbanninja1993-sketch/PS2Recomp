@@ -515,9 +515,10 @@ texture packs from `mods/`, Windows build under Wine.
      selection.
      - **The keyboard's menu keys are their own set** (Controls -> Menu
        keys): accept = Enter, back = Backspace, the directions = arrows +
-       WASD, and Map: target = Space. Only these work in the game's menus -
-       the gameplay bindings no longer leak in (and the menu keys never fire
-       in gameplay).
+       WASD, Map: target = Space, and Skip cutscene = Enter. Only these work
+       in the game's menus - the gameplay bindings no longer leak in (and
+       the menu keys never fire in gameplay), except Skip cutscene, which
+       sends Cross in every context so cutscenes still skip.
      - **The map zoom on the keyboard is the mouse wheel alone**: the wheel
        prompt replaces the L1/R1 icon pair (one "MOUSE WHEEL" keycap, the
        second icon blank; the map's "L1 and R1 buttons" hint reads "Mouse
