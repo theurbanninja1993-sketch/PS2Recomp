@@ -2675,11 +2675,11 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     // (e.g. a DualSense plus Steam's virtual pad for it).
                     const int activePad = ps2ActiveGamepad();
                     const std::string current = settings.controllerName.empty()
-                                                    ? std::string("Automatic (first connected)")
+                                                    ? std::string("Automatic (last controller used)")
                                                     : settings.controllerName;
                     if (ImGui::BeginCombo("Controller", current.c_str()))
                     {
-                        if (ImGui::Selectable("Automatic (first connected)", settings.controllerName.empty()))
+                        if (ImGui::Selectable("Automatic (last controller used)", settings.controllerName.empty()))
                         {
                             settings.controllerName.clear();
                             changed = true;
@@ -2690,10 +2690,30 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                                 continue;
                             const std::string name = GetGamepadName(i);
                             ImGui::PushID(i);
-                            if (ImGui::Selectable(name.c_str(), settings.controllerName == name))
+                            const bool real = ps2IsRealGamepad(i);
+                            if (real)
                             {
-                                settings.controllerName = name;
-                                changed = true;
+                                if (ImGui::Selectable(name.c_str(), settings.controllerName == name))
+                                {
+                                    settings.controllerName = name;
+                                    changed = true;
+                                }
+                            }
+                            else
+                            {
+                                // A keyboard or mouse posing as a joystick (no
+                                // mapping): selectable to pin, but it cannot
+                                // respond, so say so.
+                                if (ImGui::Selectable((name + "  (not a gamepad)").c_str(),
+                                                      settings.controllerName == name))
+                                {
+                                    settings.controllerName = name;
+                                    changed = true;
+                                }
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("Connected, but GLFW has no gamepad mapping for it, so it\n"
+                                                      "cannot send input. Usually a keyboard or mouse exposing a\n"
+                                                      "phantom joystick node - pick a real controller (or Automatic).");
                             }
                             ImGui::PopID();
                         }

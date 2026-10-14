@@ -1067,6 +1067,7 @@ bool PS2Runtime::initialize(const char *title)
         ps2SetPreferredGamepad(ps2HostSettings().controllerName);
         ps2ModsRefresh();
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+        ps2ApplyGamepadMappings(); // GLFW is up now: install the extra pad mappings
         gsgpu::publishHostGlContext(); // the renderer joins the window's GL share group
         SetWindowMinSize(320, 240);
         InitAudioDevice();

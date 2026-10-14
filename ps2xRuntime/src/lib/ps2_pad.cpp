@@ -97,15 +97,17 @@ void ps2SetPreferredGamepad(const std::string &name)
     g_preferredPad = name;
 }
 
-// Adds mappings GLFW does not ship, plus an optional user file, once per run.
-// Call after GLFW is initialised (i.e. after InitWindow) and before reading
-// pads: glfwUpdateGamepadMappings re-evaluates already-connected joysticks.
-static void applyExtraGamepadMappings()
+// Adds mappings GLFW does not ship, plus an optional user file. Must run with
+// GLFW initialised - raylib does that in InitWindow - because
+// glfwUpdateGamepadMappings only re-evaluates already-connected joysticks and
+// returns GLFW_FALSE while GLFW is down. It is called again on every
+// ps2ActiveGamepad() call until it takes, and explicitly right after
+// InitWindow, because prompt setup runs earlier during boot.
+void ps2ApplyGamepadMappings()
 {
     static bool s_done = false;
     if (s_done)
         return;
-    s_done = true;
     // Xbox One S pad over USB reporting firmware revision 0x0517: the database
     // has 0x0408 / 0x0301 / 0x0000 for product 0x02ea on Linux, so this one
     // matched nothing (owner's pad, 2026-10-14). Body copied from the closest
@@ -113,13 +115,18 @@ static void applyExtraGamepadMappings()
     static const char *kSupplement =
         "030000005e040000ea02000017050000,Microsoft X-Box One S pad,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
         "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,"
+        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n"
         // A pad reporting no revision at all for the same product.
         "030000005e040000ea02000000000000,Xbox One S pad (no revision),a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
         "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,";
+        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n";
+    // One mapping per line: GLFW splits on newlines, so two entries sharing a
+    // line are parsed as a single (wrong) mapping. A false return means GLFW is
+    // not up yet, so do not latch - retry on the next call.
     if (!glfwUpdateGamepadMappings(kSupplement))
-        std::fprintf(stderr, "[pad] extra gamepad mappings rejected\n");
+        return;
+    s_done = true;
+    std::fprintf(stderr, "[pad] extra gamepad mappings loaded\n");
     // <config>/ps2recomp/gamecontrollerdb.txt: SDL-style lines to drop in for
     // pads GLFW does not know (any entry whose guid matches a connected pad).
     std::error_code error;
@@ -135,29 +142,52 @@ static void applyExtraGamepadMappings()
             while ((read = std::fread(buffer, 1, sizeof(buffer), f)) > 0)
                 text.append(buffer, read);
             std::fclose(f);
-            if (!text.empty() && glfwUpdateGamepadMappings(text.c_str()))
-                std::fprintf(stderr, "[pad] loaded %s\n", userFile.string().c_str());
-            else if (!text.empty())
-                std::fprintf(stderr, "[pad] %s rejected\n", userFile.string().c_str());
+            if (!text.empty())
+                std::fprintf(stderr, "[pad] %s %s\n", userFile.string().c_str(),
+                             glfwUpdateGamepadMappings(text.c_str()) ? "loaded" : "rejected");
         }
     }
 }
 
+// A device the game can actually read: present *and* recognised by GLFW's
+// gamepad database. Keyboards and mice often expose phantom joystick nodes (the
+// owner's Razer keyboard takes two slots) and those must never be auto-selected:
+// they report no input at all, which looks exactly like a controller that is
+// detected but dead. glfwJoystickIsGamepad is safe to call before/after init.
+bool ps2IsRealGamepad(int pad)
+{
+    return IsGamepadAvailable(pad) && glfwJoystickIsGamepad(pad) != 0;
+}
+
 int ps2ActiveGamepad()
 {
-    applyExtraGamepadMappings();
+    ps2ApplyGamepadMappings();
     int active = -1;
     {
         std::lock_guard lock(g_preferredPadMutex);
         if (!g_preferredPad.empty())
+        {
+            // The pinned name first among real gamepads, then among any joystick
+            // (an unrecognised pad is honoured, but say so: it will not respond
+            // until it has a mapping).
+            for (int i = 0; i < 4 && active < 0; ++i)
+                if (ps2IsRealGamepad(i) && g_preferredPad == GetGamepadName(i))
+                    active = i;
             for (int i = 0; i < 4 && active < 0; ++i)
                 if (IsGamepadAvailable(i) && g_preferredPad == GetGamepadName(i))
+                {
+                    std::fprintf(stderr,
+                                 "[pad] '%s' is connected but GLFW has no mapping for it; "
+                                 "it will not respond\n",
+                                 g_preferredPad.c_str());
                     active = i;
+                }
+        }
     }
     if (active < 0)
     {
-        // Automatic: the controller last used. Other devices can claim the
-        // low slots (a gaming keyboard with analog keys poses as a gamepad).
+        // Automatic: the controller last used. Only real gamepads count, so a
+        // keyboard or mouse can never win a slot.
         static std::atomic<int> s_auto{-1};
         // Sticks count as used when moved from where they rested when first
         // seen (some devices rest at -1).
@@ -180,17 +210,17 @@ int ps2ActiveGamepad()
             return false;
         };
         int current = s_auto.load(std::memory_order_relaxed);
-        if (current < 0 || !IsGamepadAvailable(current) || !used(current))
+        if (current < 0 || !ps2IsRealGamepad(current) || !used(current))
             for (int i = 0; i < 4; ++i)
-                if (i != current && IsGamepadAvailable(i) && used(i))
+                if (i != current && ps2IsRealGamepad(i) && used(i))
                 {
                     current = i;
                     break;
                 }
-        if (current >= 0 && !IsGamepadAvailable(current))
+        if (current >= 0 && !ps2IsRealGamepad(current))
             current = -1;
         for (int i = 0; i < 4 && current < 0; ++i)
-            if (IsGamepadAvailable(i))
+            if (ps2IsRealGamepad(i))
                 current = i;
         s_auto.store(current, std::memory_order_relaxed);
         active = current;
@@ -201,11 +231,12 @@ int ps2ActiveGamepad()
         std::string all;
         for (int i = 0; i < 4; ++i)
             if (IsGamepadAvailable(i))
-                all += " [" + std::to_string(i) + "] " + GetGamepadName(i);
+                all += " [" + std::to_string(i) + "] " + GetGamepadName(i) +
+                       (ps2IsRealGamepad(i) ? "" : " (not a gamepad - ignored)");
         if (active >= 0)
             std::fprintf(stderr, "[pad] using controller %d: %s (connected:%s)\n", active, GetGamepadName(active), all.c_str());
         else
-            std::fprintf(stderr, "[pad] no controller\n");
+            std::fprintf(stderr, "[pad] no controller (connected:%s)\n", all.empty() ? " none" : all.c_str());
     }
     return active;
 }
@@ -615,6 +646,66 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
+    // PS2X_PAD_DEBUG=1: once a second, what a controller is doing - which pad
+    // the port picked, whether the pinned name matched, the host buttons down
+    // and the PS2 mask that resulted.
+    static const bool s_debugPad = std::getenv("PS2X_PAD_DEBUG") != nullptr;
+    if (s_debugPad)
+    {
+        static double s_next = 0.0;
+        const double now = GetTime();
+        if (now >= s_next)
+        {
+            s_next = now + 1.0;
+            const int pad = ps2ActiveGamepad();
+            std::string names;
+            for (int i = 0; i < 4; ++i)
+            {
+                if (!IsGamepadAvailable(i))
+                    continue;
+                const char *nm = GetGamepadName(i);
+                unsigned mask = 0;
+                for (int b = GAMEPAD_BUTTON_LEFT_FACE_UP; b <= GAMEPAD_BUTTON_RIGHT_THUMB; ++b)
+                    if (IsGamepadButtonDown(i, static_cast<GamepadButton>(b)))
+                        mask |= 1u << b;
+                char axes[64];
+                std::snprintf(axes, sizeof(axes), "%d,%d,%d,%d", static_cast<int>(GetGamepadAxisMovement(i, 0) * 100.0f),
+                              static_cast<int>(GetGamepadAxisMovement(i, 1) * 100.0f),
+                              static_cast<int>(GetGamepadAxisMovement(i, 2) * 100.0f),
+                              static_cast<int>(GetGamepadAxisMovement(i, 3) * 100.0f));
+                names += " [" + std::to_string(i) + "]" + (nm ? nm : "?") +
+                         "(mapped=" + (glfwJoystickIsGamepad(i) ? "1" : "0") + ",btn=" + std::to_string(mask) +
+                         ",ax=" + axes + ")";
+            }
+            const char *name = pad >= 0 ? GetGamepadName(pad) : nullptr;
+            // Also append to a log file, so the lines can be shared without
+            // redirecting stderr: padlog.txt in the working directory (like the
+            // F8 dumps), and the same name in the config folder so it can
+            // always be found (~/.config/ps2recomp/padlog.txt).
+            static FILE *s_file = std::fopen("padlog.txt", "a");
+            static FILE *s_configFile = []() -> FILE *
+            {
+                const std::filesystem::path path =
+                    std::filesystem::path(ps2HostSettingsPath()).parent_path() / "padlog.txt";
+                return std::fopen(path.string().c_str(), "a");
+            }();
+            char line[1024];
+            std::snprintf(line, sizeof(line),
+                          "[pad] active=%d '%s' pinned='%s' connected:%s ps2mask=0x%04x axes=%u,%u,%u,%u\n", pad,
+                          name ? name : "(none)", ps2HostSettings().controllerName.c_str(), names.c_str(),
+                          static_cast<unsigned>(btns), data[6], data[7], data[4], data[5]);
+            for (FILE *sink : {s_file, s_configFile})
+            {
+                if (sink != nullptr)
+                {
+                    std::fputs(line, sink);
+                    std::fflush(sink);
+                }
+            }
+            std::fprintf(stderr, "[pad] active=%d '%s' pinned='%s'\n", pad, name ? name : "(none)",
+                         ps2HostSettings().controllerName.c_str());
+        }
+    }
     return true;
 }
 

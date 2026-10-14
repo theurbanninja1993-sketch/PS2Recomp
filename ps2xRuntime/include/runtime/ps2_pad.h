@@ -13,6 +13,16 @@
 int ps2ActiveGamepad();
 void ps2SetPreferredGamepad(const std::string &name);
 
+// True when the raylib slot holds a device GLFW recognises as a gamepad: a
+// keyboard or mouse exposing a phantom joystick node is not one, and such a
+// device can never be auto-selected or read.
+bool ps2IsRealGamepad(int pad);
+
+// Installs the gamepad mappings GLFW does not ship (plus the user file in the
+// config folder). Safe to call at any time: it retries until GLFW is
+// initialised, so map it right after InitWindow and before the first pad read.
+void ps2ApplyGamepadMappings();
+
 // The active input device, from the gamepad's reported name (the keyboard when
 // no gamepad is active). Drives the runtime's prompt wording and the
 // button-prompt replacement set.
