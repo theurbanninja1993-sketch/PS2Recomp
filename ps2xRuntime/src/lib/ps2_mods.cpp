@@ -139,7 +139,8 @@ namespace
             case PS2InputDevice::DualSense: return "dualsense";
             case PS2InputDevice::DualShock: return "dualshock";
             case PS2InputDevice::Switch: return "switch";
-            default: return "keyboard"; // the keyboard, or an unknown Xbox-style gamepad
+            case PS2InputDevice::Generic: return "xbox"; // unknown pads present ABXY like an Xbox pad
+            default: return "keyboard";
         }
     }
 } // namespace

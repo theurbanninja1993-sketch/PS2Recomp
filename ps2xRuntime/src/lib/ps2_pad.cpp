@@ -210,14 +210,16 @@ int ps2ActiveGamepad()
     return active;
 }
 
-PS2InputDevice ps2InputDeviceKind()
+// What a connected pad is, from its name: GLFW's own name when the pad is in
+// its database, the name from our supplement otherwise ("Microsoft X-Box One
+// S pad", hence the hyphenated spelling below).
+static PS2InputDevice gamepadDeviceKind(int pad)
 {
-    const int pad = ps2ActiveGamepad();
     if (pad < 0)
         return PS2InputDevice::Keyboard;
     std::string name = GetGamepadName(pad);
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (name.find("xbox") != std::string::npos)
+    if (name.find("xbox") != std::string::npos || name.find("x-box") != std::string::npos)
         return PS2InputDevice::Xbox;
     if (name.find("steam") != std::string::npos)
         return PS2InputDevice::Steam;
@@ -231,10 +233,58 @@ PS2InputDevice ps2InputDeviceKind()
     return PS2InputDevice::Generic; // e.g. 8BitDo etc.: Xbox-style ABXY layout
 }
 
+// The device the player last used is what the automatic prompts follow: the
+// keyboard while typing, the pad as soon as it is touched. -1 until something
+// is used (then the active pad, or the keyboard with no pad at all).
+std::atomic<int> g_lastInputDevice{-1};
+
+PS2InputDevice ps2InputDeviceKind()
+{
+    const int last = g_lastInputDevice.load(std::memory_order_relaxed);
+    if (last >= 0)
+        return static_cast<PS2InputDevice>(last);
+    return gamepadDeviceKind(ps2ActiveGamepad());
+}
+
 bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
 {
     if (!data || size < 32)
         return false;
+
+    // Auto prompts follow the last used device, not the first connected one:
+    // any bound key / mouse button / the wheel means the keyboard, a pad
+    // button press or a stick moved past half way means that pad.
+    {
+        const PS2HostSettings &settings = ps2HostSettings();
+        const int pad = ps2ActiveGamepad();
+        bool padUsed = false;
+        if (pad >= 0)
+        {
+            for (int b = GAMEPAD_BUTTON_LEFT_FACE_UP; b <= GAMEPAD_BUTTON_LEFT_THUMB && !padUsed; ++b)
+                padUsed = IsGamepadButtonPressed(pad, static_cast<GamepadButton>(b));
+            for (int a = GAMEPAD_AXIS_LEFT_X; a <= GAMEPAD_AXIS_RIGHT_Y && !padUsed; ++a)
+                padUsed = std::fabs(GetGamepadAxisMovement(pad, static_cast<GamepadAxis>(a))) > 0.5f;
+        }
+        bool keyboardUsed = false;
+        for (int a = 0; a < ps2controls::kActionCount && !keyboardUsed; ++a)
+        {
+            for (int slot = 0; slot < 2 && !keyboardUsed; ++slot)
+            {
+                const int binding = settings.keys[a][slot];
+                if (binding == ps2controls::kNone)
+                    continue;
+                keyboardUsed = binding >= ps2controls::kMouseBase
+                                   ? IsMouseButtonPressed(binding - ps2controls::kMouseBase)
+                                   : IsKeyPressed(binding);
+            }
+        }
+        if (!keyboardUsed && GetMouseWheelMove() != 0.0f)
+            keyboardUsed = true;
+        if (padUsed)
+            g_lastInputDevice.store(static_cast<int>(gamepadDeviceKind(pad)), std::memory_order_relaxed);
+        else if (keyboardUsed)
+            g_lastInputDevice.store(static_cast<int>(PS2InputDevice::Keyboard), std::memory_order_relaxed);
+    }
 
     std::memset(data, 0, 32);
     data[0] = 0x01;
