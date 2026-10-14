@@ -64,13 +64,25 @@ namespace gsgpu
             return RegisterClassW(&wc) != 0;
         }();
         (void)s_registered;
-        HWND window = CreateWindowExW(0, kWindowClass, L"", WS_OVERLAPPED, 0, 0, 16, 16, nullptr, nullptr, instance, nullptr);
-        if (!window)
+        // Prefer the host window's DC: creating the context on the same DC as
+        // raylib's means the same pixel format, which is what WGL needs to
+        // share objects reliably. A private window picks its own format, and
+        // sharing then produced a corrupt display texture - which is why the
+        // renderer was left on the readback path (correct but a full frame
+        // round-trip through the CPU every frame, scaling with resolution).
+        HWND window = nullptr;
+        HDC dc = reinterpret_cast<HDC>(g_hostSharedGlDisplay.load(std::memory_order_relaxed));
+        const bool ownDc = dc == nullptr;
+        if (ownDc)
         {
-            error = "CreateWindowEx failed";
-            return false;
+            window = CreateWindowExW(0, kWindowClass, L"", WS_OVERLAPPED, 0, 0, 16, 16, nullptr, nullptr, instance, nullptr);
+            if (!window)
+            {
+                error = "CreateWindowEx failed";
+                return false;
+            }
+            dc = GetDC(window);
         }
-        HDC dc = GetDC(window);
         PIXELFORMATDESCRIPTOR pfd{};
         pfd.nSize = sizeof(pfd);
         pfd.nVersion = 1;
@@ -79,21 +91,29 @@ namespace gsgpu
         pfd.cColorBits = 32;
         pfd.cDepthBits = 24;
         pfd.cStencilBits = 8;
-        const int format = ChoosePixelFormat(dc, &pfd);
-        if (format == 0 || !SetPixelFormat(dc, format, &pfd))
+        if (ownDc)
         {
-            ReleaseDC(window, dc);
-            DestroyWindow(window);
-            error = "no OpenGL pixel format";
-            return false;
+            // The host's DC already carries raylib's pixel format; setting one
+            // on it again would fail.
+            const int format = ChoosePixelFormat(dc, &pfd);
+            if (format == 0 || !SetPixelFormat(dc, format, &pfd))
+            {
+                ReleaseDC(window, dc);
+                DestroyWindow(window);
+                error = "no OpenGL pixel format";
+                return false;
+            }
         }
         HGLRC legacy = wglCreateContext(dc);
         if (!legacy || !wglMakeCurrent(dc, legacy))
         {
             if (legacy)
                 wglDeleteContext(legacy);
-            ReleaseDC(window, dc);
-            DestroyWindow(window);
+            if (ownDc)
+            {
+                ReleaseDC(window, dc);
+                DestroyWindow(window);
+            }
             error = "wglCreateContext failed";
             return false;
         }
@@ -132,12 +152,16 @@ namespace gsgpu
         {
             if (context)
                 wglDeleteContext(context);
-            ReleaseDC(window, dc);
-            DestroyWindow(window);
+            if (ownDc)
+            {
+                ReleaseDC(window, dc);
+                DestroyWindow(window);
+            }
             error = "wglCreateContextAttribsARB (GL 4.6 core) failed";
             return false;
         }
-        m_display = window;
+        m_ownsDc = ownDc;
+        m_display = window; // null when the DC belongs to the host
         m_dc = dc;
         m_context = context;
 
@@ -156,14 +180,17 @@ namespace gsgpu
 
     void GLContext::destroy()
     {
-        if (!m_display)
+        if (!m_context && !m_dc)
             return;
         wglMakeCurrent(nullptr, nullptr);
         if (m_context)
             wglDeleteContext(static_cast<HGLRC>(m_context));
-        if (m_dc)
+        // Only release what we created: the DC may be the host window's.
+        if (m_ownsDc && m_dc)
+        {
             ReleaseDC(static_cast<HWND>(m_display), static_cast<HDC>(m_dc));
-        DestroyWindow(static_cast<HWND>(m_display));
+            DestroyWindow(static_cast<HWND>(m_display));
+        }
         m_context = nullptr;
         m_dc = nullptr;
         m_display = nullptr;

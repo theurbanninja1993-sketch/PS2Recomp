@@ -46,7 +46,11 @@ namespace gsgpu
         if (window == nullptr)
             return;
         g_hostSharedGlContext.store(reinterpret_cast<uintptr_t>(glfwGetWGLContext(window)), std::memory_order_relaxed);
-        g_hostSharedGlDisplay.store(reinterpret_cast<uintptr_t>(glfwGetWGLContext(window)), std::memory_order_relaxed);
+        // The window's DC, so the renderer can create its context on the same
+        // DC as raylib's. WGL shares reliably only between contexts with
+        // compatible pixel formats, and a private window picks its own.
+        HWND hwnd = glfwGetWin32Window(window);
+        g_hostSharedGlDisplay.store(reinterpret_cast<uintptr_t>(hwnd ? GetDC(hwnd) : nullptr), std::memory_order_relaxed);
 #else
         (void)0;
 #endif

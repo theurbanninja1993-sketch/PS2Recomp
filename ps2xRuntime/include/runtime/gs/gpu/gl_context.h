@@ -142,6 +142,7 @@ namespace gsgpu
         void *m_display = nullptr; // EGLDisplay (Windows: the hidden HWND)
         void *m_context = nullptr; // EGLContext (Windows: HGLRC)
         void *m_dc = nullptr;      // Windows: the window's HDC
+        bool m_ownsDc = true;      // false when the DC is the host window's
         void *m_window = nullptr;  // GLX: the hidden X window (the drawable)
         void *m_glxOwnDisplay = nullptr; // GLX: our own X connection
         bool m_shared = false;
