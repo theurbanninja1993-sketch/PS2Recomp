@@ -514,10 +514,12 @@ bool ps2PromptArtRefreshIfNeeded()
 
     static uint64_t s_appliedSig = 0;
     static std::string s_appliedSet;
+    static int s_appliedContext = -1;
     static uint64_t s_pendingSig = 0;
     static std::string s_pendingSet;
     static int s_pendingFrames = 0;
 
+    const int context = currentContext();
     const uint64_t sig = effectiveSignature(set);
     if (sig == s_appliedSig && set == s_appliedSet)
     {
@@ -526,13 +528,17 @@ bool ps2PromptArtRefreshIfNeeded()
     }
     // Debounce: bindings and the pad context can settle a moment after a
     // change (settings UI, vehicle entry); rewrite once the state is stable.
+    // The menu context is a deliberate, stable change (the pause flag), so
+    // entering or leaving the game's menus rewrites on the very first frame
+    // that sees it - otherwise the map shows the gameplay keys for a moment.
+    const int debounce = (context == ps2controls::Menus || s_appliedContext == ps2controls::Menus) ? 1 : 45;
     if (sig != s_pendingSig || set != s_pendingSet)
     {
         s_pendingSig = sig;
         s_pendingSet = set;
         s_pendingFrames = 0;
     }
-    if (++s_pendingFrames < 45)
+    if (++s_pendingFrames < debounce)
         return false;
 
     std::error_code ec;
@@ -544,7 +550,6 @@ bool ps2PromptArtRefreshIfNeeded()
         if (entry.is_regular_file(ec) && entry.path().extension() == ".png")
             fs::remove(entry.path(), ec);
 
-    const int context = currentContext();
     auto glyphFor = [&](int ps2Button, int size, bool cell = false) -> Image
     {
         if (keyboard)
@@ -600,6 +605,7 @@ bool ps2PromptArtRefreshIfNeeded()
 
     s_appliedSig = sig;
     s_appliedSet = set;
+    s_appliedContext = context;
     s_pendingFrames = 0;
     if (std::getenv("PS2X_PROMPT_TRACE") != nullptr)
         std::cerr << "[prompts] runtime art written for " << set << " (" << outDir.string() << ")" << std::endl;

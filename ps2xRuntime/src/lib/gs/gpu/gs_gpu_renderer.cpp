@@ -15,8 +15,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
+
+namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter; // EeScheduler.cpp (dump index)
@@ -2409,6 +2412,46 @@ void main()
         if (!replacement.requested)
         {
             replacement.requested = true;
+            // Small replacements (the prompt art) load inline, so a pad
+            // context change swaps the prompts within the same frame instead
+            // of showing the previous keys until the worker catches up. The
+            // worker handles the big texture-pack files in the background.
+            std::error_code sizeEc;
+            const auto fileSize = fs::file_size(file->second, sizeEc);
+            if (!sizeEc && fileSize <= 256u * 1024u)
+            {
+                gsrepl::Image image;
+                std::string error;
+                if (gsrepl::loadImage(file->second, image, error) && !image.levels.empty())
+                {
+                    GL &gl = m_context.gl;
+                    GLuint texture = 0;
+                    gl.glCreateTextures(GL_TEXTURE_2D, 1, &texture);
+                    gl.glTextureStorage2D(texture, static_cast<GLsizei>(image.levels.size()), image.glFormat,
+                                          static_cast<GLsizei>(image.levels[0].width),
+                                          static_cast<GLsizei>(image.levels[0].height));
+                    for (size_t level = 0; level < image.levels.size(); ++level)
+                    {
+                        const auto &l = image.levels[level];
+                        if (image.compressed)
+                            gl.glCompressedTextureSubImage2D(texture, static_cast<GLint>(level), 0, 0,
+                                                             static_cast<GLsizei>(l.width),
+                                                             static_cast<GLsizei>(l.height), image.glFormat,
+                                                             static_cast<GLsizei>(l.data.size()), l.data.data());
+                        else
+                            gl.glTextureSubImage2D(texture, static_cast<GLint>(level), 0, 0,
+                                                   static_cast<GLsizei>(l.width), static_cast<GLsizei>(l.height), GL_RGBA,
+                                                   GL_UNSIGNED_BYTE, l.data.data());
+                    }
+                    gl.glTextureParameteri(texture, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(image.levels.size()) - 1);
+                    gl.glTextureParameterf(texture, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, 16.0f);
+                    replacement.texture = texture;
+                    ++m_statReplLoaded;
+                    return replacement.texture;
+                }
+                std::cerr << "[gs:gpu] replacement " << file->second << ": " << error << std::endl;
+                return 0; // stays "requested": the game's own art shows
+            }
             {
                 std::lock_guard lock(m_replMutex);
                 m_replRequests.emplace_back(key, file->second);
