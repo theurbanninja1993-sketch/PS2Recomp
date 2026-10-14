@@ -2654,18 +2654,37 @@ void main()
         // there, so Windows takes the readback path unless asked otherwise with
         // PS2X_GS_PRESENT_SHARE=1. PS2X_GS_PRESENT_SHARE=0 forces the readback
         // path everywhere (see the note in gl_context.cpp).
-        static const bool s_sharePresent = []()
+        // Which present path pays depends on the internal scale. The readback
+        // path is cheap at native - it is capped to the window, GPU-downscaled
+        // and hands the latch over rather than copying - but its cost is
+        // proportional to pixels, so at 2x or more it dwarfs everything. The
+        // shared path avoids the copy entirely but serialises the two GL
+        // contexts, which costs more than the readback when there is little to
+        // copy. Measured: at native the shared path was markedly worse (late
+        // frames 108-250/600 readback vs 216-293/600 shared, underrun up to
+        // 126k vs 163k per 10 s). So: shared only when it pays.
+        // PS2X_GS_PRESENT_SHARE overrides: 1 forces shared, 0 forces readback.
+        static const int s_sharePresent = []()
         {
             const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
             if (env != nullptr)
-                return std::atoi(env) != 0;
-#if defined(_WIN32)
-            return false;
-#else
-            return true;
-#endif
+                return std::atoi(env) != 0 ? 1 : 0;
+            return -1; // automatic
         }();
-        const bool sharePresent = s_sharePresent && m_context.sharedWithHost();
+        const bool sharePresent = m_context.sharedWithHost() &&
+                                  (s_sharePresent == 1 || (s_sharePresent < 0 && m_scale > 1u));
+        {
+            // Say once which path is in use: the choice depends on the internal
+            // scale, so it is not obvious from the outside.
+            static bool s_reported = false;
+            if (!s_reported)
+            {
+                s_reported = true;
+                std::cerr << "[gs] present: " << (sharePresent ? "shared texture" : "readback")
+                          << " (scale " << m_scale << ", "
+                          << (s_sharePresent < 0 ? "automatic" : "forced by PS2X_GS_PRESENT_SHARE") << ")" << std::endl;
+            }
+        }
         const uint32_t composedWidth = width, composedHeight = height;
         if (sharePresent)
         {
