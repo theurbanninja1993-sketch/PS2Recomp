@@ -343,10 +343,16 @@ texture packs from `mods/`, Windows build under Wine.
    (~+20 pts), which tips the airport into late frames. New
    `PS2X_TEXREPL_STATS` fields (added today) split it:
    - **Owner reported general gameplay slowdown again (2026-10-13 late)** -
-     next work item after the menu/cutscene changes. The mirror cost below
-     is the first suspect (it runs for every upload, pack or not); ask the
-     owner to run `PS2X_PERF_LOG=1 PS2X_TEXREPL_STATS=1` for a fresh split,
-     then implement the lazy mirror.
+     mostly gone before the prompt work; visible while loading texture
+     packs. Two causes found and fixed in 81346e7 (see the prompt section):
+     (a) the inline prompt load was keyed by file size, so small pack files
+     also decoded on the render thread mid-frame while textures streamed in
+     (the camera-movement flicker the owner saw), and (b) every prompt
+     rewrite bumped the index version and the renderer deleted + reloaded
+     every replacement texture, the whole pack included. The index now
+     carries per-file stamps and only changed entries reload; the inline
+     load is limited to entries flagged `inlineLoad` (the prompt art).
+     Re-measure after this: `PS2X_PERF_LOG=1 PS2X_TEXREPL_STATS=1`.
    - **mirrorMs ~590-950 ms per 5 s period (~16-19% of the render thread)**
      = `GSCpuBackend::UploadImage` decoding uploads into the CPU copy.
    - **hashMs ~16-30 ms** = texture/CLUT hashing - negligible.
