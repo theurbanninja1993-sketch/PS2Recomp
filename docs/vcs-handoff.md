@@ -571,7 +571,10 @@ texture packs from `mods/`, Windows build under Wine.
        0x6F2889 / 0x6F288D / 0x6F2A49 / 0x6F2A4D is still replicated
        (the game only writes it at toggle time). `PS2X_WIDESCREEN_FLAG`
        overrides those addresses; `PS2X_WIDESCREEN_LOG=1` prints each
-       option write. Owner verification pending.
+       option write. **Owner-verified working** (2026-10-14): 16:9 turns
+       the in-game option On with the correct HUD, 4:3 turns it Off.
+       Toggling the option in the game menu flips back within a frame -
+       the port's aspect setting is the master by design.
    - **Map-screen icons covered (2026-10-13 late).** The map legend draws
      its button icons as their own textures; miss logging + single-key
      colour tests on the owner's capture 6209 found them:
