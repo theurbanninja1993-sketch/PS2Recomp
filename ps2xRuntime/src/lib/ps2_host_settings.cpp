@@ -103,7 +103,12 @@ namespace ps2controls
         car[PadRB] = R1;
         car[PadLB] = L1;
         // Menus keep the classic map in every layout: menu navigation must not
-        // depend on the gameplay bindings (and vice versa).
+        // depend on the gameplay bindings (and vice versa). One modern
+        // convention on top: B is the back button. The game's own menus read
+        // Triangle as back, so B sends Triangle and Y takes over Circle.
+        int *menus = map[Menus];
+        menus[PadB] = Triangle;
+        menus[PadY] = Circle;
     }
 
     const char *actionName(int action)
