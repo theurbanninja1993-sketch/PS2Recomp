@@ -144,6 +144,74 @@ namespace
     }
 } // namespace
 
+namespace
+{
+    // The mods' replacement files, kept so the prompt layers can be rebuilt
+    // without rescanning the (possibly huge) mod folders. That rescan on
+    // every menu context flip was visible as the wrong prompt keys for about
+    // a second when opening the map.
+    std::shared_ptr<const gsrepl::Index> g_modsIndex;
+
+    // The prompt set + runtime-generated art on top of the cached mods index.
+    std::shared_ptr<const gsrepl::Index> ps2IndexWithPrompts()
+    {
+        const PS2HostSettings &settings = ps2HostSettings();
+        std::error_code ec;
+        auto index = std::make_shared<gsrepl::Index>();
+        if (g_modsIndex)
+            *index = *g_modsIndex;
+        {
+            const std::string set = resolvedPromptSet(settings);
+            if (!set.empty())
+            {
+                const fs::path dir = fs::path(ps2PromptsDirectory()) / set;
+                size_t count = 0, overridden = 0;
+                for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
+                     it != fs::recursive_directory_iterator(); it.increment(ec))
+                {
+                    if (ec)
+                        break;
+                    if (!it->is_regular_file(ec))
+                        continue;
+                    if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
+                    {
+                        overridden += index->files.find(*key) != index->files.end() ? 1u : 0u;
+                        index->files[*key] = it->path().string();
+                        ++count;
+                    }
+                }
+                if (count != 0u)
+                    std::cerr << "[prompts] " << set << ": " << count << " textures (" << overridden
+                              << " overriding mod packs)" << std::endl;
+            }
+        }
+        {
+            const std::string set = resolvedPromptSet(settings);
+            if (!set.empty())
+            {
+                const fs::path dir = fs::path(ps2PromptArtDirectory()) / set;
+                size_t count = 0;
+                for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
+                     it != fs::recursive_directory_iterator(); it.increment(ec))
+                {
+                    if (ec)
+                        break;
+                    if (!it->is_regular_file(ec))
+                        continue;
+                    if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
+                    {
+                        index->files[*key] = it->path().string();
+                        ++count;
+                    }
+                }
+                if (count != 0u)
+                    std::cerr << "[prompts] " << set << ": " << count << " runtime-generated textures" << std::endl;
+            }
+        }
+        return index;
+    }
+} // namespace
+
 void ps2ModsRefreshButtonPromptsIfNeeded()
 {
     // Auto follows the active input device: rebuild the replacement index only
@@ -157,7 +225,11 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
     const bool artChanged = ps2PromptArtRefreshIfNeeded();
     if (!setChanged && !artChanged)
         return;
-    ps2ModsRefresh();
+    // Only the prompt layers changed: rebuild them over the cached mods index
+    // instead of rescanning every mod folder (the full refresh runs at
+    // startup, on Rescan and on mod toggles).
+    auto index = ps2IndexWithPrompts();
+    gsrepl::setCurrent(!index->files.empty() ? std::shared_ptr<const gsrepl::Index>(index) : nullptr);
 }
 
 std::string ps2CurrentPromptSet()
@@ -188,7 +260,7 @@ void ps2ModsRefresh()
     // Load order: alphabetical; a later mod wins where two replace the same thing.
     std::sort(mods.begin(), mods.end(), [](const PS2ModInfo &a, const PS2ModInfo &b) { return a.name < b.name; });
 
-    auto index = std::make_shared<gsrepl::Index>();
+    auto index = std::make_shared<gsrepl::Index>(); // the mods layer; prompts load on top
     std::vector<PS2PnachEntry> pnach;
     for (PS2ModInfo &mod : mods)
     {
@@ -223,64 +295,11 @@ void ps2ModsRefresh()
         std::cerr << "[mods] " << mod.name << (mod.enabled ? "" : " (disabled)") << ": " << mod.textures
                   << " replacement textures, " << mod.patches << " memory patches" << std::endl;
     }
-    // Button-prompt set: PCSX2-named glyph textures in prompts/<set>/ next to
-    // the executable. This is a runtime feature, NOT a texture pack: it loads
-    // even when the texture-pack setting is off. It loads after the mods on
-    // purpose - where both replace the same texture, the prompt set wins (the
-    // index keeps the last file), so a user's pack can never override it.
-    {
-        const std::string set = resolvedPromptSet(settings);
-        if (!set.empty())
-        {
-            const fs::path dir = fs::path(ps2PromptsDirectory()) / set;
-            size_t count = 0, overridden = 0;
-            for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
-                 it != fs::recursive_directory_iterator(); it.increment(ec))
-            {
-                if (ec)
-                    break;
-                if (!it->is_regular_file(ec))
-                    continue;
-                if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
-                {
-                    overridden += index->files.find(*key) != index->files.end() ? 1u : 0u;
-                    index->files[*key] = it->path().string();
-                    ++count;
-                }
-            }
-            if (count != 0u)
-                std::cerr << "[prompts] " << set << ": " << count << " textures (" << overridden << " overriding mod packs)"
-                          << std::endl;
-        }
-    }
-    // Runtime-generated prompt art (keyboard keycaps following the live key
-    // bindings): read last, so it overrides the shipped prompts/<set>/ art.
-    {
-        const std::string set = resolvedPromptSet(settings);
-        if (!set.empty())
-        {
-            const fs::path dir = fs::path(ps2PromptArtDirectory()) / set;
-            size_t count = 0;
-            for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
-                 it != fs::recursive_directory_iterator(); it.increment(ec))
-            {
-                if (ec)
-                    break;
-                if (!it->is_regular_file(ec))
-                    continue;
-                if (const auto key = gsrepl::parseFileName(it->path().filename().string()))
-                {
-                    index->files[*key] = it->path().string();
-                    ++count;
-                }
-            }
-            if (count != 0u)
-                std::cerr << "[prompts] " << set << ": " << count << " runtime-generated textures" << std::endl;
-        }
-    }
     g_mods = std::move(mods);
     g_pnach = std::move(pnach);
-    gsrepl::setCurrent(!index->files.empty() ? std::shared_ptr<const gsrepl::Index>(index) : nullptr);
+    g_modsIndex = std::move(index);
+    auto withPrompts = ps2IndexWithPrompts();
+    gsrepl::setCurrent(!withPrompts->files.empty() ? std::shared_ptr<const gsrepl::Index>(withPrompts) : nullptr);
 }
 
 void ps2PnachApply(const std::vector<PS2PnachEntry> &entries, uint8_t *ram, size_t ramSize)
