@@ -342,6 +342,24 @@ texture packs from `mods/`, Windows build under Wine.
    the render thread runs **GsGpu ~44-57% with the pack vs ~24-30% without**
    (~+20 pts), which tips the airport into late frames. New
    `PS2X_TEXREPL_STATS` fields (added today) split it:
+   - **Fix 1 landed (2026-10-14): T4 uploads are mirrored whole blocks.**
+     Every VCS T4 upload is aligned to 32x16 tiles (= whole 256-byte GS
+     blocks: 100% of 2883 T4 transfers on the airport capture, 10.25 MB of
+     the 11.8 MB mirrored), so `GSCpuBackend::UploadImage` now writes those
+     tiles in one pass from the row-major source, applying the in-block
+     layout through a compile-time nibble permutation
+     (`GSMem::WriteT4Tile`, inverse of ColumnTable4), instead of walking the
+     page/block/column tables per pixel.
+     - `gs_replay` on the airport capture (pack active, GPU renderer):
+       **mirrorMs 42 -> 16-17**, hash counters identical
+       (draws=3944 hits=3408 misses=536 hashed=3092); the CPU-backend replay
+       is bit-identical (`vramHash=9e8e70dc2688b4a1`), and a standalone
+       check writes 8192 geometries with both writers - all identical.
+     - Not covered yet (previous path, unchanged): non-tile-aligned rects,
+       T8 (0.75 MB, 99.8% tile-aligned so it could use the same trick), C32
+       (0.77 MB), split uploads (none seen for T4).
+     - Measurement aid: `PS2X_TEXREPL_STATS=<interval>` (or `=1` for 300)
+       now also flushes on teardown, so 54-frame captures report.
    - **Owner reported general gameplay slowdown again (2026-10-13 late)** -
      mostly gone before the prompt work; visible while loading texture
      packs. Two causes found and fixed in 81346e7 (see the prompt section):
@@ -355,6 +373,7 @@ texture packs from `mods/`, Windows build under Wine.
      Re-measure after this: `PS2X_PERF_LOG=1 PS2X_TEXREPL_STATS=1`.
    - **mirrorMs ~590-950 ms per 5 s period (~16-19% of the render thread)**
      = `GSCpuBackend::UploadImage` decoding uploads into the CPU copy.
+     (Before Fix 1 above; the T4 block path cut what gs_replay sees to ~40%.)
    - **hashMs ~16-30 ms** = texture/CLUT hashing - negligible.
    - Per-format bytes: **PSM 0x14 (T4, 4-bit palettized) is ~95%** of both
      mirrored and hashed bytes (~140 MB per period; T8 ~2-9 MB, C32 ~6-9 MB
