@@ -413,10 +413,14 @@ namespace
 
     // Whether a cutscene is playing. Found by RAM-diffing F8 dumps taken
     // during cutscenes (B/C) and in gameplay (A/D): the flag is 1 in the
-    // cutscene dumps and 0 in the gameplay ones. PS2X_CUTSCENE_FLAG=<hex>
-    // overrides the address for testing (read as a 32-bit word).
+    // cutscene dumps and 0 in the gameplay ones. The opening logos and
+    // credits are FMV movies rather than in-engine cutscenes, so a recently
+    // served movie picture counts too. PS2X_CUTSCENE_FLAG=<hex> overrides
+    // the address for testing (read as a 32-bit word).
     bool vcsInCutscene(const uint8_t *rdram)
     {
+        if (ps2_stubs::isMpegMovieActive(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed)))
+            return true;
         static const uint32_t s_flag = []()
         {
             if (const char *env = std::getenv("PS2X_CUTSCENE_FLAG"))

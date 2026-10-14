@@ -12,6 +12,10 @@ namespace ps2_stubs
     // True once the stream feeding this MPEG has hit producer EOF and its end code
     // and every decoded picture and audio packet has been delivered (or stalled).
     bool isMpegStreamFinished(uint32_t mpegAddr, PS2Runtime *runtime);
+    // True while a movie is being shown: the player asks for a picture every
+    // movie frame and gameplay serves none, so a recent serve means a movie
+    // (the opening logos / credits) is on screen.
+    bool isMpegMovieActive(uint64_t currentFrame);
     // Offers the next queued audio packet to the game (normally done by demux
     // calls, which stop once the whole movie file has been read).
     // Pace demuxing by the audio the game has taken (0 = off; see MPEG.cpp).

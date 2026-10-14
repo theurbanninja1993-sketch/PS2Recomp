@@ -597,6 +597,9 @@ namespace ps2_stubs
         };
 
         std::mutex g_mpeg_stub_mutex;
+        // The presented frame of the last picture served to the guest: a movie
+        // is on screen while pictures keep coming (see isMpegMovieActive).
+        std::atomic<uint64_t> g_mpegLastPictureFrame{0u};
         constexpr uint32_t kMpegPictureWaitType = 1u;
         MpegStubState g_mpeg_stub_state;
 
@@ -2120,6 +2123,12 @@ namespace ps2_stubs
         pumpAudioCallbacks(rdram, ctx, runtime);
     }
 
+    bool isMpegMovieActive(uint64_t currentFrame)
+    {
+        const uint64_t last = g_mpegLastPictureFrame.load(std::memory_order_relaxed);
+        return last != 0u && currentFrame < last + 45u;
+    }
+
     bool isMpegStreamFinished(uint32_t mpegAddr, PS2Runtime *runtime)
     {
         // The demuxer reads the whole file well before the movie has been
@@ -2764,6 +2773,8 @@ namespace ps2_stubs
                 height = playback.height;
                 frameCount = playback.picturesServed;
                 playback.picturesServed += 1u;
+                g_mpegLastPictureFrame.store(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed),
+                                             std::memory_order_relaxed);
                 playback.nextPictureTickQ32 = presentationTargetQ32 + frameIntervalQ32;
                 playback.presentationEndTickQ32 = playback.nextPictureTickQ32;
                 haveFrame = true;
