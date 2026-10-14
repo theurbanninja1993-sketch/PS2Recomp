@@ -171,6 +171,21 @@ void PS2AudioBackend::setAudioReady(bool ready)
         }
         m_impl->stream = LoadAudioStream(48000, 16, 2);
         SetAudioStreamCallback(m_impl->stream, &streamCallback);
+        // Prime the ring with a little silence. The first seconds are the
+        // heaviest (loading, the intro FMVs) and the emulator has not filled the
+        // ring yet, so the callback would run dry and glitch until it catches up
+        // (a run otherwise reports ~10000 underrun frames in its first sample).
+        {
+            std::lock_guard<std::mutex> lock(g_streamRing.mutex);
+            const size_t prime = StreamRing::kFrames / 5u; // ~200 ms
+            for (size_t i = 0; i < prime; ++i)
+            {
+                const size_t frame = (g_streamRing.readFrame + g_streamRing.queuedFrames) % StreamRing::kFrames;
+                g_streamRing.samples[frame * 2u] = 0;
+                g_streamRing.samples[frame * 2u + 1u] = 0;
+                ++g_streamRing.queuedFrames;
+            }
+        }
         PlayAudioStream(m_impl->stream);
         m_impl->streamLoaded = true;
     }
