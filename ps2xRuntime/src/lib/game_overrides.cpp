@@ -1540,8 +1540,8 @@ namespace
         const bool widescreen = ps2HostSettings().aspect == PS2HostSettings::Aspect::Widescreen;
         for (const uint32_t addr : s_flags)
         {
-            if (static_cast<size_t>(addr) + 1u > PS2_RAM_SIZE)
-                continue;
+            if (addr < 0x00100000u || static_cast<size_t>(addr) + 1u > PS2_RAM_SIZE)
+                continue; // PS2X_WIDESCREEN_FLAG=0 disables the write for RAM diffs
             const uint8_t value =
                 widescreen ? static_cast<uint8_t>(rdram[addr] & ~0x20u) : static_cast<uint8_t>(rdram[addr] | 0x20u);
             if (rdram[addr] != value)
