@@ -1561,7 +1561,42 @@ namespace
             }
             return std::vector<uint32_t>{0x00486E28u};
         }();
+        // The aspect ratio the game renders and scales the HUD from:
+        // 1.33333 = 4:3, 1.77778 = 16:9 (plus its copy). Found as the only
+        // float that changed exactly that way with the option in both dump
+        // rounds. PS2X_WIDESCREEN_ASPECT=<hex[,hex]> overrides.
+        static const std::vector<uint32_t> s_aspect = []()
+        {
+            std::vector<uint32_t> flags;
+            if (const char *env = std::getenv("PS2X_WIDESCREEN_ASPECT"))
+            {
+                const std::string text(env);
+                size_t start = 0;
+                while (start < text.size())
+                {
+                    const size_t comma = text.find(',', start);
+                    const std::string part = text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                    if (!part.empty())
+                        flags.push_back(static_cast<uint32_t>(std::strtoul(part.c_str(), nullptr, 16)));
+                    if (comma == std::string::npos)
+                        break;
+                    start = comma + 1;
+                }
+                return flags;
+            }
+            return std::vector<uint32_t>{0x00487488u, 0x00742AC4u};
+        }();
         const bool widescreen = ps2HostSettings().aspect == PS2HostSettings::Aspect::Widescreen;
+        for (const uint32_t addr : s_aspect)
+        {
+            if (addr < 0x00100000u || static_cast<size_t>(addr) + 4u > PS2_RAM_SIZE)
+                continue;
+            const float aspect = widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+            float current = 0.0f;
+            std::memcpy(&current, rdram + addr, 4);
+            if (current != aspect)
+                std::memcpy(rdram + addr, &aspect, 4);
+        }
         for (const uint32_t addr : s_bits)
         {
             if (addr < 0x00100000u || static_cast<size_t>(addr) + 1u > PS2_RAM_SIZE)
