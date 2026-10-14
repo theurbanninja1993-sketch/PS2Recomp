@@ -71,6 +71,22 @@ namespace
     // Keyboard: the action whose bound key each PS2 button's keycap shows.
     int keyboardActionFor(int ps2Button)
     {
+        // In the game's menus the keyboard uses the fixed menu actions, not
+        // the gameplay bindings.
+        if (ps2controls::currentContext() == ps2controls::Menus)
+        {
+            switch (ps2Button)
+            {
+            case 14: return MenuAccept; // Cross
+            case 13:
+            case 12: return MenuBack; // Circle / Triangle
+            case 4: return MenuUp;
+            case 6: return MenuDown;
+            case 7: return MenuLeft;
+            case 5: return MenuRight;
+            default: break;
+            }
+        }
         switch (ps2Button)
         {
         case 14: return MoveForward; // Cross
@@ -257,12 +273,15 @@ namespace
         return img;
     }
 
-    Image makePill(const char *label, int size, const Font &font)
+    // fill: the fraction of the canvas height the pill occupies. The flat
+    // 0.44 band is the shoulder-button look for the map icons; the font-atlas
+    // cells pass a taller fill so the label stays readable in the tutorials.
+    Image makePill(const char *label, int size, const Font &font, float fill = 0.44f)
     {
         Image img = GenImageColor(size, size, BLANK);
         const float pad = static_cast<float>(std::max(2, size / 16));
         const float rim = static_cast<float>(std::max(2, size / 16));
-        const float top = size * 0.28f;
+        const float top = size * (1.0f - fill) * 0.5f;
         const float bot = size - top - 1;
         const Rectangle rec = {pad, top, size - 2 * pad - 1, bot - top};
         roundedRect(&img, rec, (bot - top) * 0.5f, kPillRim);
@@ -352,7 +371,7 @@ namespace
         return img;
     }
 
-    Image makeHostGlyph(const SetStyle &style, int host, int size, const Font &font)
+    Image makeHostGlyph(const SetStyle &style, int host, int size, const Font &font, float pillFill = 0.44f)
     {
         switch (host)
         {
@@ -370,11 +389,11 @@ namespace
         case PadRB:
         case PadLT:
         case PadRT:
-            return makePill(style.shoulder[host - PadLB], size, font);
+            return makePill(style.shoulder[host - PadLB], size, font, pillFill);
         case PadBack:
-            return makePill(style.back, size, font);
+            return makePill(style.back, size, font, pillFill);
         case PadStart:
-            return makePill(style.start, size, font);
+            return makePill(style.start, size, font, pillFill);
         case PadLS:
         case PadRS:
             return makeLabelDisc(style, style.stick[host - PadLS], {245, 245, 245, 255}, size, font);
@@ -493,7 +512,7 @@ bool ps2PromptArtRefreshIfNeeded()
             fs::remove(entry.path(), ec);
 
     const int context = currentContext();
-    auto glyphFor = [&](int ps2Button, int size) -> Image
+    auto glyphFor = [&](int ps2Button, int size, bool cell = false) -> Image
     {
         if (keyboard)
             return makeKeycap(bindingLabel(keyboardActionFor(ps2Button)), size, font);
@@ -503,7 +522,10 @@ bool ps2PromptArtRefreshIfNeeded()
             Image none{};
             return none; // keep the shipped art for this button
         }
-        return makeHostGlyph(*style, host, size, font);
+        // The font-atlas cells are drawn small in the HUD tutorials, so a pill
+        // that lands there (a shoulder bound to a face button) fills the cell
+        // instead of keeping the flat map-icon band.
+        return makeHostGlyph(*style, host, size, font, cell ? 0.8f : 0.44f);
     };
 
     for (const TextureArt &t : kTextures)
@@ -521,7 +543,7 @@ bool ps2PromptArtRefreshIfNeeded()
     {
         for (const SheetCell &cell : kSheetCells)
         {
-            Image cap = glyphFor(cell.ps2Button, 40);
+            Image cap = glyphFor(cell.ps2Button, 40, true);
             if (cap.data == nullptr)
                 continue; // leave the cell as shipped
             ImageDrawRectangleRec(&sheet, {(float)cell.x, (float)cell.y, (float)cell.w, (float)cell.h}, BLANK);
