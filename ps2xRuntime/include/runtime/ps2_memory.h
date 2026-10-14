@@ -2,6 +2,7 @@
 #define PS2_MEMORY_H
 
 #include <cstddef>
+#include "runtime/ps2_spinlock.h"
 #include <cstdint>
 #include <array>
 #include <functional>
@@ -489,7 +490,7 @@ public:
     std::function<void()> m_vif1CompletionHook;
     // The GIF arbiter (and masked-PATH3 FIFO) is fed by both the EE and the
     // VIF1 worker.
-    std::recursive_mutex m_gifArbiterMutex;
+    Ps2SpinLock m_gifArbiterMutex;
     std::mutex m_completedDmacMutex;
     std::vector<uint32_t> m_completedDmacCauses;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include "runtime/ps2_spinlock.h"
 #include <cstdint>
 
 // Thread status
@@ -210,7 +211,7 @@ inline std::unordered_map<uint32_t, RpcClientState> g_rpc_clients;
 inline SifRpcDebugEvent g_sif_rpc_debug_history[kSifRpcDebugHistoryCount]{};
 inline uint64_t g_sif_rpc_debug_next_seq = 0;
 inline std::mutex g_rpc_mutex;
-inline std::recursive_mutex g_sif_call_rpc_mutex;
+inline Ps2SpinLock g_sif_call_rpc_mutex;
 inline bool g_rpc_initialized = false;
 inline uint32_t g_rpc_next_id = 1;
 inline uint32_t g_rpc_packet_index = 0;

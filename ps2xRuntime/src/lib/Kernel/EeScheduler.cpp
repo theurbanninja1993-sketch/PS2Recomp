@@ -1719,12 +1719,19 @@ void EeScheduler::bindMainContextForSyscall(R5900Context &ctx, uint8_t *rdram)
 
 EeKernelSnapshot EeScheduler::snapshot() const
 {
+    // Ask for a fresh one: the next publish fills it. The caller gets the last
+    // one for now, which is at most one scheduler operation stale.
+    m_snapshotWanted.store(true, std::memory_order_release);
     std::lock_guard lock(m_snapshotMutex);
     return m_snapshot;
 }
 
 void EeScheduler::publishSnapshot()
 {
+    // Demand-driven: only build when a reader asked. Called from every scheduler
+    // operation (37 sites) and each build allocated and sorted three vectors.
+    if (!m_snapshotWanted.exchange(false, std::memory_order_acq_rel))
+        return;
     EeKernelSnapshot next{};
     next.sequence = ++m_snapshotSequence;
     next.eeCycle = m_eeCycle;

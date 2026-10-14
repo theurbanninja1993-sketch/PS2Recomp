@@ -1,4 +1,5 @@
 #include <chrono>
+#include "runtime/ps2_spinlock.h"
 #include "Common.h"
 #include "RPC.h"
 #include "../../ps2_iop_transport.h"
@@ -576,7 +577,7 @@ namespace ps2_syscalls
         if (const uint8_t *client = getConstMemPtr(rdram, getRegU32(ctx, 4)))
             std::memcpy(&timerSid, client + 0x24, 4);
         RpcTimer rpcTimer{timerSid, getRegU32(ctx, 5)};
-        std::lock_guard<std::recursive_mutex> rpcCallLock(g_sif_call_rpc_mutex);
+        std::lock_guard<Ps2SpinLock> rpcCallLock(g_sif_call_rpc_mutex);
 
         const uint32_t clientPtr = getRegU32(ctx, 4);
         const uint32_t rpcNum = getRegU32(ctx, 5);

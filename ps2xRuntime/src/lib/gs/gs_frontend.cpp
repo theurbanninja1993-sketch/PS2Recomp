@@ -266,7 +266,7 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
 
 void GS::reset()
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     std::memset(m_ctx, 0, sizeof(m_ctx));
     m_prim = {};
     m_primRegister = {};
@@ -367,7 +367,7 @@ const uint8_t *GS::lockDisplaySnapshot(uint32_t &outSize)
 
 GSDebugSnapshot GS::getDebugSnapshot() const
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
 
     GSDebugSnapshot snapshot{};
     snapshot.ctx[0] = m_ctx[0];
@@ -407,7 +407,7 @@ GSDebugSnapshot GS::getDebugSnapshot() const
 
 std::vector<GSDebugHistoryEntry> GS::getDebugHistory() const
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
 
     std::vector<GSDebugHistoryEntry> out;
     out.reserve(m_debugHistoryCount);
@@ -421,7 +421,7 @@ std::vector<GSDebugHistoryEntry> GS::getDebugHistory() const
 
 void GS::clearDebugHistory()
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     m_debugHistoryWrite = 0;
     m_debugHistoryCount = 0;
     m_debugNextSeq = 1;
@@ -431,13 +431,13 @@ void GS::clearDebugHistory()
 
 bool GS::isDebugHistoryPaused() const
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     return m_debugHistoryPaused;
 }
 
 void GS::setDebugHistoryPaused(bool paused)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     m_debugHistoryPaused = paused;
 }
 
@@ -617,7 +617,7 @@ void GS::recordPresentDebugEventUnlocked(uint32_t displayFbp, uint32_t sourceFbp
 
 bool GS::getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     if (!m_hasPreferredDisplaySource)
     {
         outSource = {};
@@ -683,7 +683,7 @@ void GS::latchHostPresentationFrame()
     GSPresentationRequest request{};
     const uint64_t inputSeq = m_gsInputSeq;
     {
-        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+        std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
         if (m_privRegs && gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
             gsCaptureRecord(3u, m_privRegs, sizeof(GSRegisters));
         if (!m_backend || !m_privRegs)
@@ -743,7 +743,7 @@ void GS::latchHostPresentationFrame()
 
     if (hasFrame)
     {
-        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+        std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
         recordPresentDebugEventUnlocked(displayFbp, sourceFbp, width, height, usedPreferred);
     }
 }
@@ -843,7 +843,7 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
 
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     ++m_gsInputSeq;
     if (!data || sizeBytes < 16 || !m_backend)
         return;
@@ -953,7 +953,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 
 bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     if (!data || sizeBytes < 16u || !m_backend)
         return false;
 
@@ -998,7 +998,7 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
                            const uint8_t *data,
                            uint32_t sizeBytes)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
 }
 
@@ -1277,7 +1277,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
 
 void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     ++m_gsInputSeq;
     if (gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
         gsCaptureRecord(2u, &regAddr, 1u, &value, 8u);
@@ -1836,19 +1836,19 @@ void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 
 bool GS::clearFramebufferContext(uint32_t contextIndex, uint32_t rgba)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     return m_backend && m_backend->ClearFramebuffer(m_ctx[(contextIndex != 0u) ? 1 : 0], rgba);
 }
 
 bool GS::clearActiveFramebuffer(uint32_t rgba)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     return m_backend && m_backend->ClearFramebuffer(activeContext(), rgba);
 }
 
 uint32_t GS::consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     return m_backend ? m_backend->ConsumeLocalToHostBytes(dst, maxBytes) : 0u;
 }
 
@@ -1857,7 +1857,7 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
     if (!backend)
         backend = makeDefaultRasterBackend();
 
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
     if (m_backend)
     {
@@ -1883,13 +1883,13 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
 
 uint32_t GS::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     return m_backend ? m_backend->ReadVram(psm, base, bw, x, y) : 0u;
 }
 
 void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    std::lock_guard<Ps2SpinLock> lock(m_stateMutex);
     if (m_backend)
         m_backend->WriteVram(psm, base, bw, x, y, value);
 }

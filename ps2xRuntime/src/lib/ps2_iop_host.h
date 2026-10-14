@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ps2x/iop/iop_host.h"
+#include "runtime/ps2_spinlock.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -30,7 +31,7 @@ public:
     private:
         void release();
 
-        std::unique_lock<std::recursive_mutex> m_lock;
+        std::unique_lock<Ps2SpinLock> m_lock;
         PS2IopHostAdapter *m_owner = nullptr;
         R5900Context *m_previousContext = nullptr;
         uint8_t *m_previousRdram = nullptr;
@@ -94,7 +95,7 @@ private:
     bool guestRange(uint32_t address, size_t size, uint8_t *&begin) const;
 
     PS2Runtime &m_runtime;
-    std::recursive_mutex m_callMutex;
+    Ps2SpinLock m_callMutex;
     R5900Context *m_activeContext = nullptr;
     uint8_t *m_activeRdram = nullptr;
     uint64_t m_activeToken = 0;

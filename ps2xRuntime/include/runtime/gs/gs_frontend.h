@@ -2,11 +2,13 @@
 #define PS2_GS_FRONTEND_H
 
 #include <atomic>
+#include "runtime/ps2_spinlock.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "runtime/gs/gs_backend.h"
@@ -44,9 +46,11 @@ struct GSDebugSnapshot
 
 // Show the game's two-circuit flicker-filter blend (true, as on a PS2) or
 // only one circuit (sharper). Set from the host settings.
+
 extern std::atomic<bool> g_gsFlickerFilter;
 
-enum class GSDebugEventKind : uint8_t
+enum
+class GSDebugEventKind : uint8_t
 {
     GifTag = 0,
     Register = 1,
@@ -196,7 +200,7 @@ private:
     uint8_t *m_localMemoryStorage = nullptr;
     uint32_t m_localMemorySize = 0u;
     struct GSRegisters *m_privRegs = nullptr;
-    mutable std::recursive_mutex m_stateMutex;
+    mutable Ps2SpinLock m_stateMutex;
     mutable std::mutex m_backendLifetimeMutex;
     mutable std::mutex m_presentationMutex;
 

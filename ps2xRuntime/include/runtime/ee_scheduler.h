@@ -406,6 +406,11 @@ private:
     uint8_t *m_rdram = nullptr;
     std::array<std::deque<int>, kPriorityCount> m_readyQueues{};
     std::unordered_map<int, GuestThread> m_threads;
+    // The kernel snapshot is only rebuilt when something is about to read it:
+    // publishSnapshot() runs from every scheduler operation and each call used
+    // to allocate and sort three vectors, while the readers (the F2 CPU tab and
+    // an opt-in run log) are almost always idle.
+    mutable std::atomic<bool> m_snapshotWanted{false};
     std::unordered_map<int, EeSemaphore> m_semaphores;
     std::unordered_map<int, EeEventFlag> m_eventFlags;
     std::unordered_map<int, EeAlarm> m_alarms;

@@ -1,4 +1,5 @@
 #include "ThreadNaming.h"
+#include "runtime/ps2_spinlock.h"
 #include <chrono>
 #include <map>
 #include <string>
@@ -1885,7 +1886,7 @@ void PS2Memory::asyncVif1WorkerLoop()
             continue;
         }
         {
-            std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
+            std::lock_guard<Ps2SpinLock> gifLock(m_gifArbiterMutex);
             if (m_gifArbiter)
                 m_gifArbiter->drain();
         }
@@ -1943,14 +1944,14 @@ void PS2Memory::gsFrontendLoop()
             break;
         case GsWorkItem::Kind::FlushMaskedPath3:
         {
-            std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
+            std::lock_guard<Ps2SpinLock> gifLock(m_gifArbiterMutex);
             flushMaskedPath3Packets();
             break;
         }
         case GsWorkItem::Kind::BatchEnd:
         {
             {
-                std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
+                std::lock_guard<Ps2SpinLock> gifLock(m_gifArbiterMutex);
                 if (m_gifArbiter)
                     m_gifArbiter->drain();
             }
@@ -2097,7 +2098,7 @@ void PS2Memory::processPendingTransfers()
     // PATH3 must not overtake PATH1/PATH2 output still being produced.
     if (!m_pendingGifTransfers.empty())
         waitForAsyncVif1("path3");
-    std::unique_lock<std::recursive_mutex> gifLock(m_gifArbiterMutex);
+    std::unique_lock<Ps2SpinLock> gifLock(m_gifArbiterMutex);
     const bool hadGif = !m_pendingGifTransfers.empty();
     uint32_t observedGifQwc = 0u;
     for (const auto &transfer : m_pendingGifTransfers)
@@ -2459,7 +2460,7 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
 
 void PS2Memory::submitGifPacketNow(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
 {
-    std::lock_guard<std::recursive_mutex> gifLock(m_gifArbiterMutex);
+    std::lock_guard<Ps2SpinLock> gifLock(m_gifArbiterMutex);
 
     if (pathId == GifPathId::Path3)
     {
