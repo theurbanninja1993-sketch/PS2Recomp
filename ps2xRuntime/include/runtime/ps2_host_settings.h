@@ -145,6 +145,8 @@ void ps2HostSettingsRequestWindowApply();
 void ps2HostSettingsApplyRenderer();
 // The GPU renderer is in use (internal resolution only applies to it).
 bool ps2HostSettingsGpuRenderer();
+// What the GPU renderer reported at start-up ("" when it did not start).
+std::string ps2HostSettingsGpuInfo();
 
 // The settings menu is open: the game gets neutral input and the mouse is free.
 extern std::atomic<bool> g_ps2SettingsMenuOpen;

@@ -3240,8 +3240,25 @@ void PS2Runtime::run()
         DrawTexturePro(presentDraw, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         if (hostSettings.showFps)
         {
-            DrawFPS(10, 10);
-            DrawText(TextFormat("%.2f ms", GetFrameTime() * 1000.0f), 10, 36, 20, LIME);
+            // Two different rates, and the one that matters is the game's: the
+            // host loop runs at the target frame rate whether or not the game is
+            // producing new pictures (repeats are skipped), so GetFPS() alone
+            // reads 60 while the game crawls. The emulated frame counter only
+            // advances when a new picture is actually presented.
+            static uint64_t s_lastFrames = 0;
+            static double s_lastSample = 0.0;
+            static int s_gameFps = 0;
+            const uint64_t frames = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+            const double now = GetTime();
+            const double elapsed = now - s_lastSample;
+            if (elapsed >= 0.5)
+            {
+                s_gameFps = static_cast<int>((frames - s_lastFrames) / elapsed + 0.5);
+                s_lastFrames = frames;
+                s_lastSample = now;
+            }
+            DrawText(TextFormat("game %d fps", s_gameFps), 10, 10, 20, LIME);
+            DrawText(TextFormat("host %d fps  %.1f ms", GetFPS(), GetFrameTime() * 1000.0f), 10, 34, 20, RAYWHITE);
         }
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {

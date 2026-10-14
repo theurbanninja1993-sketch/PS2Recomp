@@ -2629,6 +2629,13 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 ImGui::TextDisabled("frame rate and frame time over the picture");
 
                 const bool gpu = ps2HostSettingsGpuRenderer();
+                // Which renderer is actually running, and what it got. On
+                // Windows there is no console to print it to, and the CPU
+                // rasterizer silently lacks texture replacement and scaling.
+                if (gpu)
+                    ImGui::TextDisabled("Renderer: GPU (%s)", ps2HostSettingsGpuInfo().c_str());
+                else
+                    ImGui::TextDisabled("Renderer: CPU rasterizer (no texture replacement, no internal resolution).");
                 ImGui::BeginDisabled(!gpu);
                 static const char *kInternal[] = {"Native (640 x 448)", "2x (1280 x 896)", "3x (1920 x 1344)",
                                                   "4x (2560 x 1792)"};

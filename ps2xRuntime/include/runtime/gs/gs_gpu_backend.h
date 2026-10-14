@@ -39,6 +39,11 @@ extern std::atomic<uint32_t> g_gsGpuPresentHeight;
 // so the settings UI must not claim the features are available.
 extern std::atomic<bool> g_gsGpuActive;
 
+// The GL version and renderer the GPU path got ("OpenGL 4.6 (Core Profile) Mesa
+// ..."), empty until it starts. Written once at start-up; the settings UI shows
+// it, which is the only way to see it on Windows (no console there).
+extern char g_gsGpuInfo[160];
+
 class GSGpuBackend final : public GSRasterBackend
 {
 public:

@@ -30,6 +30,7 @@ std::atomic<uint32_t> g_gsGpuPresentWidth{0};
 std::atomic<uint32_t> g_gsGpuPresentHeight{0};
 // Set once the GL path is really running (see the Renderer constructor).
 std::atomic<bool> g_gsGpuActive{false};
+char g_gsGpuInfo[160]{};
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter; // EeScheduler.cpp (dump index)
 
 // ------------------------------------------------------------- dump worker
@@ -873,6 +874,8 @@ void main()
             const auto *version = reinterpret_cast<const char *>(m_context.gl.glGetString(GL_VERSION));
             std::cerr << "[gs:gpu] OpenGL " << (version ? version : "?") << " on " << (renderer ? renderer : "?")
                       << (m_context.sharedWithHost() ? " [shares the window's context]" : " [own context]") << std::endl;
+            std::snprintf(g_gsGpuInfo, sizeof(g_gsGpuInfo), "OpenGL %s on %s%s", version ? version : "?",
+                          renderer ? renderer : "?", m_context.sharedWithHost() ? ", sharing the window's context" : "");
             m_gpu = std::getenv("PS2X_GS_GPU_CPU") == nullptr; // debug: keep the CPU path
             if (m_gpu)
                 initGpuObjects();
@@ -2642,14 +2645,25 @@ void main()
         // composed into one of two exactly-sized textures the host draws
         // directly: no readback, no upload. (Otherwise the growing texture
         // below feeds the CPU readback path.)
-        // On by default; PS2X_GS_PRESENT_SHARE=0 forces the readback path (see
-        // the note in gl_context.cpp). The pair below is grow-only: it used to
-        // be recreated on any display-size change, which churned two full-size
-        // textures through the logos/FMV/intro and hitched there.
+        // The pair below is grow-only: it used to be recreated on any
+        // display-size change, which churned two full-size textures through the
+        // logos/FMV/intro and hitched there.
+        // On by default on Linux, where it was built and verified. On Windows
+        // the two contexts share through WGL instead of GLX, and the host
+        // drawing a texture owned by the renderer's context comes out corrupt
+        // there, so Windows takes the readback path unless asked otherwise with
+        // PS2X_GS_PRESENT_SHARE=1. PS2X_GS_PRESENT_SHARE=0 forces the readback
+        // path everywhere (see the note in gl_context.cpp).
         static const bool s_sharePresent = []()
         {
             const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
-            return env == nullptr || std::atoi(env) != 0;
+            if (env != nullptr)
+                return std::atoi(env) != 0;
+#if defined(_WIN32)
+            return false;
+#else
+            return true;
+#endif
         }();
         const bool sharePresent = s_sharePresent && m_context.sharedWithHost();
         const uint32_t composedWidth = width, composedHeight = height;

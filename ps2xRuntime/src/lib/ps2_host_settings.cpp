@@ -426,6 +426,11 @@ bool ps2HostSettingsFirstLaunch()
     return g_firstLaunch;
 }
 
+std::string ps2HostSettingsGpuInfo()
+{
+    return g_gsGpuInfo;
+}
+
 bool ps2HostSettingsGpuRenderer()
 {
     // The renderer actually running. The GPU backend reports its own state and
