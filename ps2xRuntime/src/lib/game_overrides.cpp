@@ -1256,11 +1256,24 @@ namespace
 
     void vcsRestoreCamBackups(uint8_t *rdram)
     {
+        static FILE *s_log = []() -> FILE *
+        {
+            const char *path = std::getenv("PS2X_CARLOOK_DEBUG");
+            return path ? std::fopen(path, "a") : nullptr;
+        }();
         const uint64_t now = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
         for (VcsCamBackup &backup : g_vcsCamBackup)
         {
             if (backup.cam != 0u && now <= backup.frame + 4u)
+            {
+                if (s_log)
+                    std::fprintf(s_log, "f=%llu restore cam=0x%x age=%llu\n", (unsigned long long)now, backup.cam,
+                                 (unsigned long long)(now - backup.frame));
                 std::memcpy(rdram + backup.cam + 0x10u, backup.bytes, sizeof(backup.bytes));
+            }
+            else if (backup.cam != 0u && s_log)
+                std::fprintf(s_log, "f=%llu restore SKIPPED cam=0x%x age=%llu (vectors left rotated!)\n",
+                             (unsigned long long)now, backup.cam, (unsigned long long)(now - backup.frame));
             backup.cam = 0u;
         }
     }
@@ -1278,6 +1291,11 @@ namespace
     void vcsFollowCarCam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         VcsCarLook &look = g_vcsCarLook;
+        static FILE *s_log = []() -> FILE *
+        {
+            const char *path = std::getenv("PS2X_CARLOOK_DEBUG");
+            return path ? std::fopen(path, "a") : nullptr;
+        }();
         vcsRestoreCamBackups(rdram);
         const uint64_t now = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
         if (now > look.vehicleFrame + 4u)
@@ -1299,6 +1317,9 @@ namespace
         }
         if (std::fabs(look.yaw) < 1.0e-3f && std::fabs(look.pitch) < 1.0e-3f)
             look.yaw = look.pitch = 0.0f;
+        if (s_log)
+            std::fprintf(s_log, "f=%llu followCarCam cam=0x%x yaw=%.3f pitch=%.3f\n",
+                         (unsigned long long)now, getRegU32(ctx, 4), look.yaw, look.pitch);
         g_vcsOrigFollowCarCam(rdram, ctx, runtime);
     }
 
@@ -1311,6 +1332,15 @@ namespace
     void vcsAfterCamProcess(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t cam = getRegU32(ctx, 4);
+        static FILE *s_log = []() -> FILE *
+        {
+            const char *path = std::getenv("PS2X_CARLOOK_DEBUG");
+            return path ? std::fopen(path, "a") : nullptr;
+        }();
+        if (s_log)
+            std::fprintf(s_log, "f=%llu afterCamProcess cam=0x%x vehicleCam=0x%x vehicleFrame=%llu\n",
+                         (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), cam,
+                         g_vcsCarLook.vehicleCam, (unsigned long long)g_vcsCarLook.vehicleFrame);
         if (cam == g_vcsCarLook.vehicleCam &&
             g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) <= g_vcsCarLook.vehicleFrame + 1u)
             vcsRotateVehicleCam(rdram, cam, ctx, runtime);
@@ -1377,8 +1407,18 @@ namespace
     void vcsRotateVehicleCam(uint8_t *rdram, uint32_t cam, R5900Context *ctx, PS2Runtime *runtime)
     {
         VcsCarLook &look = g_vcsCarLook;
+        static FILE *s_log = []() -> FILE *
+        {
+            const char *path = std::getenv("PS2X_CARLOOK_DEBUG");
+            return path ? std::fopen(path, "w") : nullptr;
+        }();
+        const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
         if (look.yaw == 0.0f && look.pitch == 0.0f)
+        {
+            if (s_log)
+                std::fprintf(s_log, "f=%llu rotate skipped (no offset)\n", (unsigned long long)frame);
             return;
+        }
         uint32_t target = 0;
         if (cam < 0x00100000u || cam + 0x80u > PS2_RAM_SIZE)
             return;
@@ -1451,9 +1491,20 @@ namespace
         // The game's own wall check ran before the offset: swinging the
         // camera around could put it inside a wall. Pull it in front of
         // whatever is between the vehicle and the new position.
-        float hit[3];
-        if (vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, c + 8, target, hit))
+        // PS2X_CARLOOK_WALLS=0 disables it (the guest raycast call is
+        // suspected of breaking the game's camera/visibility state).
+        static const bool s_wallCheck = []()
         {
+            const char *env = std::getenv("PS2X_CARLOOK_WALLS");
+            return env == nullptr || std::atoi(env) != 0;
+        }();
+        float hit[3];
+        if (s_wallCheck && vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, c + 8, target, hit))
+        {
+            if (s_log)
+                std::fprintf(s_log, "f=%llu LOS blocked cam=(%.2f,%.2f,%.2f) hit=(%.2f,%.2f,%.2f) pivot=(%.2f,%.2f,%.2f)\n",
+                             (unsigned long long)frame, c[8], c[9], c[10], hit[0], hit[1], hit[2], pivot[0], pivot[1],
+                             pivot[2]);
             float toPivot[3] = {pivot[0] - hit[0], pivot[1] - hit[1], pivot[2] - hit[2]};
             const float length = std::sqrt(toPivot[0] * toPivot[0] + toPivot[1] * toPivot[1] + toPivot[2] * toPivot[2]);
             constexpr float kWallGap = 0.3f;
@@ -1471,7 +1522,7 @@ namespace
             {
                 float raised[3] = {position[0], position[1], position[2] + (kMinDistance - distance) * 1.5f};
                 float ceiling[3];
-                if (!vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, raised, target, ceiling))
+                if (s_wallCheck && !vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, raised, target, ceiling))
                 {
                     std::memcpy(position, raised, sizeof(position));
                     const float lookAt[3] = {pivot[0], pivot[1], pivot[2] + 0.3f};

@@ -135,12 +135,15 @@ public:
     void setDebugHistoryPaused(bool paused);
     bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
     void latchHostPresentationFrame();
+    // Hands the latched frame to the caller (no copy when it is already packed
+    // at its width, which the upscaled GPU path always is), so this is not
+    // const: it takes the frame.
     bool copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                           uint32_t &outWidth,
                                           uint32_t &outHeight,
                                           uint32_t *outDisplayFbp = nullptr,
                                           uint32_t *outSourceFbp = nullptr,
-                                          bool *outUsedPreferred = nullptr) const;
+                                          bool *outUsedPreferred = nullptr);
     bool clearFramebufferContext(uint32_t contextIndex, uint32_t rgba);
     bool clearActiveFramebuffer(uint32_t rgba);
     uint64_t nativeImageUploadCount() const { return m_nativeImageUploadCount; }

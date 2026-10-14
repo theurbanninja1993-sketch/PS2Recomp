@@ -22,6 +22,11 @@
 namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
+// The host window size, published by the main thread each frame (0 = unknown).
+// The upscaled display readback is capped to it: the composed frame is only
+// ever shown at window size, so transferring more than that is pure waste.
+std::atomic<uint32_t> g_gsGpuPresentWidth{0};
+std::atomic<uint32_t> g_gsGpuPresentHeight{0};
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter; // EeScheduler.cpp (dump index)
 
 // ------------------------------------------------------------- dump worker
@@ -870,6 +875,17 @@ void main()
                 initGpuObjects();
             if (const char *env = std::getenv("PS2X_GS_SCALE"))
                 g_gsGpuScaleRequest.store(static_cast<uint32_t>(std::atoi(env)), std::memory_order_relaxed);
+            // PS2X_GS_PRESENT_SIZE=<w>x<h>: pretend the host window is this
+            // size (tests the readback cap without a window).
+            if (const char *env = std::getenv("PS2X_GS_PRESENT_SIZE"))
+            {
+                unsigned w = 0, h = 0;
+                if (std::sscanf(env, "%ux%u", &w, &h) == 2)
+                {
+                    g_gsGpuPresentWidth.store(w, std::memory_order_relaxed);
+                    g_gsGpuPresentHeight.store(h, std::memory_order_relaxed);
+                }
+            }
             m_scale = std::clamp<uint32_t>(g_gsGpuScaleRequest.load(std::memory_order_relaxed), 1u, 8u);
             m_requestedScale.store(m_scale, std::memory_order_relaxed);
         }
@@ -2656,16 +2672,74 @@ void main()
         gl.glBindVertexArray(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
 
-        std::vector<uint8_t> out(static_cast<size_t>(width) * height * 4u);
+        // The readback is the expensive part of the present and the frame is
+        // only ever shown at the host window's size: when the window is
+        // smaller than the upscaled frame, downscale on the GPU first (the
+        // same bilinear filter the host would apply) and transfer only that.
+        // At internal_scale 4 into a 1280x960 window this is ~4x less data.
+        uint32_t readWidth = width, readHeight = height;
+        GLuint readTexture = m_presentTexture;
+        const uint32_t hostWidth = g_gsGpuPresentWidth.load(std::memory_order_relaxed);
+        const uint32_t hostHeight = g_gsGpuPresentHeight.load(std::memory_order_relaxed);
+        if (hostWidth != 0u && hostHeight != 0u && hostWidth < readWidth && hostHeight < readHeight)
+        {
+            const double fit = std::min(static_cast<double>(hostWidth) / static_cast<double>(width),
+                                        static_cast<double>(hostHeight) / static_cast<double>(height));
+            readWidth = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(width) * fit) & ~1u);
+            readHeight = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(height) * fit) & ~1u);
+            if (m_readbackTexture == 0 || m_readbackWidth < readWidth || m_readbackHeight < readHeight)
+            {
+                if (m_readbackTexture != 0)
+                {
+                    gl.glDeleteFramebuffers(1, &m_readbackFramebuffer);
+                    gl.glDeleteTextures(1, &m_readbackTexture);
+                }
+                m_readbackWidth = std::max(m_readbackWidth, readWidth);
+                m_readbackHeight = std::max(m_readbackHeight, readHeight);
+                gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_readbackTexture);
+                gl.glTextureStorage2D(m_readbackTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_readbackWidth),
+                                      static_cast<GLsizei>(m_readbackHeight));
+                gl.glCreateFramebuffers(1, &m_readbackFramebuffer);
+                gl.glNamedFramebufferTexture(m_readbackFramebuffer, GL_COLOR_ATTACHMENT0, m_readbackTexture, 0);
+                gl.glNamedFramebufferDrawBuffer(m_readbackFramebuffer, GL_COLOR_ATTACHMENT0);
+            }
+            gl.glBlitNamedFramebuffer(m_presentFramebuffer, m_readbackFramebuffer, 0, 0, static_cast<GLint>(width),
+                                      static_cast<GLint>(height), 0, 0, static_cast<GLint>(readWidth),
+                                      static_cast<GLint>(readHeight), GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            readTexture = m_readbackTexture;
+        }
+        std::vector<uint8_t> out(static_cast<size_t>(readWidth) * readHeight * 4u);
         gl.glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
         gl.glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        gl.glGetTextureSubImage(m_presentTexture, 0, 0, 0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), 1,
-                                GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(out.size()), out.data());
+        gl.glGetTextureSubImage(readTexture, 0, 0, 0, 0, static_cast<GLsizei>(readWidth), static_cast<GLsizei>(readHeight),
+                                1, GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(out.size()), out.data());
         frame.pixels = std::move(out);
-        frame.width = width;
-        frame.height = height;
-        frame.rowPixels = width;
+        frame.width = readWidth;
+        frame.height = readHeight;
+        frame.rowPixels = readWidth;
         frame.displayFbp = frame.sourceFbp = (crt1 ? c1 : c2).target->block / 32u;
+        // PS2X_GS_PRESENT_DUMP=<prefix>: write presented frames 20..80 (every
+        // other one) as binary PPMs <prefix>_NNN.ppm, for A/B checks.
+        if (const char *dumpPath = std::getenv("PS2X_GS_PRESENT_DUMP"))
+        {
+            static int s_presents = 0;
+            ++s_presents;
+            if (s_presents >= 20 && s_presents <= 80 && (s_presents % 2) == 0)
+            {
+                char path[1024];
+                std::snprintf(path, sizeof(path), "%s_%03d.ppm", dumpPath, s_presents);
+                if (FILE *f = std::fopen(path, "wb"))
+                {
+                    std::fprintf(f, "P6\n%u %u\n255\n", readWidth, readHeight);
+                    for (size_t i = 0; i < frame.pixels.size(); i += 4u)
+                    {
+                        const uint8_t rgb[3] = {frame.pixels[i], frame.pixels[i + 1u], frame.pixels[i + 2u]};
+                        std::fwrite(rgb, 1, 3, f);
+                    }
+                    std::fclose(f);
+                }
+            }
+        }
     }
 
     void Renderer::setScale(uint32_t scale)

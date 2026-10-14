@@ -22,6 +22,10 @@ namespace gsgpu
 // times the GS size; 0 = no request). Set from the host settings; applied
 // between frames. PS2X_GS_SCALE sets the starting value.
 extern std::atomic<uint32_t> g_gsGpuScaleRequest;
+// Host window size in pixels, published by the main thread (0 = unknown).
+// The upscaled display readback is capped to it.
+extern std::atomic<uint32_t> g_gsGpuPresentWidth;
+extern std::atomic<uint32_t> g_gsGpuPresentHeight;
 
 class GSGpuBackend final : public GSRasterBackend
 {

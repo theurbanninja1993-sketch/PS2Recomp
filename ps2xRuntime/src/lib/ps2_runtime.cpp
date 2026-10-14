@@ -9,6 +9,7 @@
 #include "game_overrides.h"
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
+#include "runtime/gs/gs_gpu_backend.h" // g_gsGpuPresent*: present readback cap
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
 #include "Kernel/Stubs/Audio.h"
@@ -549,6 +550,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         UnloadTexture(tex);
         tex = LoadTextureFromImage(blank);
         UnloadImage(blank);
+    }
+    // The latched frame is already packed at `width`. When it exactly fills
+    // the texture, upload it straight: the zero-fill and the row repack below
+    // are only needed for padding (a texture that grew, or a narrower host
+    // frame layout), and at internal_scale > 1 this buffer is several MB.
+    if (width == static_cast<uint32_t>(tex.width) && height == static_cast<uint32_t>(tex.height) &&
+        s_scratch.size() == static_cast<size_t>(width) * height * 4u)
+    {
+        UpdateTexture(tex, s_scratch.data());
+        outWidth = width;
+        outHeight = height;
+        s_hasUploadedFrame = true;
+        return;
     }
     s_uploadBuffer.resize(static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height) * 4u);
     std::fill(s_uploadBuffer.begin(), s_uploadBuffer.end(), 0u);
@@ -3096,6 +3110,16 @@ void PS2Runtime::run()
         });
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
+        // The GPU renderer caps its presentation readback to the window (see
+        // upscalePresentation); publish it before the frame is latched.
+        {
+            const uint32_t windowWidth = static_cast<uint32_t>(std::max(GetScreenWidth(), 0));
+            const uint32_t windowHeight = static_cast<uint32_t>(std::max(GetScreenHeight(), 0));
+            if (g_gsGpuPresentWidth.load(std::memory_order_relaxed) != windowWidth)
+                g_gsGpuPresentWidth.store(windowWidth, std::memory_order_relaxed);
+            if (g_gsGpuPresentHeight.load(std::memory_order_relaxed) != windowHeight)
+                g_gsGpuPresentHeight.store(windowHeight, std::memory_order_relaxed);
+        }
         UploadFrame(frameTex, this, presentWidth, presentHeight);
 
         m_padBackend.updateHostInput();

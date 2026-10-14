@@ -59,6 +59,12 @@ namespace
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 
+// GS_REPLAY_FRAME_VOLUME=1: per presented frame, the GIF packet count and
+// bytes fed to the GS (a proxy for how much geometry the guest sent).
+static bool g_frameVolume = false;
+static uint64_t g_framePackets = 0;
+static uint64_t g_framePacketBytes = 0;
+
 int main(int argc, char **argv)
 {
     // Frame dumps must line up with the presents that produced them.
@@ -69,6 +75,7 @@ int main(int argc, char **argv)
         return 2;
     }
     const int passes = argc > 2 ? std::atoi(argv[2]) : 1;
+    g_frameVolume = std::getenv("GS_REPLAY_FRAME_VOLUME") != nullptr;
 
     // Load texture packs (PS2X_MODS_DIR or the default mods folder) so the
     // replacement path - and PS2X_TEXREPL_DUMP's normal-texture hook - runs
@@ -143,6 +150,8 @@ int main(int argc, char **argv)
             {
             case 1u:
                 gs->processGIFPacket(r.data.data(), static_cast<uint32_t>(r.data.size()));
+                g_framePacketBytes += r.data.size();
+                ++g_framePackets;
                 break;
             case 2u:
                 if (r.data.size() == 9u)
@@ -153,6 +162,11 @@ int main(int argc, char **argv)
                 }
                 break;
             case 3u:
+                if (g_frameVolume)
+                    std::fprintf(stderr, "[vol] present packets=%llu bytes=%llu\n",
+                                 (unsigned long long)g_framePackets, (unsigned long long)g_framePacketBytes);
+                g_framePackets = 0;
+                g_framePacketBytes = 0;
                 if (r.data.size() == sizeof(GSRegisters))
                     std::memcpy(static_cast<void *>(&regs), r.data.data(), sizeof(GSRegisters));
                 gs->latchHostPresentationFrame();

@@ -726,7 +726,7 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                           uint32_t &outHeight,
                                           uint32_t *outDisplayFbp,
                                           uint32_t *outSourceFbp,
-                                          bool *outUsedPreferred) const
+                                          bool *outUsedPreferred)
 {
     std::lock_guard<std::mutex> lock(m_presentationMutex);
     if (!m_hasHostPresentationFrame || m_hostPresentationFrame.empty())
@@ -753,11 +753,23 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
         *outUsedPreferred = m_hostPresentationUsedPreferred;
 
     const size_t packedRowBytes = static_cast<size_t>(outWidth) * 4u;
+    const size_t latchRowBytes =
+        static_cast<size_t>(m_hostPresentationRowPixels != 0u ? m_hostPresentationRowPixels : kHostFrameWidth) * 4u;
+    // Already packed at the same width: hand the latch over instead of
+    // copying it. The presentation frame can be a full upscaled screen
+    // (several MB at internal_scale > 1) and is consumed once per VBlank.
+    if (latchRowBytes == packedRowBytes && m_hostPresentationFrame.size() == packedRowBytes * outHeight)
+    {
+        outPixels.swap(m_hostPresentationFrame);
+        m_hostPresentationFrame.clear();
+        m_hasHostPresentationFrame = false;
+        m_hostPresentationWidth = m_hostPresentationHeight = 0u;
+        return true;
+    }
     outPixels.resize(packedRowBytes * static_cast<size_t>(outHeight));
     if (outWidth != 0u && outHeight != 0u)
     {
-        const size_t sourceRowBytes =
-            static_cast<size_t>(m_hostPresentationRowPixels != 0u ? m_hostPresentationRowPixels : kHostFrameWidth) * 4u;
+        const size_t sourceRowBytes = latchRowBytes;
         for (uint32_t y = 0; y < outHeight; ++y)
         {
             const size_t srcOffset = static_cast<size_t>(y) * sourceRowBytes;
