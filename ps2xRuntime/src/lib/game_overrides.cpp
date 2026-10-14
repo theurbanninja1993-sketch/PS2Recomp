@@ -1282,6 +1282,13 @@ namespace
         bool raised = false;
         float front[3] = {};
         float up[3] = {};
+        // The position the rotation *would* use without the clamp, refreshed
+        // every rotation. The wall ray must aim at this, not at the clamped
+        // position: measuring to the clamped one made the ray miss (it is in
+        // free space in front of the wall), so the clamp released and jumped
+        // back on alternate frames.
+        uint32_t desiredCam = 0;
+        float desired[3] = {};
     };
     VcsCarWall g_vcsCarWall;
 
@@ -1548,6 +1555,8 @@ namespace
                 v[i] = pivot[i] + o[i];
         }
 
+        std::memcpy(g_vcsCarWall.desired, c + 8, sizeof(g_vcsCarWall.desired));
+        g_vcsCarWall.desiredCam = cam;
         // The game's own wall check ran before the offset: swinging the
         // camera around could put it inside a wall. The correction for that
         // is measured *after* the game's camera processing - see
@@ -1618,10 +1627,12 @@ namespace
         float pivot[3];
         std::memcpy(pivot, rdram + target + 0x30u, 12);
         float hit[3];
+        const float *camera = (wall.desiredCam == cam) ? wall.desired : c + 8;
         if (s_log)
-            std::fprintf(s_log, "f=%llu measure cam=(%.2f,%.2f,%.2f) pivot=(%.2f,%.2f,%.2f)\n",
-                         (unsigned long long)wall.frame, c[8], c[9], c[10], pivot[0], pivot[1], pivot[2]);
-        if (!vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, c + 8, target, hit))
+            std::fprintf(s_log, "f=%llu measure desired=(%.2f,%.2f,%.2f) rendered=(%.2f,%.2f,%.2f) pivot=(%.2f,%.2f,%.2f)\n",
+                         (unsigned long long)wall.frame, camera[0], camera[1], camera[2], c[8], c[9], c[10], pivot[0],
+                         pivot[1], pivot[2]);
+        if (!vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, camera, target, hit))
         {
             wall.clamp = false; // measured clear
             wall.raised = false;
@@ -1632,7 +1643,7 @@ namespace
                          (unsigned long long)wall.frame, hit[0], hit[1], hit[2]);
         float toPivot[3] = {pivot[0] - hit[0], pivot[1] - hit[1], pivot[2] - hit[2]};
         const float length = std::sqrt(toPivot[0] * toPivot[0] + toPivot[1] * toPivot[1] + toPivot[2] * toPivot[2]);
-        constexpr float kWallGap = 0.3f;
+        constexpr float kWallGap = 0.8f;
         const float pull = length > kWallGap ? kWallGap / length : 0.0f;
         float position[3];
         for (int i = 0; i < 3; ++i)
