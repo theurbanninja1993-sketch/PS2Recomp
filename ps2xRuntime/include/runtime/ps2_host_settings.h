@@ -55,7 +55,9 @@ namespace ps2controls
     {
         MoveForward, MoveBackward, MoveLeft, MoveRight, Sprint, Jump, Fire, Aim, Interact, NextWeapon,
         EnterVehicle, Handbrake, Horn, CameraMode, LookBehind, Pause, MenuAccept, MenuBack, MenuUp,
-        MenuDown, MenuLeft, MenuRight, MapTarget, SkipCutscene, kActionCount
+        MenuDown, MenuLeft, MenuRight, MapTarget, SkipCutscene,
+        // Appended after the menu keys so saved bindings keep their slots.
+        VehicleLeanBack, VehicleLeanForward, ReleaseMouse, kActionCount
     };
     const char *actionName(int action);
     void defaultKeys(int keys[kActionCount][2]);

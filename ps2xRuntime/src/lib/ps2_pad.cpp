@@ -454,6 +454,13 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                     press(R1);
                 if (held(pc::Horn))
                     press(L1);
+                // Bikes: the keyboard has no analog stick, so this pulls the
+                // left stick back (hold accelerate for a wheelie) or forward
+                // for a stoppie.
+                if (held(pc::VehicleLeanBack))
+                    moveY += 1.0f;
+                if (held(pc::VehicleLeanForward))
+                    moveY -= 1.0f;
             }
             else
             {
@@ -542,6 +549,26 @@ void PSPadBackend::updateHostInput()
     // Click in the window to capture the mouse for mouse look; Left Alt (or
     // losing focus) releases it.
     bool captured = m_mouseCaptured.load(std::memory_order_relaxed);
+    // The key (or mouse button) bound to "Release the mouse" - Left Alt by
+    // default - gives the cursor back; a left click captures it again.
+    auto releaseMousePressed = []()
+    {
+        const auto &bindings = ps2HostSettings().keys[ps2controls::ReleaseMouse];
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            const int binding = bindings[slot];
+            if (binding == ps2controls::kNone)
+                continue;
+            if (binding >= ps2controls::kMouseBase)
+            {
+                if (IsMouseButtonPressed(binding - ps2controls::kMouseBase))
+                    return true;
+            }
+            else if (IsKeyPressed(binding))
+                return true;
+        }
+        return false;
+    };
     if (g_ps2SettingsMenuOpen.load(std::memory_order_relaxed))
     {
         if (captured)
@@ -555,7 +582,7 @@ void PSPadBackend::updateHostInput()
         DisableCursor();
         captured = true;
     }
-    else if (captured && (IsKeyPressed(KEY_LEFT_ALT) || !IsWindowFocused()))
+    else if (captured && (releaseMousePressed() || !IsWindowFocused()))
     {
         EnableCursor();
         captured = false;

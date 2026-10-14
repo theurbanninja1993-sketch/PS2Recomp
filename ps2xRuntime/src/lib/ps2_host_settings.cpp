@@ -117,7 +117,8 @@ namespace ps2controls
             "Move forward / accelerate", "Move back / brake", "Move / steer left", "Move / steer right", "Sprint",
             "Jump", "Fire / attack", "Aim / lock on", "Action", "Next weapon", "Enter / exit vehicle", "Handbrake",
             "Horn", "Camera mode", "Look behind", "Pause", "Menu: accept", "Menu: back", "Menu: up", "Menu: down",
-            "Menu: left", "Menu: right", "Map: target", "Skip cutscene"};
+            "Menu: left", "Menu: right", "Map: target", "Skip cutscene",
+            "Vehicle: lean back (wheelie)", "Vehicle: lean forward (stoppie)", "Release the mouse (mouse look)"};
         return action >= 0 && action < kActionCount ? kNames[action] : "?";
     }
 
@@ -145,6 +146,12 @@ namespace ps2controls
         set(Horn, KEY_H);
         set(CameraMode, KEY_V);
         set(LookBehind, KEY_C);
+        // In a vehicle the keyboard has no analog stick: pull the left stick
+        // back with Shift (hold accelerate for a wheelie).
+        set(VehicleLeanBack, KEY_LEFT_SHIFT);
+        set(VehicleLeanForward, KEY_LEFT_CONTROL);
+        // Release the mouse from the window (click to capture it again).
+        set(ReleaseMouse, KEY_LEFT_ALT);
         set(Pause, KEY_ESCAPE, KEY_P);
         set(MenuAccept, KEY_ENTER, KEY_KP_ENTER);
         set(MenuBack, KEY_BACKSPACE);

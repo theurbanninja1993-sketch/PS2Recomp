@@ -2807,7 +2807,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::TableHeadersRow();
                     for (int action = 0; action < pc::kActionCount; ++action)
                     {
-                        if (action >= pc::MenuAccept)
+                        const bool menuKey = action >= pc::MenuAccept && action <= pc::SkipCutscene;
+                        if (menuKey)
                             continue; // the menu keys have their own section
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
@@ -2847,7 +2848,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
                     ImGui::TableSetupColumn("Alternate", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
                     ImGui::TableHeadersRow();
-                    for (int action = pc::MenuAccept; action < pc::kActionCount; ++action)
+                    for (int action = pc::MenuAccept; action <= pc::SkipCutscene; ++action)
                     {
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
