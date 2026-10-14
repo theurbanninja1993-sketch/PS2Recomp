@@ -119,23 +119,50 @@ namespace
     // device outputs silence for the game's own audio.
     std::atomic<bool> g_outputMuted{false};
 
+    // The emulator produces audio per emulated frame, so a game running at 57
+    // instead of 60 fps feeds the ring ~5% slower than real time: it drains and
+    // runs dry every few seconds, which is heard as crackling (and the perf log
+    // shows it as a produced-rate below 480480 per 10 s). Reading the ring at a
+    // slightly adjusted rate absorbs that instead: a bounded, inaudible drift
+    // correction that holds the fill level near a target. With no deficit the
+    // ratio is exactly 1 and the samples pass through untouched.
+    constexpr double kDriftLimit = 0.02; // never stretch or squeeze more than 2%
     void streamCallback(void *bufferData, unsigned int frames)
     {
+        static double s_readPos = 0.0; // fractional position, device thread only
         int16_t *out = static_cast<int16_t *>(bufferData);
         const size_t write = g_streamRing.writeFrame.load(std::memory_order_acquire);
         const size_t read = g_streamRing.readFrame.load(std::memory_order_relaxed);
-        const size_t available = std::min<size_t>(frames, write - read);
-        for (size_t i = 0; i < available; ++i)
+        const size_t available = write - read;
+
+        const size_t target = StreamRing::kFrames / 8u; // ~85 ms
+        const double error = static_cast<double>(available) - static_cast<double>(target);
+        const double ratio = std::clamp(1.0 + error / static_cast<double>(target) * kDriftLimit,
+                                        1.0 - kDriftLimit, 1.0 + kDriftLimit);
+
+        size_t produced = 0;
+        for (; produced < frames; ++produced)
         {
-            const size_t frame = (read + i) & StreamRing::kMask;
-            out[i * 2u] = g_streamRing.samples[frame * 2u];
-            out[i * 2u + 1u] = g_streamRing.samples[frame * 2u + 1u];
+            const size_t i0 = static_cast<size_t>(s_readPos);
+            if (i0 + 1u >= available)
+                break; // nothing left to interpolate between
+            const double frac = s_readPos - static_cast<double>(i0);
+            const size_t f0 = (read + i0) & StreamRing::kMask;
+            const size_t f1 = (read + i0 + 1u) & StreamRing::kMask;
+            out[produced * 2u] = static_cast<int16_t>(g_streamRing.samples[f0 * 2u] * (1.0 - frac) +
+                                                      g_streamRing.samples[f1 * 2u] * frac);
+            out[produced * 2u + 1u] = static_cast<int16_t>(g_streamRing.samples[f0 * 2u + 1u] * (1.0 - frac) +
+                                                           g_streamRing.samples[f1 * 2u + 1u] * frac);
+            s_readPos += ratio;
         }
-        if (available < frames)
-            g_ps2AudioFramesUnderrun.fetch_add(frames - available, std::memory_order_relaxed);
-        std::memset(out + available * 2u, 0, (frames - available) * 2u * sizeof(int16_t));
-        g_streamRing.readFrame.store(read + available, std::memory_order_release);
-        g_ps2AudioRingDepth.store(static_cast<uint32_t>(write - (read + available)), std::memory_order_relaxed);
+        if (produced < frames)
+            g_ps2AudioFramesUnderrun.fetch_add(frames - produced, std::memory_order_relaxed);
+        std::memset(out + produced * 2u, 0, (frames - produced) * 2u * sizeof(int16_t));
+
+        const size_t consumed = static_cast<size_t>(s_readPos);
+        s_readPos -= static_cast<double>(consumed);
+        g_streamRing.readFrame.store(read + consumed, std::memory_order_release);
+        g_ps2AudioRingDepth.store(static_cast<uint32_t>(write - (read + consumed)), std::memory_order_relaxed);
     }
 }
 
