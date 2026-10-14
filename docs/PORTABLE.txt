@@ -1,0 +1,86 @@
+Vice City Stories Recomp - portable build
+=========================================
+
+This folder is self-contained. Copy it anywhere (a USB stick, another PC) and
+run it from there; nothing is installed and nothing outside this folder is
+touched.
+
+Running
+-------
+Linux     ./run.sh              (or double-click it, "Run as program")
+Windows   play.cmd              (or just ps2EntryRunner.exe)
+
+Both launchers work from any current directory and pass any arguments through,
+so `./run.sh /path/to/SLUS_215.90` still works if you want to boot a different
+copy of the disc.
+
+In game
+-------
+F2                settings (display, controls, mods, music)
+F11               the settings, opened at launch
+Select + Start    the same settings, from a controller
+Esc               the game's own pause menu
+
+Controllers are detected automatically and the button prompts follow whichever
+one you last used. Connect an Xbox, PlayStation, Switch Pro or Steam controller
+and the matching glyph set loads by itself; pick one by hand in
+F2 -> Controls -> Button prompts if you prefer.
+
+What is in here
+---------------
+ps2EntryRunner[.exe]   the port
+game/                  the disc's files (SLUS_215.90 and the rest)
+prompts/               button-prompt glyph packs
+music/                 tracks for the extra radio station
+mods/                  texture packs and .pnach cheats
+config/                created on the first run - see "Portable mode"
+portable.txt           marks this folder as portable
+run.sh / play.cmd      launcher
+lib/                   (Linux) libraries the host may not carry
+
+Portable mode
+-------------
+Because portable.txt sits next to the port, everything it writes stays in
+config/ in this folder instead of your home directory:
+
+    config/settings.ini        all settings, including key and pad bindings
+    config/prompts_rt/         button-prompt art generated at runtime
+    config/gamecontrollerdb.txt  extra controller mappings, if you add any
+    config/padlog.txt          controller diagnostics, only with PS2X_PAD_DEBUG=1
+
+Delete config/ to start over with defaults.
+
+Performance
+-----------
+The GPU renderer is the default and needs OpenGL 4.5 (any reasonably recent
+GPU driver has it). It is also the only renderer that applies texture packs and
+button prompts, and the internal-resolution setting.
+
+If a machine cannot start it, run with PS2X_GS_GPU=0 to fall back to the
+threaded CPU rasterizer - playable, but with no texture replacement, no
+internal resolution and a much higher CPU load.
+
+Linux notes
+-----------
+The binary is built for x86-64 and needs a glibc at least as new as the one it
+was built against. If it refuses to start with an error like
+
+    version `GLIBC_2.43' not found
+
+then that machine's distribution is older than the build, and it needs a build
+made on (or for) that distribution. SteamOS on the Steam Deck is the likely
+case - report the exact version in the message and it can be rebuilt to suit.
+
+lib/ carries only the C++ runtime, which is safe to bundle and is the thing a
+host is most likely to be older at. Everything else comes from the host: the
+media stack (FFmpeg, libxml2, the DVD and module-music readers), the SVG/GTK
+stack raylib's image loading pulls in, and the OpenGL/X11 stack. Those must not
+be mixed between distributions - a mismatched copy is worse than none. The
+Steam Deck and this build are both Arch-based, so their library versions line
+up; a distribution that ships a different FFmpeg major would need a build with
+FFmpeg linked in statically.
+
+Your own game files
+-------------------
+The files in game/ are from your own copy of the disc. This folder is meant to
+be kept private; please do not redistribute it.

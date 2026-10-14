@@ -32,6 +32,28 @@ std::filesystem::path ps2ExecutableDirectory()
 #endif
 }
 
+std::filesystem::path ps2ConfigDirectory()
+{
+    static const std::filesystem::path s_dir = []()
+    {
+        std::error_code ec;
+        const bool portable = std::getenv("PS2X_PORTABLE") != nullptr ||
+                              std::filesystem::exists(ps2ExecutableDirectory() / "portable.txt", ec);
+        if (portable)
+            return ps2ExecutableDirectory() / "config";
+        if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
+            return std::filesystem::path(xdg) / "ps2recomp";
+        if (const char *appData = std::getenv("APPDATA"); appData && *appData)
+            return std::filesystem::path(appData) / "ps2recomp";
+        if (const char *home = std::getenv("HOME"); home && *home)
+            return std::filesystem::path(home) / ".config" / "ps2recomp";
+        return std::filesystem::current_path() / "ps2recomp";
+    }();
+    std::error_code ec;
+    std::filesystem::create_directories(s_dir, ec);
+    return s_dir;
+}
+
 void ps2OpenFolder(const std::string &path)
 {
 #if defined(_WIN32)

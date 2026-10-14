@@ -1,5 +1,7 @@
 #include "runtime/ps2_host_settings.h"
 
+#include "runtime/ps2_platform.h"
+
 #include "raylib.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_gpu_backend.h"
@@ -293,16 +295,9 @@ PS2HostSettings &ps2HostSettings()
 
 std::string ps2HostSettingsPath()
 {
-    std::filesystem::path base;
-    if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
-        base = xdg;
-    else if (const char *appData = std::getenv("APPDATA"); appData && *appData)
-        base = appData;
-    else if (const char *home = std::getenv("HOME"); home && *home)
-        base = std::filesystem::path(home) / ".config";
-    else
-        base = ".";
-    return (base / "ps2recomp" / "settings.ini").string();
+    // ps2ConfigDirectory() is the user config folder, or the build's own folder
+    // in portable mode (see ps2_platform.h).
+    return (ps2ConfigDirectory() / "settings.ini").string();
 }
 
 void ps2HostSettingsLoad()

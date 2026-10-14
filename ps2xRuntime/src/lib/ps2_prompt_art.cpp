@@ -15,6 +15,8 @@
 // (0x80 = opaque) the replacement pipeline expects.
 #include "runtime/ps2_prompt_art.h"
 
+#include "runtime/ps2_platform.h"
+
 #include "runtime/ps2_host_settings.h"
 #include "runtime/ps2_mods.h"
 
@@ -178,17 +180,6 @@ namespace
     const Color kArrowColor = {245, 245, 245, 255};
 
     // ------------------------------------------------------------- utilities
-    std::string configBase()
-    {
-        if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
-            return xdg;
-        if (const char *appData = std::getenv("APPDATA"); appData && *appData)
-            return appData;
-        if (const char *home = std::getenv("HOME"); home && *home)
-            return (fs::path(home) / ".config").string();
-        return ".";
-    }
-
     const Font &promptFont()
     {
         static const Font s_font = []()
@@ -511,7 +502,7 @@ void ps2PromptArtSetContext(int context)
 
 std::string ps2PromptArtDirectory()
 {
-    return (fs::path(configBase()) / "ps2recomp" / "prompts_rt").string();
+    return (ps2ConfigDirectory() / "prompts_rt").string();
 }
 
 bool ps2PromptArtRefreshIfNeeded()
