@@ -342,6 +342,11 @@ texture packs from `mods/`, Windows build under Wine.
    the render thread runs **GsGpu ~44-57% with the pack vs ~24-30% without**
    (~+20 pts), which tips the airport into late frames. New
    `PS2X_TEXREPL_STATS` fields (added today) split it:
+   - **Owner reported general gameplay slowdown again (2026-10-13 late)** -
+     next work item after the menu/cutscene changes. The mirror cost below
+     is the first suspect (it runs for every upload, pack or not); ask the
+     owner to run `PS2X_PERF_LOG=1 PS2X_TEXREPL_STATS=1` for a fresh split,
+     then implement the lazy mirror.
    - **mirrorMs ~590-950 ms per 5 s period (~16-19% of the render thread)**
      = `GSCpuBackend::UploadImage` decoding uploads into the CPU copy.
    - **hashMs ~16-30 ms** = texture/CLUT hashing - negligible.
@@ -518,7 +523,15 @@ texture packs from `mods/`, Windows build under Wine.
        WASD, Map: target = Space, and Skip cutscene = Enter. Only these work
        in the game's menus - the gameplay bindings no longer leak in (and
        the menu keys never fire in gameplay), except Skip cutscene, which
-       sends Cross in every context so cutscenes still skip.
+       sends Cross while the cutscene probe reports a cutscene.
+     - **Cutscene flag (2026-10-13 late).** F8 RAM dumps in two cutscenes
+       (B/C) and two gameplay states (A/D) diff to 33 word-level boolean
+       candidates; `vcsInCutscene` reads **0x006F4D14** (heavily referenced
+       by the game code, 15 functions across modules). The pad logs
+       `[pad] cutscene=0/1` on every change so the flag can be verified
+       live; `PS2X_CUTSCENE_FLAG=<hex>` overrides the address for testing.
+       Other candidates if it is wrong: 0x6F4DA0, 0x6F4D64, 0x6F4D10,
+       0x74D3F0, 0x486E28, 0x4874F4, 0x4CDA40, 0x711E94.
      - **The map zoom on the keyboard is the mouse wheel alone**: the wheel
        prompt replaces the L1/R1 icon pair (one "MOUSE WHEEL" keycap, the
        second icon blank; the map's "L1 and R1 buttons" hint reads "Mouse
