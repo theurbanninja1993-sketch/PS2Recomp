@@ -508,7 +508,11 @@ texture packs from `mods/`, Windows build under Wine.
      already sends Triangle. Keyboard in menus: WASD presses the D-pad
      (discrete steps, like the arrow keys - no analog stick), the mouse wheel
      zooms the map (up = R1 in, down = L1 out) instead of cycling weapons,
-     and Q / RMB stay the L1/R1 map zoom keys.
+     and Q / RMB stay the L1/R1 map zoom keys. Each wheel notch holds the
+     zoom button ~6 frames and fast scrolling queues steps, so the wheel
+     keeps up; the pad's L1/R1 feel is unchanged. The Button prompts
+     dropdown sits at the top of the Controls tab, under the controller
+     selection.
    - **Map-screen icons covered (2026-10-13 late).** The map legend draws
      its button icons as their own textures; miss logging + single-key
      colour tests on the owner's capture 6209 found them:
@@ -529,7 +533,10 @@ texture packs from `mods/`, Windows build under Wine.
      `<config>/ps2recomp/prompts_rt/<set>/`; the prompt loader reads that
      folder after the shipped `prompts/<set>/` files (last wins).
      - Keyboard: keycaps labelled with the bound keys (same action labels
-       as the shipped art, arrow glyphs included).
+       as the shipped art, arrow glyphs included). Long labels ("ENTER",
+       "BKSP", "RMB") draw as wide keys - like a real Enter key - with the
+       text across the full tile, instead of squeezed into a square; the
+       shipped keycap generator (`tools/prompt_glyphs.py`) matches.
      - Controller sets: the glyph of the host button that currently reaches
        each PS2 button (`hostButtonForPs2`), so Classic / Modern / Custom
        and the on-foot vs in-vehicle contexts show in the art too (Modern
