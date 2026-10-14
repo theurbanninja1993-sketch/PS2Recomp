@@ -114,11 +114,23 @@ namespace
     // The CPU rasterizer runs on its own thread unless PS2X_GS_SYNC is set.
     std::unique_ptr<GSRasterBackend> makeDefaultRasterBackend()
     {
+        // PS2X_GS_SYNC=1: the single-threaded CPU rasterizer (debug / replay tools).
         if (std::getenv("PS2X_GS_SYNC"))
             return std::make_unique<GSCpuBackend>();
-        // PS2X_GS_GPU=1: GPU renderer (in development, docs/gpu-renderer.md).
-        if (std::getenv("PS2X_GS_GPU"))
+        // The GPU renderer is the default. It is the only renderer with texture
+        // replacement (button prompts, texture packs) and the internal-resolution
+        // upscale, and it keeps the main thread nearly idle; the CPU rasterizer
+        // has neither and burns a core. Losing it silently looks like a broken
+        // port, so make it explicit and opt out with PS2X_GS_GPU=0.
+        // PS2X_GS_GPU=1 still forces the GPU renderer. If the GL 4.5 context
+        // cannot be created, GSGpuBackend falls back to its own CPU path.
+        const char *gpuEnv = std::getenv("PS2X_GS_GPU");
+        const bool optOut = gpuEnv != nullptr && (std::string(gpuEnv) == "0" || std::string(gpuEnv) == "off");
+        if (!optOut)
             return std::make_unique<GSGpuBackend>();
+        std::cerr << "[gs] CPU rasterizer (PS2X_GS_GPU=0): texture replacement and the internal resolution "
+                     "setting are unavailable"
+                  << std::endl;
         // PS2X_GS_THREADS picks the number of banded rasterizer workers.
         // ~60% of hardware threads leaves room for the EE and VIF1/VU1 threads;
         // more workers oversubscribe and starve VU1 (20-thread i7: 12 best,
