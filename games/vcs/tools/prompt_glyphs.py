@@ -142,17 +142,39 @@ def _svg_with_style(svg: bytes, style: str) -> bytes:
 
 
 def _keycap_glyph(label: str, size: int) -> Image.Image:
-    """Keyboard prompts: a rounded-square keycap with the binding label."""
+    """Keyboard prompts: a keycap with the binding label. Long labels
+    ("ENTER", "BKSP", "RMB") use a wide key, like a real Enter key, so the
+    text stays legible instead of squeezed into a square."""
     ss = 4
     big = size * ss
     im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     pad = max(2, big // 16)
+    rim = max(ss, big // 16)
+    if len(label) >= 3:
+        key_h = int(big * 0.58)
+        top = (big - key_h) // 2
+        d.rounded_rectangle([pad, top, big - pad - 1, top + key_h],
+                            radius=max(4, key_h // 4),
+                            fill=(32, 38, 46, 255), outline=(138, 148, 166, 255),
+                            width=rim)
+        fs = int(key_h * 0.9)
+        font = _font(fs)
+        bbox = d.textbbox((0, 0), label, font=font)
+        target = (big - 2 * pad - 2 * rim) * 0.96
+        if bbox[2] - bbox[0] > target:
+            fs = max(8, int(fs * target / (bbox[2] - bbox[0])))
+            font = _font(fs)
+            bbox = d.textbbox((0, 0), label, font=font)
+        tx = (big - (bbox[2] - bbox[0])) // 2 - bbox[0]
+        ty = (big - (bbox[3] - bbox[1])) // 2 - bbox[1]
+        d.text((tx, ty), label, font=font, fill=(232, 236, 242, 255))
+        return im.resize((size, size), Image.LANCZOS)
     d.rounded_rectangle([pad, pad, big - pad - 1, big - pad - 1],
                         radius=max(4, big // 6),
                         fill=(32, 38, 46, 255), outline=(138, 148, 166, 255),
-                        width=max(ss, big // 16))
-    frac = 0.55 if len(label) == 1 else (0.45 if len(label) == 2 else 0.34)
+                        width=rim)
+    frac = 0.55 if len(label) == 1 else 0.45
     font = _font(int(big * frac))
     bbox = d.textbbox((0, 0), label, font=font)
     target = (big - 2 * pad) * 0.78

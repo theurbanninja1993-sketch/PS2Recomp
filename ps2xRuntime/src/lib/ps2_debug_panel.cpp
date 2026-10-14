@@ -2705,6 +2705,23 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     else
                         ImGui::TextDisabled("none connected");
                 }
+                ImGui::SeparatorText("Button prompts");
+                {
+                    static const char *const kPromptSets[] = {"Auto (active controller or keyboard)", "Xbox", "Steam",
+                                                               "Keyboard", "DualSense (PS5)", "DualShock 4", "Switch",
+                                                               "Original (PS2 art / texture packs)"};
+                    int current = static_cast<int>(settings.buttonPrompts);
+                    if (ImGui::Combo("Prompt set", &current, kPromptSets, IM_ARRAYSIZE(kPromptSets)))
+                    {
+                        settings.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(current);
+                        changed = true;
+                        ps2ModsRefresh();
+                    }
+                    ImGui::TextDisabled("Prompts follow the connected controller by default; the sets keep every "
+                                        "button icon and button name in sync (including the tutorials' font "
+                                        "symbols). 'Original' restores the game's own art.");
+                    drawPromptSetPreview();
+                }
                 int layout = static_cast<int>(settings.gamepadLayout);
                 bool layoutChanged = ImGui::RadioButton("Classic (PS2)", &layout, 0);
                 ImGui::SameLine();
@@ -2828,23 +2845,6 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 changed |= ImGui::Checkbox("Invert vertical look", &settings.mouseInvertY);
                 changed |= ImGui::Checkbox("Player turns with the camera while moving", &settings.mouseTurnsPlayer);
                 ImGui::TextDisabled("On: no skid stop when the mouse turns you while running (pressing back still skids).");
-                ImGui::SeparatorText("Button prompts");
-                {
-                    static const char *const kPromptSets[] = {"Auto (active controller or keyboard)", "Xbox", "Steam",
-                                                               "Keyboard", "DualSense (PS5)", "DualShock 4", "Switch",
-                                                               "Original (PS2 art / texture packs)"};
-                    int current = static_cast<int>(settings.buttonPrompts);
-                    if (ImGui::Combo("Prompt set", &current, kPromptSets, IM_ARRAYSIZE(kPromptSets)))
-                    {
-                        settings.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(current);
-                        changed = true;
-                        ps2ModsRefresh();
-                    }
-                    ImGui::TextDisabled("Prompts follow the connected controller by default; the sets keep every "
-                                        "button icon and button name in sync (including the tutorials' font "
-                                        "symbols). 'Original' restores the game's own art.");
-                    drawPromptSetPreview();
-                }
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }

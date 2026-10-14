@@ -399,8 +399,12 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 if (wheel != 0.0f)
                     zoom = wheel > 0.0f ? 1 : -1;
             }
-            if (m_menuZoomPulse == 0 && zoom != 0)
-                m_menuZoomPulse = zoom > 0 ? 4 : -4;
+            // Each notch holds the zoom button for a few frames; scrolling fast
+            // queues several steps, so the hold (and the game's own repeat)
+            // keeps up instead of one step per notch. The pad's L1/R1 buttons
+            // are untouched.
+            if (zoom != 0)
+                m_menuZoomPulse = std::clamp(m_menuZoomPulse + zoom * 6, -48, 48);
             if (m_menuZoomPulse > 0)
                 press(R1);
             else if (m_menuZoomPulse < 0)

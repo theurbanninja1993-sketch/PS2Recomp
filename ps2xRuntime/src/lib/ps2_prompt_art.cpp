@@ -265,11 +265,18 @@ namespace
         Image img = GenImageColor(size, size, BLANK);
         const float pad = static_cast<float>(std::max(2, size / 16));
         const float rim = static_cast<float>(std::max(2, size / 16));
-        const Rectangle rec = {pad, pad, static_cast<float>(size) - 2 * pad - 1, static_cast<float>(size) - 2 * pad - 1};
-        roundedRect(&img, rec, rec.width * 0.22f, kPillRim);
+        // Long labels ("ENTER", "BKSP", "RMB") read better on a wide key, like
+        // a real Enter / Backspace key: the key uses the full tile width and
+        // the label gets the key's full height instead of a square's.
+        const bool wide = label.size() >= 3;
+        const float keyH = wide ? size * 0.58f : static_cast<float>(size) - 2 * pad - 1;
+        const float keyY = (size - keyH) * 0.5f;
+        const Rectangle rec = {pad, keyY, static_cast<float>(size) - 2 * pad - 1, keyH};
+        roundedRect(&img, rec, wide ? keyH * 0.3f : rec.width * 0.22f, kPillRim);
         const Rectangle inner = {rec.x + rim, rec.y + rim, rec.width - 2 * rim, rec.height - 2 * rim};
-        roundedRect(&img, inner, inner.width * 0.2f, kPillFill);
-        drawCenteredText(&img, font, label.c_str(), size * 0.5f, size / 2, size / 2, inner.width * 0.8f, kLabelLight);
+        roundedRect(&img, inner, wide ? inner.height * 0.3f : inner.width * 0.2f, kPillFill);
+        drawCenteredText(&img, font, label.c_str(), wide ? inner.height * 1.2f : size * 0.5f, size / 2, size / 2,
+                         inner.width * (wide ? 0.96f : 0.8f), kLabelLight);
         return img;
     }
 
