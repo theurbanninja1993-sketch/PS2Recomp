@@ -505,7 +505,10 @@ texture packs from `mods/`, Windows build under Wine.
      keep the base game's Square (target) and Triangle (legend) roles on the
      map. Circle is no longer sent in menus (nothing needs it so far); the
      prompt text/art follow via hostButtonForPs2. The keyboard's Backspace
-     already sends Triangle.
+     already sends Triangle. Keyboard in menus: WASD presses the D-pad
+     (discrete steps, like the arrow keys - no analog stick), the mouse wheel
+     zooms the map (up = R1 in, down = L1 out) instead of cycling weapons,
+     and Q / RMB stay the L1/R1 map zoom keys.
    - **Map-screen icons covered (2026-10-13 late).** The map legend draws
      its button icons as their own textures; miss logging + single-key
      colour tests on the owner's capture 6209 found them:
@@ -605,6 +608,41 @@ texture packs from `mods/`, Windows build under Wine.
      needs a dark-button look.
    - The owner has the self-contained contact sheet at
      `texdump/_contact_sheet.html` (open with the full file:// path).
+
+9. **Xbox One controller connected but unresponsive (owner report,
+   2026-10-13 late).** The DualSense works; the Xbox One pad is seen by the
+   game but no input registers. Leads:
+   - The pad selection logs `[pad] using controller <i>: <name> (connected: ...)`
+     on every change - check which slot is actually active. The settings'
+     `controller=` pin (`ps2SetPreferredGamepad`) wins while that exact name
+     is connected, so a still-connected DualSense keeps the Xbox pad ignored.
+   - If the Xbox pad IS the active slot and dead: the buttons are likely
+     unmapped. The port reads pads through raylib (GLFW + SDL's
+     gamecontrollerdb); a joystick that is present but has no mapping reads
+     as all-zero. raylib's `SetGamepadMappings` can load an SDL mapping
+     string at runtime - we need the device's GUID (raymath doesn't expose
+     it; read `/proc/bus/input/devices` or log `glfwGetJoystickGUID`).
+   - Also check the transport: Bluetooth Xbox One pads need `xpadneo` (the
+     stock `xpad` only handles USB); an unmapped hid-generic node would
+     explain "seen but dead".
+
+10. **Steam Controller / Steam Input testing.** Goal: exercise the Steam
+    prompt set + the Steam device path without the Steam client. The
+    Steam Controller (2015) is exposed as a gamepad by the kernel's
+    `hid-steam` driver (it drops lizard mode when the input node is
+    opened; needs `CONFIG_HID_STEAM`), and user-space bridges can present
+    it as a virtual pad with any name - name it "Steam Controller" so
+    `ps2InputDeviceKind()` matches "steam" and Auto picks the Steam set:
+    - `rodrigorc/inputmap` (virtual devices from real ones, SteamController
+      decoder; by the hid-steam author) - the main option for the 2015 pad.
+    - `benashby/steam-puck-bridge` - for the 2nd-gen Steam Controller
+      (Puck dongle 28de:1304): lizard mode off + a virtual Xbox 360 pad
+      via uinput, explicitly without Steam running.
+    - `kozec/sc-controller` is the older GUI alternative (own config
+      format, not Steam Input layouts).
+    - Note: real Steam Input (action sets/layouts) still needs the Steam
+      client; these tools just make the device usable as a normal gamepad,
+      which is what the port needs for its Steam prompt set.
 
 ## Third-party assets (release-page credits)
 
