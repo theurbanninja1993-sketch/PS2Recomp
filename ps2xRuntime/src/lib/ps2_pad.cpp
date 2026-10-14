@@ -109,21 +109,36 @@ void ps2ApplyGamepadMappings()
     static bool s_done = false;
     if (s_done)
         return;
-    // Xbox One S pad over USB reporting firmware revision 0x0517: the database
-    // has 0x0408 / 0x0301 / 0x0000 for product 0x02ea on Linux, so this one
-    // matched nothing (owner's pad, 2026-10-14). Body copied from the closest
-    // sibling ("Microsoft Xbox One S pad - Wired").
-    static const char *kSupplement =
-        "030000005e040000ea02000017050000,Microsoft X-Box One S pad,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
-        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n"
-        // A pad reporting no revision at all for the same product.
-        "030000005e040000ea02000000000000,Xbox One S pad (no revision),a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
-        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,\n";
+    // Pads GLFW's database does not carry, or carries with the wrong layout.
     // One mapping per line: GLFW splits on newlines, so two entries sharing a
-    // line are parsed as a single (wrong) mapping. A false return means GLFW is
-    // not up yet, so do not latch - retry on the next call.
+    // line are parsed as a single (wrong) mapping.
+    //
+    // Both Xbox pads below report a0/a1 as the left stick, a2/a3 as the right
+    // stick, a4/a5 as the triggers and the d-pad as a hat (verified against the
+    // devices). The database's nearest sibling for product 0x02ea puts the left
+    // trigger on a2, which silently mis-maps the right stick and the triggers.
+    static const char *kSupplement =
+        // Xbox One S pad over USB reporting firmware revision 0x0517: the
+        // database has 0x0408 / 0x0301 / 0x0000 for product 0x02ea on Linux.
+        "030000005e040000ea02000017050000,Microsoft X-Box One S pad,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
+        // The same pad reporting no revision at all.
+        "030000005e040000ea02000000000000,Microsoft X-Box One S pad,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
+        // Xbox Wireless Controller over Bluetooth (product 0x0b20, version
+        // 0x0523), and the same device with a zeroed version field as some GLFW
+        // builds report it. Without these it is not a gamepad at all, so it is
+        // ignored and the port reads whichever other pad is connected.
+        "050000005e040000200b000023050000,Xbox Wireless Controller,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
+        "050000005e040000200b000000000000,Xbox Wireless Controller,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n";
+    // A false return means GLFW is not up yet (prompt setup runs before
+    // InitWindow), so do not latch - retry on the next call.
     if (!glfwUpdateGamepadMappings(kSupplement))
         return;
     s_done = true;
@@ -162,22 +177,26 @@ struct PadSnapshot
 // queue and touch /dev/input, and the game reads the pad from the emulated game
 // thread while raylib polls from the host thread. Refresh on a timer and answer
 // from the snapshot in between - that keeps the per-call cost to a few loads and
-// limits the cross-thread GLFW traffic to a handful of calls a second.
-static const PadSnapshot &padSnapshot()
+// limits the cross-thread GLFW traffic to a handful of calls a second. The copy
+// is returned by value: two threads read this, and the names must not be shared.
+static PadSnapshot padSnapshot()
 {
+    static std::mutex s_mutex;
     static PadSnapshot s_snapshot;
     static std::chrono::steady_clock::time_point s_next{};
+    std::lock_guard lock(s_mutex);
     const auto now = std::chrono::steady_clock::now();
-    if (now < s_next)
-        return s_snapshot;
-    s_next = now + std::chrono::milliseconds(250);
-    for (int i = 0; i < 4; ++i)
+    if (now >= s_next)
     {
-        const bool present = IsGamepadAvailable(i);
-        s_snapshot.present[i] = present;
-        s_snapshot.mapped[i] = present && glfwJoystickIsGamepad(i) != 0;
-        const char *name = present ? GetGamepadName(i) : nullptr;
-        s_snapshot.name[i] = name != nullptr ? name : "";
+        s_next = now + std::chrono::milliseconds(250);
+        for (int i = 0; i < 4; ++i)
+        {
+            const bool present = IsGamepadAvailable(i);
+            s_snapshot.present[i] = present;
+            s_snapshot.mapped[i] = present && glfwJoystickIsGamepad(i) != 0;
+            const char *name = present ? GetGamepadName(i) : nullptr;
+            s_snapshot.name[i] = name != nullptr ? name : "";
+        }
     }
     return s_snapshot;
 }
@@ -195,7 +214,7 @@ bool ps2IsRealGamepad(int pad)
 int ps2ActiveGamepad()
 {
     ps2ApplyGamepadMappings();
-    const PadSnapshot &snapshot = padSnapshot();
+    const PadSnapshot snapshot = padSnapshot();
     int active = -1;
     {
         std::lock_guard lock(g_preferredPadMutex);
@@ -278,6 +297,11 @@ int ps2ActiveGamepad()
                          snapshot.name[active].c_str(), all.c_str());
         else
             std::fprintf(stderr, "[pad] no controller (connected:%s)\n", all.empty() ? " none" : all.c_str());
+        std::string line = "[pad] selection -> active=" + std::to_string(active);
+        if (active >= 0)
+            line += " '" + snapshot.name[active] + "'";
+        line += " connected:" + all + "\n";
+        ps2PadDebugLog(line.c_str());
     }
     return active;
 }

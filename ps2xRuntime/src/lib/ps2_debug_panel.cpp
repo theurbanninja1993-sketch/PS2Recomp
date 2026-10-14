@@ -2624,6 +2624,9 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     ImGui::TextDisabled("The game's own Widescreen option is switched off automatically.");
 
                 changed |= ImGui::Checkbox("Smooth scaling", &settings.smoothFiltering);
+                changed |= ImGui::Checkbox("FPS overlay", &settings.showFps);
+                ImGui::SameLine();
+                ImGui::TextDisabled("frame rate and frame time over the picture");
 
                 const bool gpu = ps2HostSettingsGpuRenderer();
                 ImGui::BeginDisabled(!gpu);
@@ -2637,7 +2640,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 }
                 ImGui::EndDisabled();
                 if (!gpu)
-                    ImGui::TextDisabled("Needs the GPU renderer (PS2X_GS_GPU=1).");
+                    ImGui::TextDisabled("Unavailable: the GPU renderer could not start (see the log).");
 
                 changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
 

@@ -374,6 +374,8 @@ void ps2HostSettingsLoad()
         }
         else if (key == "show_at_launch")
             s.showAtLaunch = std::atoi(v) != 0;
+        else if (key == "show_fps")
+            s.showFps = std::atoi(v) != 0;
         else if (key == "gamepad_layout")
         {
             s.gamepadLayout = static_cast<ps2controls::GamepadLayout>(clampMode(std::atoi(v)));
@@ -431,8 +433,11 @@ bool ps2HostSettingsFirstLaunch()
 
 bool ps2HostSettingsGpuRenderer()
 {
-    static const bool s_gpu = std::getenv("PS2X_GS_GPU") != nullptr;
-    return s_gpu;
+    // The renderer actually running. The GPU backend reports its own state and
+    // falls back to a CPU path when it cannot create a GL 4.5 context; this
+    // used to report whether PS2X_GS_GPU was set, which greyed out the internal
+    // resolution control on every launch once the GPU path became the default.
+    return g_gsGpuActive.load(std::memory_order_relaxed);
 }
 
 void ps2HostSettingsSave()
@@ -449,6 +454,7 @@ void ps2HostSettingsSave()
     }
     out << "# PS2Recomp host settings (also editable in game: F2)\n"
         << "show_at_launch=" << (s.showAtLaunch ? 1 : 0) << "\n"
+        << "show_fps=" << (s.showFps ? 1 : 0) << "\n"
         << "pnach_cheats=" << (s.pnachCheats ? 1 : 0) << "\n"
         << "button_prompts=" << static_cast<int>(s.buttonPrompts) << "\n";
     out << "mods_disabled=";

@@ -28,6 +28,8 @@ std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 // ever shown at window size, so transferring more than that is pure waste.
 std::atomic<uint32_t> g_gsGpuPresentWidth{0};
 std::atomic<uint32_t> g_gsGpuPresentHeight{0};
+// Set once the GL path is really running (see the Renderer constructor).
+std::atomic<bool> g_gsGpuActive{false};
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter; // EeScheduler.cpp (dump index)
 
 // ------------------------------------------------------------- dump worker
@@ -874,6 +876,7 @@ void main()
             m_gpu = std::getenv("PS2X_GS_GPU_CPU") == nullptr; // debug: keep the CPU path
             if (m_gpu)
                 initGpuObjects();
+            g_gsGpuActive.store(m_gpu, std::memory_order_relaxed);
             if (const char *env = std::getenv("PS2X_GS_SCALE"))
                 g_gsGpuScaleRequest.store(static_cast<uint32_t>(std::atoi(env)), std::memory_order_relaxed);
             // PS2X_GS_PRESENT_SIZE=<w>x<h>: pretend the host window is this

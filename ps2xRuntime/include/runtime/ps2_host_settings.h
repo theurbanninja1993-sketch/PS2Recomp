@@ -120,6 +120,7 @@ struct PS2HostSettings
     ButtonPrompts buttonPrompts = ButtonPrompts::Auto;
     std::vector<std::string> disabledMods; // mod folder names switched off
     bool showAtLaunch = false; // open the settings before the game starts, every launch (always on the first)
+    bool showFps = false;      // draw the frame rate over the picture (Display options)
 
     std::string controllerName; // controller to use when several are connected ("" = the first)
     ps2controls::GamepadLayout gamepadLayout = ps2controls::GamepadLayout::Classic;

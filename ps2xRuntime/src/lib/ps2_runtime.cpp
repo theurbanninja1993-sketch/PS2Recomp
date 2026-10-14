@@ -3238,6 +3238,11 @@ void PS2Runtime::run()
             dstWidth,
             dstHeight};
         DrawTexturePro(presentDraw, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        if (hostSettings.showFps)
+        {
+            DrawFPS(10, 10);
+            DrawText(TextFormat("%.2f ms", GetFrameTime() * 1000.0f), 10, 36, 20, LIME);
+        }
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);

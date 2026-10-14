@@ -33,6 +33,12 @@ namespace gsgpu
 extern std::atomic<uint32_t> g_gsGpuPresentWidth;
 extern std::atomic<uint32_t> g_gsGpuPresentHeight;
 
+// True once the GPU renderer is actually rasterizing. The GPU backend falls
+// back to its own CPU path when the GL 4.5 context cannot be created, and that
+// fallback has neither texture replacement nor the internal-resolution scale,
+// so the settings UI must not claim the features are available.
+extern std::atomic<bool> g_gsGpuActive;
+
 class GSGpuBackend final : public GSRasterBackend
 {
 public:
