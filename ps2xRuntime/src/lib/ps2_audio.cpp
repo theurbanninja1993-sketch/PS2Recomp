@@ -99,11 +99,17 @@ namespace
     // single global stream.
     struct StreamRing
     {
-        static constexpr size_t kFrames = 48000u; // one second
-        std::mutex mutex;
+        // Power of two, so indexing is a mask, and free-running counters so the
+        // producer and consumer never touch the same field: the device callback
+        // must never wait for the emulation thread. A mutex here was a real
+        // hazard - the callback could block behind a submit and miss its
+        // deadline, which is heard as a dropout, and Windows' WASAPI scheduling
+        // is far less forgiving about it than PulseAudio.
+        static constexpr size_t kFrames = 32768u; // ~0.68 s at 48 kHz
+        static constexpr size_t kMask = kFrames - 1u;
         std::vector<int16_t> samples = std::vector<int16_t>(kFrames * 2u, 0);
-        size_t readFrame = 0;
-        size_t queuedFrames = 0;
+        std::atomic<size_t> writeFrame{0}; // published by the producer
+        std::atomic<size_t> readFrame{0};  // published by the consumer
     };
 
     StreamRing g_streamRing;
@@ -116,20 +122,20 @@ namespace
     void streamCallback(void *bufferData, unsigned int frames)
     {
         int16_t *out = static_cast<int16_t *>(bufferData);
-        std::lock_guard<std::mutex> lock(g_streamRing.mutex);
-        const size_t available = std::min<size_t>(frames, g_streamRing.queuedFrames);
+        const size_t write = g_streamRing.writeFrame.load(std::memory_order_acquire);
+        const size_t read = g_streamRing.readFrame.load(std::memory_order_relaxed);
+        const size_t available = std::min<size_t>(frames, write - read);
         for (size_t i = 0; i < available; ++i)
         {
-            const size_t frame = (g_streamRing.readFrame + i) % StreamRing::kFrames;
+            const size_t frame = (read + i) & StreamRing::kMask;
             out[i * 2u] = g_streamRing.samples[frame * 2u];
             out[i * 2u + 1u] = g_streamRing.samples[frame * 2u + 1u];
         }
         if (available < frames)
             g_ps2AudioFramesUnderrun.fetch_add(frames - available, std::memory_order_relaxed);
         std::memset(out + available * 2u, 0, (frames - available) * 2u * sizeof(int16_t));
-        g_streamRing.readFrame = (g_streamRing.readFrame + available) % StreamRing::kFrames;
-        g_streamRing.queuedFrames -= available;
-        g_ps2AudioRingDepth.store(static_cast<uint32_t>(g_streamRing.queuedFrames), std::memory_order_relaxed);
+        g_streamRing.readFrame.store(read + available, std::memory_order_release);
+        g_ps2AudioRingDepth.store(static_cast<uint32_t>(write - (read + available)), std::memory_order_relaxed);
     }
 }
 
@@ -176,15 +182,16 @@ void PS2AudioBackend::setAudioReady(bool ready)
         // ring yet, so the callback would run dry and glitch until it catches up
         // (a run otherwise reports ~10000 underrun frames in its first sample).
         {
-            std::lock_guard<std::mutex> lock(g_streamRing.mutex);
+            size_t write = g_streamRing.writeFrame.load(std::memory_order_relaxed);
             const size_t prime = StreamRing::kFrames / 5u; // ~200 ms
             for (size_t i = 0; i < prime; ++i)
             {
-                const size_t frame = (g_streamRing.readFrame + g_streamRing.queuedFrames) % StreamRing::kFrames;
+                const size_t frame = write & StreamRing::kMask;
                 g_streamRing.samples[frame * 2u] = 0;
                 g_streamRing.samples[frame * 2u + 1u] = 0;
-                ++g_streamRing.queuedFrames;
+                ++write;
             }
+            g_streamRing.writeFrame.store(write, std::memory_order_release);
         }
         PlayAudioStream(m_impl->stream);
         m_impl->streamLoaded = true;
@@ -218,21 +225,25 @@ void PS2AudioBackend::submitStream(const int16_t *stereoFrames, uint32_t frameCo
     g_ps2AudioFramesSubmitted.fetch_add(frameCount, std::memory_order_relaxed);
     if (g_outputMuted.load(std::memory_order_relaxed))
         return; // runtime "Radio Off": drop the game's audio, output stays silent
-    std::lock_guard<std::mutex> lock(g_streamRing.mutex);
+    size_t write = g_streamRing.writeFrame.load(std::memory_order_relaxed);
+    const size_t read = g_streamRing.readFrame.load(std::memory_order_acquire);
+    size_t used = write - read;
     for (uint32_t i = 0; i < frameCount; ++i)
     {
-        if (g_streamRing.queuedFrames == StreamRing::kFrames)
+        if (used >= StreamRing::kFrames)
         {
+            // Full: drop this frame rather than stall the emulator. The newest
+            // one, not the oldest - the read pointer belongs to the consumer.
             g_ps2AudioFramesDropped.fetch_add(1u, std::memory_order_relaxed);
-            // Full: drop the oldest frame rather than stall the emulator.
-            g_streamRing.readFrame = (g_streamRing.readFrame + 1u) % StreamRing::kFrames;
-            --g_streamRing.queuedFrames;
+            continue;
         }
-        const size_t frame = (g_streamRing.readFrame + g_streamRing.queuedFrames) % StreamRing::kFrames;
+        const size_t frame = write & StreamRing::kMask;
         g_streamRing.samples[frame * 2u] = stereoFrames[i * 2u];
         g_streamRing.samples[frame * 2u + 1u] = stereoFrames[i * 2u + 1u];
-        ++g_streamRing.queuedFrames;
+        ++write;
+        ++used;
     }
+    g_streamRing.writeFrame.store(write, std::memory_order_release);
 }
 
 void PS2AudioBackend::onVagTransfer(const uint8_t *rdram, uint32_t srcAddr, uint32_t sizeBytes)
