@@ -183,7 +183,11 @@ struct PadSnapshot
 {
     bool present[4]{};
     bool mapped[4]{}; // GLFW recognises it as a gamepad
-    std::string name[4];
+    std::string name[4];        // the raw device name (raylib's GetGamepadName)
+    std::string gamepadName[4]; // GLFW's database name, when mapped (semantic:
+                                // a DualShock 4's raw name is just "Wireless
+                                // Controller", its database name is "PS4 Controller")
+    std::string guid[4];        // bus/vendor/product/version, for the vendor check
 };
 
 // Probing the bus is not free: GLFW's gamepad queries drain the device's input
@@ -209,6 +213,10 @@ static PadSnapshot padSnapshot()
             s_snapshot.mapped[i] = present && glfwJoystickIsGamepad(i) != 0;
             const char *name = present ? GetGamepadName(i) : nullptr;
             s_snapshot.name[i] = name != nullptr ? name : "";
+            const char *gamepadName = present ? glfwGetGamepadName(i) : nullptr;
+            s_snapshot.gamepadName[i] = gamepadName != nullptr ? gamepadName : "";
+            const char *guid = present ? glfwGetJoystickGUID(i) : nullptr;
+            s_snapshot.guid[i] = guid != nullptr ? guid : "";
         }
     }
     return s_snapshot;
@@ -509,23 +517,46 @@ int ps2ActiveGamepad()
 // What a connected pad is, from its name: GLFW's own name when the pad is in
 // its database, the name from our supplement otherwise ("Microsoft X-Box One
 // S pad", hence the hyphenated spelling below).
+// What a connected pad is. The raw device name is not enough: a DualShock 4
+// reports itself as "Wireless Controller" with no PlayStation wording at all.
+// Prefer GLFW's database name (the semantic one - "PS4 Controller") and fall
+// back to the vendor id from the GUID.
 static PS2InputDevice gamepadDeviceKind(int pad)
 {
-    if (pad < 0)
+    if (pad < 0 || pad >= 4)
         return PS2InputDevice::Keyboard;
-    std::string name = GetGamepadName(pad);
+    const PadSnapshot snapshot = padSnapshot();
+    const std::string &preferred = !snapshot.gamepadName[pad].empty() ? snapshot.gamepadName[pad] : snapshot.name[pad];
+    std::string name = preferred;
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    unsigned vendor = 0, product = 0;
+    const std::string &guid = snapshot.guid[pad];
+    if (guid.size() == 32)
+    {
+        const auto byte = [&guid](int i)
+        {
+            unsigned value = 0;
+            std::sscanf(guid.c_str() + i * 2, "%2x", &value);
+            return value;
+        };
+        vendor = byte(4) | (byte(5) << 8);
+        product = byte(8) | (byte(9) << 8);
+    }
+    // Sony: 0x0ce6 is the DualSense, 0x0df2 the DualSense Edge; the rest are
+    // DualShock 3/4.
+    const bool sony = vendor == 0x054c;
+    const bool sonyPs5 = sony && (product == 0x0ce6 || product == 0x0df2);
+    if (name.find("dualsense") != std::string::npos || name.find("ps5") != std::string::npos || sonyPs5)
+        return PS2InputDevice::DualSense;
+    if (name.find("dualshock") != std::string::npos || name.find("playstation") != std::string::npos ||
+        name.find("ps4") != std::string::npos || name.find("ps3") != std::string::npos || sony)
+        return PS2InputDevice::DualShock;
     if (name.find("xbox") != std::string::npos || name.find("x-box") != std::string::npos)
         return PS2InputDevice::Xbox;
     if (name.find("steam") != std::string::npos)
         return PS2InputDevice::Steam;
     if (name.find("switch") != std::string::npos || name.find("pro controller") != std::string::npos)
         return PS2InputDevice::Switch;
-    if (name.find("dualsense") != std::string::npos || name.find("ps5") != std::string::npos)
-        return PS2InputDevice::DualSense;
-    if (name.find("dualshock") != std::string::npos || name.find("playstation") != std::string::npos ||
-        name.find("ps4") != std::string::npos || name.find("ps3") != std::string::npos)
-        return PS2InputDevice::DualShock;
     return PS2InputDevice::Generic; // e.g. 8BitDo etc.: Xbox-style ABXY layout
 }
 
