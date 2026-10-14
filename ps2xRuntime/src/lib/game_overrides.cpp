@@ -1585,10 +1585,13 @@ namespace
     {
         VcsCarLook &look = g_vcsCarLook;
         VcsCarWall &wall = g_vcsCarWall;
+        // The previous clamp stands until this measurement completes: the
+        // raycast below is a guest call that can yield (EeDispatcherTransfer
+        // unwinds this frame), and clearing first made the clamp alternate
+        // on and off frame by frame - the camera popped in and out of the
+        // wall while looking sideways (the vehicle flicker).
         wall.cam = cam;
         wall.frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
-        wall.clamp = false;
-        wall.raised = false;
         static const bool s_wallCheck = []()
         {
             const char *env = std::getenv("PS2X_CARLOOK_WALLS");
@@ -1600,7 +1603,11 @@ namespace
             return path ? std::fopen(path, "a") : nullptr;
         }();
         if (!s_wallCheck || (look.yaw == 0.0f && look.pitch == 0.0f))
+        {
+            wall.clamp = false;
+            wall.raised = false;
             return;
+        }
         if (cam < 0x00100000u || cam + 0x80u > PS2_RAM_SIZE)
             return;
         uint32_t target = 0;
@@ -1615,7 +1622,11 @@ namespace
             std::fprintf(s_log, "f=%llu measure cam=(%.2f,%.2f,%.2f) pivot=(%.2f,%.2f,%.2f)\n",
                          (unsigned long long)wall.frame, c[8], c[9], c[10], pivot[0], pivot[1], pivot[2]);
         if (!vcsLineOfSightBlocked(rdram, ctx, runtime, pivot, c + 8, target, hit))
+        {
+            wall.clamp = false; // measured clear
+            wall.raised = false;
             return;
+        }
         if (s_log)
             std::fprintf(s_log, "f=%llu LOS blocked hit=(%.2f,%.2f,%.2f)\n",
                          (unsigned long long)wall.frame, hit[0], hit[1], hit[2]);
@@ -1626,6 +1637,11 @@ namespace
         float position[3];
         for (int i = 0; i < 3; ++i)
             position[i] = hit[i] + toPivot[i] * pull;
+        // Publish the pull now: the ceiling raycast below can yield, and the
+        // clamp must survive that.
+        std::memcpy(wall.position, position, sizeof(position));
+        wall.raised = false;
+        wall.clamp = true;
         // Too little room (a wall right beside the vehicle): rise above the
         // vehicle and look down at it instead of ending up inside it - unless
         // that is blocked too (a low ceiling).
@@ -1654,13 +1670,12 @@ namespace
                         std::memcpy(wall.front, f, sizeof(f));
                         for (int i = 0; i < 3; ++i)
                             wall.up[i] = u[i] / ul;
+                        std::memcpy(wall.position, position, sizeof(position));
                         wall.raised = true;
                     }
                 }
             }
         }
-        std::memcpy(wall.position, position, sizeof(position));
-        wall.clamp = true;
     }
 
     // Field of view: RwCameraSetViewWindow(camera, &viewWindow) (0x18F2D8;

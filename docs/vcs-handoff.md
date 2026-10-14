@@ -130,6 +130,19 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
 
 ## Open work, in rough priority
 
+0. **Presentation: share raylib's GL context (owner's next ask, 2026-10-14).**
+   The last big presentation cost is the round trip: the GPU renderer
+   composes into its own EGL/WGL context, so the frame must be read back to
+   the CPU and re-uploaded into raylib's texture. Sharing the contexts (the
+   renderer's context created with raylib's as its share context, then drawing
+   the composed GL texture through rlgl) would remove the readback and the
+   upload entirely. Caveats to work out: GLX vs EGL sharing on Linux (raylib
+   uses GLFW/GLX, the renderer EGL - a share group needs the same API, so the
+   renderer would move to GLX; WGL on Windows is already shareable), the
+   renderer's own hidden window/context, sampling the texture with raylib's
+   filter setting, the screenshot/frame-dump paths, and keeping the CPU-compose
+   fallback (`PS2X_GS_GPU_COMPOSE=0`) available.
+
 1. **Release packaging (source-only).** A prebuilt exe would distribute
    Rockstar's (translated) code, and Take-Two DMCA'd re3/reVC. Plan: publish
    the runtime + VCS overrides + configs + scripts; users point a script at
