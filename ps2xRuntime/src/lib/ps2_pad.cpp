@@ -365,8 +365,10 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         }
         if (held(pc::Pause))
             press(Start);
-        // Cutscene skip: Cross, in every context (cutscenes are not menus).
-        if (held(pc::SkipCutscene))
+        // Cutscene skip: Cross, but only while a cutscene plays (when the
+        // probe is wired), so it cannot fire during normal gameplay.
+        if (held(pc::SkipCutscene) &&
+            (m_cutsceneProbe == nullptr || (m_cutsceneRdram != nullptr && m_cutsceneProbe(m_cutsceneRdram))))
             press(Cross);
         if (!inMenu)
         {

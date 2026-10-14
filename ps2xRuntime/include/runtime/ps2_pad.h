@@ -73,12 +73,24 @@ public:
         m_menuRdram = rdram;
     }
 
+    // Whether a cutscene is playing: the Skip cutscene key only sends Cross
+    // then, so it cannot fire during normal gameplay. With no probe set the
+    // key is allowed everywhere.
+    using CutsceneProbe = bool (*)(const uint8_t *rdram);
+    void setCutsceneProbe(CutsceneProbe probe, const uint8_t *rdram)
+    {
+        m_cutsceneProbe = probe;
+        m_cutsceneRdram = rdram;
+    }
+
 private:
     static bool applyFakeMouse(float &yaw, float &pitch); // PS2X_MOUSE_FAKE=<yaw>,<pitch> per camera update (tests)
     VehicleProbe m_vehicleProbe = nullptr;
     const uint8_t *m_rdram = nullptr;
     MenuProbe m_menuProbe = nullptr;
     const uint8_t *m_menuRdram = nullptr;
+    CutsceneProbe m_cutsceneProbe = nullptr;
+    const uint8_t *m_cutsceneRdram = nullptr;
     std::atomic<bool> m_mouseCaptured{false};
     std::atomic<float> m_lookYaw{0.0f}, m_lookPitch{0.0f}; // radians not yet applied
     std::atomic<int> m_wheelSteps{0};
