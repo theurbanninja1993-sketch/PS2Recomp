@@ -1388,14 +1388,16 @@ namespace
             std::fprintf(s_log, "f=%llu afterCamProcess cam=0x%x vehicleCam=0x%x vehicleFrame=%llu\n",
                          (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), cam,
                          g_vcsCarLook.vehicleCam, (unsigned long long)g_vcsCarLook.vehicleFrame);
-        if (cam == g_vcsCarLook.vehicleCam &&
-            g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) <= g_vcsCarLook.vehicleFrame + 1u)
+        const bool rotated = cam == g_vcsCarLook.vehicleCam &&
+                             g_ps2PresentedFrameCounter.load(std::memory_order_relaxed) <= g_vcsCarLook.vehicleFrame + 1u;
+        if (rotated)
             vcsRotateVehicleCam(rdram, cam, ctx, runtime);
         // The game's own processing builds TheCamera (and the RenderWare
         // camera) from the rotated vectors; only after it may the wall
         // raycast run (a guest call that can yield and unwind this frame).
         g_vcsOrigAfterCamProcess(rdram, ctx, runtime);
-        vcsMeasureCarWall(rdram, ctx, runtime, cam);
+        if (rotated)
+            vcsMeasureCarWall(rdram, ctx, runtime, cam);
     }
 
     // The main RenderWare camera and the FOV state (see vcsSetViewWindow).
