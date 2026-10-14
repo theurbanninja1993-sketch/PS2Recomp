@@ -24,8 +24,10 @@ namespace ps2controls
     // The host button that currently reaches `ps2Button` in `context`,
     // preferring remapped buttons over the classic identity (kNone if none).
     int hostButtonForPs2(int ps2Button, int context);
-    // Pad context (OnFoot / InVehicle), updated by the pad backend each
-    // frame; button-prompt text re-resolves when it changes.
+    // Pad context (OnFoot / InVehicle / Menus), updated by the pad backend
+    // each frame; button-prompt text re-resolves when it changes. Menus is the
+    // game's pause menu / map: a fixed layout that keeps its own bindings
+    // (classic PS2 by default) so gameplay remaps never break menu navigation.
     void setCurrentContext(int context);
     int currentContext();
 
@@ -33,6 +35,7 @@ namespace ps2controls
     {
         OnFoot = 0,
         InVehicle = 1,
+        Menus = 2,
         kContextCount
     };
 

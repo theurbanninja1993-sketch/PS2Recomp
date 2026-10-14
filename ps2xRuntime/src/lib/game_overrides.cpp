@@ -403,6 +403,14 @@ namespace
         return false;
     }
 
+    // Whether the game's pause menu / map is open. 0x004CD2AC is the pause
+    // menu flag the game's own pause handlers set on START and clear when the
+    // menu closes (the Custom Soundtracks query reads it the same way).
+    bool vcsPauseMenuOpen(const uint8_t *rdram)
+    {
+        return rdram != nullptr && rdram[0x004CD2ACu] != 0u;
+    }
+
     // The current in-vehicle radio station: 0..8 = the nine real stations,
     // 9 = the game's silent "Radio Off" slot. The station field is at +0x2BA
     // of the audio/vehicle entity (not byte 0x4E4755, which is overloaded with
@@ -559,6 +567,23 @@ namespace
     int vcsKeyboardAction(int ps2Button)
     {
         namespace pc = ps2controls;
+        // In the game's menus the keyboard uses the fixed menu actions: accept
+        // is Enter, back is Backspace (the pad sends Cross / Triangle), and the
+        // D-pad tokens are the arrow keys.
+        if (pc::currentContext() == pc::Menus)
+        {
+            switch (ps2Button)
+            {
+            case 14: return pc::MenuAccept; // Cross
+            case 13:
+            case 12: return pc::MenuBack; // Circle / Triangle
+            case 4: return pc::MenuUp;
+            case 6: return pc::MenuDown;
+            case 7: return pc::MenuLeft;
+            case 5: return pc::MenuRight;
+            default: break;
+            }
+        }
         const bool driving = pc::currentContext() == pc::InVehicle;
         switch (ps2Button)
         {
@@ -1583,6 +1608,7 @@ namespace
             runtime.replaceFunction(0x0018F400u, &vcsSetFarClip);
 
         runtime.padBackend().setVehicleProbe(&vcsPlayerInVehicle, runtime.memory().getRDRAM());
+        runtime.padBackend().setMenuProbe(&vcsPauseMenuOpen, runtime.memory().getRDRAM());
         g_vcsFnRadioEntity = runtime.lookupFunction(0x001B5768u);
         if ((g_vcsOrigRadioUpdate = runtime.lookupFunction(0x0018AAD8u)))
             runtime.replaceFunction(0x0018AAD8u, &vcsRadioUpdate);

@@ -102,6 +102,8 @@ namespace ps2controls
         car[PadLT] = Square;
         car[PadRB] = R1;
         car[PadLB] = L1;
+        // Menus keep the classic map in every layout: menu navigation must not
+        // depend on the gameplay bindings (and vice versa).
     }
 
     const char *actionName(int action)

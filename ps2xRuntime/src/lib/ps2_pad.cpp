@@ -254,15 +254,20 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     };
 
     const bool driving = m_vehicleProbe && m_rdram && m_vehicleProbe(m_rdram);
+    const bool inMenu = m_menuProbe && m_menuRdram && m_menuProbe(m_menuRdram);
     static const bool s_debug = std::getenv("PS2X_PAD_DEBUG") != nullptr;
-    static bool s_lastDriving = false;
-    if (s_debug && driving != s_lastDriving)
+    static bool s_lastDriving = false, s_lastMenu = false;
+    if (s_debug && (driving != s_lastDriving || inMenu != s_lastMenu))
     {
         s_lastDriving = driving;
-        std::fprintf(stderr, "[pad] driving=%d\n", driving ? 1 : 0);
+        s_lastMenu = inMenu;
+        std::fprintf(stderr, "[pad] driving=%d menu=%d\n", driving ? 1 : 0, inMenu ? 1 : 0);
     }
     const PS2HostSettings &settings = ps2HostSettings();
-    const int context = driving ? ps2controls::InVehicle : ps2controls::OnFoot;
+    // The game's pause menu / map uses its own fixed layout (classic PS2 by
+    // default): gameplay remaps never change how the menus navigate, and the
+    // menu layout never leaks into gameplay.
+    const int context = inMenu ? ps2controls::Menus : (driving ? ps2controls::InVehicle : ps2controls::OnFoot);
     ps2controls::setCurrentContext(context);
 
     // Gamepad: each host button maps to a PS2 button per context (the
@@ -295,11 +300,15 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             s_padHeldByMenu = false;
         if (!s_padHeldByMenu)
             for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
-                // The D-pad is deliberately unmapped: it used to duplicate the
-                // left stick. D-pad Down doubles as the radio on/off hold (above).
-                if (hostDown[b] && b != ps2controls::PadUp && b != ps2controls::PadDown &&
-                    b != ps2controls::PadLeft && b != ps2controls::PadRight)
-                    press(settings.gamepadMap[context][b]);
+            {
+                if (!hostDown[b])
+                    continue;
+                // Every button follows the context's map: the menu context keeps
+                // the classic layout, so the D-pad (and everything else)
+                // navigates the game's menus under every gameplay layout.
+                // D-pad Down also holds the radio on/off toggle (above).
+                press(settings.gamepadMap[context][b]);
+            }
 
         float lx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_X);
         float ly = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_Y);

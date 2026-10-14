@@ -2720,13 +2720,16 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 }
                 if (ImGui::TreeNode("Gamepad buttons"))
                 {
-                    if (ImGui::BeginTable("pad-map", 3,
+                    if (ImGui::BeginTable("pad-map", 4,
                                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit,
                                           ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
                     {
                         ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthStretch);
-                        ImGui::TableSetupColumn("On foot", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
-                        ImGui::TableSetupColumn("In a vehicle", ImGuiTableColumnFlags_WidthFixed, columnW * 0.3f);
+                        ImGui::TableSetupColumn("On foot", ImGuiTableColumnFlags_WidthFixed, columnW * 0.24f);
+                        ImGui::TableSetupColumn("In a vehicle", ImGuiTableColumnFlags_WidthFixed, columnW * 0.24f);
+                        // The menus keep their own layout (classic by default) so
+                        // gameplay remaps never break menu navigation.
+                        ImGui::TableSetupColumn("In menus", ImGuiTableColumnFlags_WidthFixed, columnW * 0.24f);
                         ImGui::TableHeadersRow();
                         for (int b = 0; b < pc::kHostButtonCount; ++b)
                         {

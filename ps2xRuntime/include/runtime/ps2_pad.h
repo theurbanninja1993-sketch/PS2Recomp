@@ -64,10 +64,21 @@ public:
         m_rdram = rdram;
     }
 
+    // Whether the game's pause menu / map is open: the pad then uses the fixed
+    // menu layout instead of the gameplay one.
+    using MenuProbe = bool (*)(const uint8_t *rdram);
+    void setMenuProbe(MenuProbe probe, const uint8_t *rdram)
+    {
+        m_menuProbe = probe;
+        m_menuRdram = rdram;
+    }
+
 private:
     static bool applyFakeMouse(float &yaw, float &pitch); // PS2X_MOUSE_FAKE=<yaw>,<pitch> per camera update (tests)
     VehicleProbe m_vehicleProbe = nullptr;
     const uint8_t *m_rdram = nullptr;
+    MenuProbe m_menuProbe = nullptr;
+    const uint8_t *m_menuRdram = nullptr;
     std::atomic<bool> m_mouseCaptured{false};
     std::atomic<float> m_lookYaw{0.0f}, m_lookPitch{0.0f}; // radians not yet applied
     std::atomic<int> m_wheelSteps{0};
