@@ -532,6 +532,11 @@ texture packs from `mods/`, Windows build under Wine.
        live; `PS2X_CUTSCENE_FLAG=<hex>` overrides the address for testing.
        Other candidates if it is wrong: 0x6F4DA0, 0x6F4D64, 0x6F4D10,
        0x74D3F0, 0x486E28, 0x4874F4, 0x4CDA40, 0x711E94.
+       The **FMV movies** (opening logos / credits) are not covered by the
+       flag: `isMpegMovieActive` (MPEG stubs) remembers the presented frame
+       of the last picture served and reports a movie for 45 frames after
+       it; the probe returns true for either. Owner-confirmed the in-engine
+       skip works; the movie path is new.
      - **The map zoom on the keyboard is the mouse wheel alone**: the wheel
        prompt replaces the L1/R1 icon pair (one "MOUSE WHEEL" keycap, the
        second icon blank; the map's "L1 and R1 buttons" hint reads "Mouse
