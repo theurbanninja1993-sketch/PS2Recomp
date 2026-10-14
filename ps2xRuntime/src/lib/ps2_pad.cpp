@@ -18,6 +18,15 @@ extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <vector>
+#if defined(__linux__)
+// Reading a device's capabilities to derive a gamepad mapping (ps2BuildEvdevMapping).
+#include <dirent.h>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 
 // GLFW's gamepad mappings (from SDL's database, generated into mappings.h at
 // build time) only carry the device revisions it knew about. A pad whose
@@ -121,22 +130,26 @@ void ps2ApplyGamepadMappings()
         // Xbox One S pad over USB reporting firmware revision 0x0517: the
         // database has 0x0408 / 0x0301 / 0x0000 for product 0x02ea on Linux.
         "030000005e040000ea02000017050000,Microsoft X-Box One S pad,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
-        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a5,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a4,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
         // The same pad reporting no revision at all.
         "030000005e040000ea02000000000000,Microsoft X-Box One S pad,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
-        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
+        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a5,leftx:a0,lefty:a1,rightshoulder:b5,"
+        "rightstick:b10,righttrigger:a4,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
         // Xbox Wireless Controller over Bluetooth (product 0x0b20, version
         // 0x0523), and the same device with a zeroed version field as some GLFW
-        // builds report it. Without these it is not a gamepad at all, so it is
-        // ignored and the port reads whichever other pad is connected.
-        "050000005e040000200b000023050000,Xbox Wireless Controller,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
-        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n"
-        "050000005e040000200b000000000000,Xbox Wireless Controller,a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,"
-        "dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,"
-        "rightstick:b10,righttrigger:a5,rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n";
+        // builds report it. This driver reports extra buttons (BTN_C, BTN_Z,
+        // BTN_TL2, BTN_TR2), and GLFW numbers raw buttons by ascending evdev
+        // code, so every index after B is shifted: b3/b4 are X/Y, b6/b7 are
+        // LB/RB, b10/b11 are Back/Start, b13/b14 are L3/R3. The right stick is
+        // Z/RZ and the triggers are GAS (right) and BRAKE (left). Verified
+        // against the device.
+"050000005e040000200b000023050000,Xbox Wireless Controller,a:b0,b:b1,x:b3,y:b4,back:b10,start:b11,guide:b12,"
+        "leftshoulder:b6,rightshoulder:b7,leftstick:b13,rightstick:b14,lefttrigger:a5,righttrigger:a4,leftx:a0,"
+        "lefty:a1,rightx:a2,righty:a3,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,platform:Linux,\n"
+        "050000005e040000200b000000000000,Xbox Wireless Controller,a:b0,b:b1,x:b3,y:b4,back:b10,start:b11,guide:b12,"
+        "leftshoulder:b6,rightshoulder:b7,leftstick:b13,rightstick:b14,lefttrigger:a5,righttrigger:a4,leftx:a0,"
+        "lefty:a1,rightx:a2,righty:a3,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,platform:Linux,\n";
     // A false return means GLFW is not up yet (prompt setup runs before
     // InitWindow), so do not latch - retry on the next call.
     if (!glfwUpdateGamepadMappings(kSupplement))
@@ -211,35 +224,175 @@ bool ps2IsRealGamepad(int pad)
     return pad >= 0 && pad < 4 && padSnapshot().mapped[pad];
 }
 
+#if defined(__linux__)
+// GLFW numbers a joystick's raw buttons and axes by walking the device's evdev
+// codes in ascending order (see its openJoystickDevice), so the device's own
+// capability bitmap - not its name - is what a mapping has to be written
+// against. Two pads with the same buttons can report different codes (the
+// Bluetooth Xbox pad reports BTN_C, BTN_Z, BTN_TL2 and BTN_TR2, which shifts
+// every index after B), so deriving the mapping from the codes is the only way
+// to be right without hard-coding each device.
+static bool ps2BuildEvdevMapping(const char *guid, const std::string &name, std::string &out)
+{
+    static int s_reports = 0;
+    const bool trace = ps2PadDebugEnabled() && s_reports < 8;
+    auto fail = [&](const char *why) -> bool
+    {
+        if (trace)
+        {
+            ++s_reports;
+            std::fprintf(stderr, "[pad] no mapping derived for '%s': %s\n", name.c_str(), why);
+        }
+        return false;
+    };
+    if (guid == nullptr || std::strlen(guid) != 32)
+        return fail("no guid");
+    unsigned bytes[16]{};
+    for (int i = 0; i < 16; ++i)
+        if (std::sscanf(guid + i * 2, "%2x", &bytes[i]) != 1)
+            return false;
+    const unsigned bus = bytes[0] | (bytes[1] << 8);
+    const unsigned vendor = bytes[4] | (bytes[5] << 8);
+    const unsigned product = bytes[8] | (bytes[9] << 8);
+    const unsigned version = bytes[12] | (bytes[13] << 8);
+
+    DIR *dir = opendir("/dev/input");
+    if (dir == nullptr)
+        return fail("cannot list /dev/input");
+    std::vector<std::string> paths;
+    for (dirent *entry = readdir(dir); entry != nullptr; entry = readdir(dir))
+        if (std::strncmp(entry->d_name, "event", 5) == 0)
+            paths.push_back(std::string("/dev/input/") + entry->d_name);
+    closedir(dir);
+
+    bool sawNonGamepad = false;
+    for (const std::string &path : paths)
+    {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0)
+            continue;
+        struct input_id id{};
+        unsigned char keyBits[(KEY_CNT + 7) / 8]{};
+        unsigned char absBits[(ABS_CNT + 7) / 8]{};
+        // EVIOCGID returns 0, but EVIOCGBIT returns the number of bytes copied
+        // (96 for the key bitmap), so a "== 0" test rejects every device.
+        const bool ok = ioctl(fd, EVIOCGID, &id) == 0 &&
+                        ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keyBits)), keyBits) >= 0 &&
+                        ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absBits)), absBits) >= 0;
+        ::close(fd);
+        if (!ok || id.bustype != bus || id.vendor != vendor || id.product != product || id.version != version)
+            continue;
+
+        const auto has = [](const unsigned char *bits, int code)
+        { return (bits[code / 8] & (1 << (code % 8))) != 0; };
+        // Only gamepads: sticks plus a face button. A keyboard or mouse posing as
+        // a joystick has none of these and must never be mapped.
+        if (!has(absBits, ABS_X) || !has(absBits, ABS_Y) ||
+            (!has(keyBits, BTN_SOUTH) && !has(keyBits, BTN_GAMEPAD)))
+        {
+            // A keyboard or mouse with the same ids (a gaming keyboard's phantom
+            // joystick node) - never map it. Another node may still be the pad.
+            sawNonGamepad = true;
+            continue;
+        }
+
+        const bool triggerAxes = has(absBits, ABS_GAS) || has(absBits, ABS_BRAKE);
+        const bool rightStickZr = has(absBits, ABS_Z) || has(absBits, ABS_RZ);
+
+        std::string map = std::string(guid) + "," + name + ",";
+        int index = 0;
+        for (int code = BTN_MISC; code < KEY_CNT; ++code)
+        {
+            if (!has(keyBits, code))
+                continue;
+            const char *element = nullptr;
+            switch (code)
+            {
+                case BTN_SOUTH: element = "a"; break;
+                case BTN_EAST: element = "b"; break;
+                case BTN_NORTH: element = "x"; break;
+                case BTN_WEST: element = "y"; break;
+                case BTN_TL: element = "leftshoulder"; break;
+                case BTN_TR: element = "rightshoulder"; break;
+                // The triggers as buttons, only when there are no trigger axes.
+                case BTN_TL2: element = triggerAxes ? nullptr : "lefttrigger"; break;
+                case BTN_TR2: element = triggerAxes ? nullptr : "righttrigger"; break;
+                case BTN_SELECT: element = "back"; break;
+                case BTN_START: element = "start"; break;
+                case BTN_MODE: element = "guide"; break;
+                case BTN_THUMBL: element = "leftstick"; break;
+                case BTN_THUMBR: element = "rightstick"; break;
+                case BTN_DPAD_UP: element = "dpup"; break;
+                case BTN_DPAD_DOWN: element = "dpdown"; break;
+                case BTN_DPAD_LEFT: element = "dpleft"; break;
+                case BTN_DPAD_RIGHT: element = "dpright"; break;
+                default: break; // BTN_C, BTN_Z and friends have no SDL name
+            }
+            if (element != nullptr)
+                map += std::string(element) + ":b" + std::to_string(index) + ",";
+            ++index;
+        }
+
+        // The kernel's gamepad convention: X/Y the left stick, Z/RZ the right
+        // stick, GAS the right trigger and BRAKE the left; pads that report the
+        // right stick as RX/RY are handled too.
+        int axis = 0;
+        bool hat = false;
+        for (int code = 0; code < ABS_CNT; ++code)
+        {
+            if (!has(absBits, code))
+                continue;
+            if (code >= ABS_HAT0X && code <= ABS_HAT3Y)
+            {
+                hat = true;
+                ++code; // the Y half of the hat pair
+                continue;
+            }
+            const char *element = nullptr;
+            switch (code)
+            {
+                case ABS_X: element = "leftx"; break;
+                case ABS_Y: element = "lefty"; break;
+                case ABS_Z: element = "rightx"; break;
+                case ABS_RZ: element = "righty"; break;
+                case ABS_RX: element = rightStickZr ? nullptr : "rightx"; break;
+                case ABS_RY: element = rightStickZr ? nullptr : "righty"; break;
+                case ABS_GAS: element = "righttrigger"; break;
+                case ABS_BRAKE: element = "lefttrigger"; break;
+                default: break;
+            }
+            if (element != nullptr)
+                map += std::string(element) + ":a" + std::to_string(axis) + ",";
+            ++axis;
+        }
+        if (hat)
+            map += "dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,";
+        map += "platform:Linux,";
+        out = map;
+        return true;
+    }
+    return fail(sawNonGamepad ? "the matching device is not a gamepad" : "no evdev node with a matching id");
+}
+#endif
+
 // A pad GLFW has no mapping for is not a gamepad at all: it gets ignored, and
-// the port silently reads whichever other device is connected. That happens
-// whenever a pad reports a GUID the database does not carry - which is not just
-// an exotic device: the same controller over USB and over Bluetooth are two
-// different GUIDs (bus, product and firmware revision are all part of it), and
-// a firmware update changes the revision bytes. So recognise the families we
-// know by name and map them with the layout verified on the real devices.
-// Keyboards and mice are never matched: their names do not name a pad family,
-// and mapping one would reintroduce the "phantom joystick" trap.
+// the port silently reads whichever other device is connected. That is not an
+// exotic case - the same controller over USB and over Bluetooth are two
+// different GUIDs (bus, product and firmware revision all feed into it), and a
+// firmware update changes the revision bytes. Derive a mapping from the device
+// itself so it works whatever it reports.
 static void ps2MapUnrecognisedPads()
 {
+#if defined(__linux__)
     const PadSnapshot snapshot = padSnapshot();
     std::string generated;
     for (int i = 0; i < 4; ++i)
     {
         if (!snapshot.present[i] || snapshot.mapped[i] || snapshot.name[i].empty())
             continue;
-        std::string lower = snapshot.name[i];
-        std::transform(lower.begin(), lower.end(), lower.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (lower.find("xbox") == std::string::npos && lower.find("x-box") == std::string::npos)
-            continue;
-        const char *guid = glfwGetJoystickGUID(i);
-        if (guid == nullptr || std::strlen(guid) != 32)
-            continue;
-        generated += std::string(guid) + "," + snapshot.name[i] +
-                     ",a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,"
-                     "leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,"
-                     "rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n";
+        std::string mapping;
+        if (ps2BuildEvdevMapping(glfwGetJoystickGUID(i), snapshot.name[i], mapping))
+            generated += mapping + "\n";
     }
     if (generated.empty())
         return;
@@ -253,10 +406,8 @@ static void ps2MapUnrecognisedPads()
         return;
     s_next = now + std::chrono::seconds(2);
     if (glfwUpdateGamepadMappings(generated.c_str()))
-        std::fprintf(stderr,
-                     "[pad] mapped pad(s) GLFW did not know, as a standard Xbox pad "
-                     "(tell us if the sticks or triggers are wrong):\n%s",
-                     generated.c_str());
+        std::fprintf(stderr, "[pad] derived mapping(s) from the device:\n%s", generated.c_str());
+#endif
 }
 
 int ps2ActiveGamepad()
