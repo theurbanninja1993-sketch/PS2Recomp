@@ -535,9 +535,19 @@ namespace
     // the game's station pop-up can never pick up a stale name.
     void vcsKeepCustomName(uint8_t *rdram)
     {
-        vcsFindStationNames(rdram);
+        // The station names (and the "Radio Off" string) come from the GXT,
+        // which loads late: looking for them is a full RAM pass, so do that at
+        // most once every 60 frames until they turn up instead of every frame.
         if (!g_vcsStationNames.found)
-            return;
+        {
+            static int s_searchCooldown = 0;
+            if (s_searchCooldown-- > 0)
+                return;
+            s_searchCooldown = 60;
+            vcsFindStationNames(rdram);
+            if (!g_vcsStationNames.found)
+                return;
+        }
         static const uint16_t kCustom[10] = {'C', 'u', 's', 't', 'o', 'm', 0, 0, 0, 0};
         static const uint16_t kOff[10] = {'R', 'a', 'd', 'i', 'o', ' ', 'O', 'f', 'f', 0};
         const uint16_t *want = ps2MusicStationRadioOff() ? kOff : kCustom;
