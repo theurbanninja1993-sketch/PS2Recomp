@@ -23,6 +23,11 @@ bool ps2IsRealGamepad(int pad);
 // initialised, so map it right after InitWindow and before the first pad read.
 void ps2ApplyGamepadMappings();
 
+// PS2X_PAD_DEBUG=1 support: a one-line-per-event trace of pad and prompt
+// decisions, written to padlog.txt (working directory and the config folder).
+bool ps2PadDebugEnabled();
+void ps2PadDebugLog(const char *line);
+
 // The active input device, from the gamepad's reported name (the keyboard when
 // no gamepad is active). Drives the runtime's prompt wording and the
 // button-prompt replacement set.

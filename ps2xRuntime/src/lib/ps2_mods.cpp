@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -16,6 +17,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <system_error>
 
@@ -217,22 +219,64 @@ namespace
 
 void ps2ModsRefreshButtonPromptsIfNeeded()
 {
+    // Called both from the emulated game thread (every pad read) and from the
+    // host frame loop. The statics here and the prompt-art generator below must
+    // never run concurrently - a torn comparison makes the set look changed
+    // forever, which rebuilds the whole replacement index every frame.
+    static std::mutex s_mutex;
+    std::lock_guard lock(s_mutex);
     // Auto follows the active input device: rebuild the replacement index only
-    // when the resolved set changes (rare; the rebuild rescan is expensive).
+    // when the resolved set changes (rare; the rebuild rescan is not cheap).
+    // A single stray key or wheel event can flip the automatic set for one
+    // frame, so only follow a set that has been stable for a moment.
     static std::string s_last;
+    static std::string s_pendingSet;
+    static int s_pendingFrames = 0;
     const std::string resolved = resolvedPromptSet(ps2HostSettings());
+    // Trace the *raw* resolution: if the automatic set flaps, that is the whole
+    // story for both the rebuild cost and the wrong prompts on screen.
+    if (ps2PadDebugEnabled())
+    {
+        static std::string s_loggedSet = "\x01";
+        static int s_loggedCount = 0;
+        if (resolved != s_loggedSet && s_loggedCount < 200)
+        {
+            ++s_loggedCount;
+            char line[256];
+            std::snprintf(line, sizeof(line), "[prompts] set -> '%s' device=%d\n", resolved.c_str(),
+                          static_cast<int>(ps2InputDeviceKind()));
+            ps2PadDebugLog(line);
+            s_loggedSet = resolved;
+        }
+    }
+    if (resolved != s_pendingSet)
+    {
+        s_pendingSet = resolved;
+        s_pendingFrames = 0;
+    }
+    if (++s_pendingFrames < 3)
+        return;
     const bool setChanged = resolved != s_last;
-    s_last = resolved;
+    const auto rebuildStart = std::chrono::steady_clock::now();
     // Keyboard keycaps follow the live key bindings; regenerating writes the
     // runtime prompt-art folder, so the index must be rescanned too.
     const bool artChanged = ps2PromptArtRefreshIfNeeded();
     if (!setChanged && !artChanged)
         return;
+    s_last = resolved;
     // Only the prompt layers changed: rebuild them over the cached mods index
     // instead of rescanning every mod folder (the full refresh runs at
     // startup, on Rescan and on mod toggles).
     auto index = ps2IndexWithPrompts();
     gsrepl::setCurrent(!index->files.empty() ? std::shared_ptr<const gsrepl::Index>(index) : nullptr);
+    if (ps2PadDebugEnabled())
+    {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rebuildStart).count();
+        char line[160];
+        std::snprintf(line, sizeof(line), "[prompts] rebuilt set='%s' entries=%zu took %.1f ms\n", resolved.c_str(),
+                      index->files.size(), ms);
+        ps2PadDebugLog(line);
+    }
 }
 
 std::string ps2CurrentPromptSet()
