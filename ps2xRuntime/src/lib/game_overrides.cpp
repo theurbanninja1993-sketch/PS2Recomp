@@ -1509,13 +1509,17 @@ namespace
     // (0x6F4540) is MODE_FLYBY (17) while one plays (4 = on foot).
     // The game's own widescreen option follows the port's aspect setting
     // (16:9 turns it on, 4:3 / Stretch turn it off), so the owner does not
-    // have to set both. Found by RAM diffing F8 dumps with the option off
-    // (0x68) and on (0x48): bit 0x20 of these settings bytes is set for 4:3
-    // and clear for widescreen. PS2X_WIDESCREEN_FLAG=<hex[,hex...]>
-    // overrides the addresses for testing.
+    // have to set both. Two layers, both found by RAM diffing F8 dumps with
+    // the option off and on:
+    //  - the render flag 0x486E28 (1 = widescreen active; also set while a
+    //    cutscene plays, so the off state leaves it alone in cutscenes), and
+    //  - the display-config bit 0x20 of 0x6F2889 / 0x6F288D / 0x6F2A49 /
+    //    0x6F2A4D (set for 4:3, clear for widescreen).
+    // PS2X_WIDESCREEN_FLAG=<hex[,hex]> / PS2X_WIDESCREEN_BYTE=<hex[,hex]>
+    // override the addresses for testing; 0 writes nothing.
     void vcsApplyWidescreen(uint8_t *rdram)
     {
-        static const std::vector<uint32_t> s_flags = []()
+        static const std::vector<uint32_t> s_bits = []()
         {
             std::vector<uint32_t> flags;
             if (const char *env = std::getenv("PS2X_WIDESCREEN_FLAG"))
@@ -1534,16 +1538,46 @@ namespace
                 }
                 return flags;
             }
-            // The settings block and its runtime mirror.
             return std::vector<uint32_t>{0x006F2889u, 0x006F288Du, 0x006F2A49u, 0x006F2A4Du};
         }();
+        static const std::vector<uint32_t> s_bytes = []()
+        {
+            std::vector<uint32_t> flags;
+            if (const char *env = std::getenv("PS2X_WIDESCREEN_BYTE"))
+            {
+                const std::string text(env);
+                size_t start = 0;
+                while (start < text.size())
+                {
+                    const size_t comma = text.find(',', start);
+                    const std::string part = text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                    if (!part.empty())
+                        flags.push_back(static_cast<uint32_t>(std::strtoul(part.c_str(), nullptr, 16)));
+                    if (comma == std::string::npos)
+                        break;
+                    start = comma + 1;
+                }
+                return flags;
+            }
+            return std::vector<uint32_t>{0x00486E28u};
+        }();
         const bool widescreen = ps2HostSettings().aspect == PS2HostSettings::Aspect::Widescreen;
-        for (const uint32_t addr : s_flags)
+        for (const uint32_t addr : s_bits)
         {
             if (addr < 0x00100000u || static_cast<size_t>(addr) + 1u > PS2_RAM_SIZE)
-                continue; // PS2X_WIDESCREEN_FLAG=0 disables the write for RAM diffs
+                continue;
             const uint8_t value =
                 widescreen ? static_cast<uint8_t>(rdram[addr] & ~0x20u) : static_cast<uint8_t>(rdram[addr] | 0x20u);
+            if (rdram[addr] != value)
+                rdram[addr] = value;
+        }
+        for (const uint32_t addr : s_bytes)
+        {
+            if (addr < 0x00100000u || static_cast<size_t>(addr) + 1u > PS2_RAM_SIZE)
+                continue;
+            if (!widescreen && vcsInCutscene(rdram))
+                continue; // the game forces widescreen for cutscenes; leave it
+            const uint8_t value = widescreen ? 1u : 0u;
             if (rdram[addr] != value)
                 rdram[addr] = value;
         }
