@@ -4,7 +4,6 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <psapi.h>
 #include <shellapi.h>
 #endif
 
@@ -55,9 +54,9 @@ bool ps2IsHostThread()
 size_t ps2ProcessResidentMb()
 {
 #if defined(_WIN32)
-    PROCESS_MEMORY_COUNTERS counters{};
-    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
-        return counters.WorkingSetSize / (1024u * 1024u);
+    // Not reported on Windows: K32GetProcessMemoryInfo pulls a static stub into
+    // the executable rather than importing the API, and the build would not
+    // start. Task Manager gives the same number.
     return 0u;
 #else
     FILE *file = std::fopen("/proc/self/statm", "r");
