@@ -547,6 +547,15 @@ texture packs from `mods/`, Windows build under Wine.
        prompt replaces the L1/R1 icon pair (one "MOUSE WHEEL" keycap, the
        second icon blank; the map's "L1 and R1 buttons" hint reads "Mouse
        Wheel"), and Q / RMB no longer press L1/R1.
+     - **The game's Widescreen option follows the port's aspect setting**
+       (2026-10-13 late): F8 dumps with the game option off (flags byte
+       0x68) and on (0x48) pin bit 0x20 of the display settings bytes at
+       0x6F2889 / 0x6F288D / 0x6F2A49 / 0x6F2A4D (two struct copies next to
+       a brightness 0x40 entry). The port clears the bit for 16:9 and sets
+       it for 4:3 / Stretch every frame, so the owner only sets the port's
+       aspect. `PS2X_WIDESCREEN_FLAG=<hex[,hex]>` overrides the addresses
+       for testing. Owner-verification pending (in-game Display options
+       should mirror the port's setting).
    - **Map-screen icons covered (2026-10-13 late).** The map legend draws
      its button icons as their own textures; miss logging + single-key
      colour tests on the owner's capture 6209 found them:
