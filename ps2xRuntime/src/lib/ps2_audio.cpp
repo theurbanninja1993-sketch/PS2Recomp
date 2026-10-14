@@ -85,6 +85,13 @@ struct PS2AudioBackend::Impl
     bool streamLoaded = false;
 };
 
+// Frames the audio device asked for and the ring could not supply. They are
+// filled with silence, so a choppy stream is otherwise invisible: the dropped
+// counter only sees the ring overflowing, never running dry.
+std::atomic<uint64_t> g_ps2AudioFramesUnderrun{0};
+// Ring fill level at the last callback (48 kHz frames; 48000 is one second).
+std::atomic<uint32_t> g_ps2AudioRingDepth{0};
+
 namespace
 {
     // SPU2 output ring, filled by the IOP (emulation thread) and drained by the
@@ -101,6 +108,7 @@ namespace
 
     StreamRing g_streamRing;
 
+
     // Runtime "Radio Off": when set, submitStream queues nothing, so the audio
     // device outputs silence for the game's own audio.
     std::atomic<bool> g_outputMuted{false};
@@ -116,9 +124,12 @@ namespace
             out[i * 2u] = g_streamRing.samples[frame * 2u];
             out[i * 2u + 1u] = g_streamRing.samples[frame * 2u + 1u];
         }
+        if (available < frames)
+            g_ps2AudioFramesUnderrun.fetch_add(frames - available, std::memory_order_relaxed);
         std::memset(out + available * 2u, 0, (frames - available) * 2u * sizeof(int16_t));
         g_streamRing.readFrame = (g_streamRing.readFrame + available) % StreamRing::kFrames;
         g_streamRing.queuedFrames -= available;
+        g_ps2AudioRingDepth.store(static_cast<uint32_t>(g_streamRing.queuedFrames), std::memory_order_relaxed);
     }
 }
 
@@ -148,6 +159,16 @@ void PS2AudioBackend::setAudioReady(bool ready)
         return;
     if (ready)
     {
+        // The device asks for audio in blocks; a small block means the callback
+        // must be served promptly or the output glitches. Windows' shared-mode
+        // scheduler is not as forgiving as Linux's, so allow tuning without a
+        // rebuild: PS2X_AUDIO_BUFFER=<frames> (512..32768, default 4096).
+        if (const char *env = std::getenv("PS2X_AUDIO_BUFFER"))
+        {
+            const int frames = std::atoi(env);
+            if (frames >= 512 && frames <= 32768)
+                SetAudioStreamBufferSizeDefault(frames);
+        }
         m_impl->stream = LoadAudioStream(48000, 16, 2);
         SetAudioStreamCallback(m_impl->stream, &streamCallback);
         PlayAudioStream(m_impl->stream);

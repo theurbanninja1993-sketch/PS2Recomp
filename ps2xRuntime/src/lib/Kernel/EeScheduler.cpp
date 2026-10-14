@@ -601,11 +601,19 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
         // time is ~480480 per 600 VBlanks.
         extern std::atomic<uint64_t> g_ps2AudioFramesSubmitted, g_ps2AudioFramesDropped;
         static uint64_t s_lastSubmitted = 0, s_lastDropped = 0;
+        extern std::atomic<uint64_t> g_ps2AudioFramesUnderrun;
+        extern std::atomic<uint32_t> g_ps2AudioRingDepth;
+        static uint64_t s_lastUnderrun = 0;
         const uint64_t submitted = g_ps2AudioFramesSubmitted.load(), dropped = g_ps2AudioFramesDropped.load();
-        std::fprintf(s_file, " audio=%llu dropped=%llu", static_cast<unsigned long long>(submitted - s_lastSubmitted),
-                     static_cast<unsigned long long>(dropped - s_lastDropped));
+        const uint64_t underrun = g_ps2AudioFramesUnderrun.load();
+        std::fprintf(s_file, " audio=%llu dropped=%llu underrun=%llu queued=%u",
+                     static_cast<unsigned long long>(submitted - s_lastSubmitted),
+                     static_cast<unsigned long long>(dropped - s_lastDropped),
+                     static_cast<unsigned long long>(underrun - s_lastUnderrun),
+                     static_cast<unsigned>(g_ps2AudioRingDepth.load()));
         s_lastSubmitted = submitted;
         s_lastDropped = dropped;
+        s_lastUnderrun = underrun;
         // EE cycles this period (timers/CTimer); real time is ~2952M.
         static uint64_t s_lastCycle = 0;
         std::fprintf(s_file, " eeMcyc=%llu", static_cast<unsigned long long>((eeCycle - s_lastCycle) / 1000000u));
