@@ -255,11 +255,11 @@ inline void ps2TraceGuestWrite(uint8_t *rdram,
 {
     (void)rdram;
     (void)valueHi;
-    if (!g_ps2TraceBoolWrites || size > 4u || valueLo > 1u)
+    if (!g_ps2TraceBoolWrites || size > 4u)
         return;
     const uint32_t addr = guestAddr & PS2_RAM_MASK;
-    if (addr < 0x00100000u || addr >= 0x02000000u)
-        return;
+    if (addr < 0x00400000u || addr >= 0x00800000u)
+        return; // the game's static data: settings, flags, config
     static FILE *s_out = std::fopen("boolwrites.log", "a");
     std::fprintf(s_out != nullptr ? s_out : stderr, "[ww] f=%llu pc=0x%08x %s addr=0x%06x val=%llu\n",
                  (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed),

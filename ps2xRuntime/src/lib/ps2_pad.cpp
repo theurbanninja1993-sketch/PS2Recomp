@@ -531,7 +531,14 @@ void PSPadBackend::updateHostInput()
     if (IsKeyPressed(KEY_F8))
         g_ps2DumpRamRequest.store(true, std::memory_order_relaxed);
     if (IsKeyPressed(KEY_F7))
+    {
         std::fprintf(stderr, "[mark] frame=%llu\n", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()));
+        if (FILE *f = std::fopen("boolwrites.log", "a"))
+        {
+            std::fprintf(f, "[mark] frame=%llu\n", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()));
+            std::fclose(f);
+        }
+    }
     // Click in the window to capture the mouse for mouse look; Left Alt (or
     // losing focus) releases it.
     bool captured = m_mouseCaptured.load(std::memory_order_relaxed);
