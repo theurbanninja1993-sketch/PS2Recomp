@@ -211,9 +211,58 @@ bool ps2IsRealGamepad(int pad)
     return pad >= 0 && pad < 4 && padSnapshot().mapped[pad];
 }
 
+// A pad GLFW has no mapping for is not a gamepad at all: it gets ignored, and
+// the port silently reads whichever other device is connected. That happens
+// whenever a pad reports a GUID the database does not carry - which is not just
+// an exotic device: the same controller over USB and over Bluetooth are two
+// different GUIDs (bus, product and firmware revision are all part of it), and
+// a firmware update changes the revision bytes. So recognise the families we
+// know by name and map them with the layout verified on the real devices.
+// Keyboards and mice are never matched: their names do not name a pad family,
+// and mapping one would reintroduce the "phantom joystick" trap.
+static void ps2MapUnrecognisedPads()
+{
+    const PadSnapshot snapshot = padSnapshot();
+    std::string generated;
+    for (int i = 0; i < 4; ++i)
+    {
+        if (!snapshot.present[i] || snapshot.mapped[i] || snapshot.name[i].empty())
+            continue;
+        std::string lower = snapshot.name[i];
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower.find("xbox") == std::string::npos && lower.find("x-box") == std::string::npos)
+            continue;
+        const char *guid = glfwGetJoystickGUID(i);
+        if (guid == nullptr || std::strlen(guid) != 32)
+            continue;
+        generated += std::string(guid) + "," + snapshot.name[i] +
+                     ",a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,"
+                     "leftstick:b9,lefttrigger:a4,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,"
+                     "rightx:a2,righty:a3,start:b7,x:b2,y:b3,platform:Linux,\n";
+    }
+    if (generated.empty())
+        return;
+    // Throttle: the mapping only becomes visible to the snapshot after its next
+    // refresh, so without this we would reinstall it on every call until then.
+    static std::mutex s_mutex;
+    static std::chrono::steady_clock::time_point s_next{};
+    std::lock_guard lock(s_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (now < s_next)
+        return;
+    s_next = now + std::chrono::seconds(2);
+    if (glfwUpdateGamepadMappings(generated.c_str()))
+        std::fprintf(stderr,
+                     "[pad] mapped pad(s) GLFW did not know, as a standard Xbox pad "
+                     "(tell us if the sticks or triggers are wrong):\n%s",
+                     generated.c_str());
+}
+
 int ps2ActiveGamepad()
 {
     ps2ApplyGamepadMappings();
+    ps2MapUnrecognisedPads();
     const PadSnapshot snapshot = padSnapshot();
     int active = -1;
     {
