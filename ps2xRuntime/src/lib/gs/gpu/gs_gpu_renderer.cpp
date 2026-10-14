@@ -2648,6 +2648,7 @@ void main()
             return env != nullptr && std::atoi(env) != 0;
         }();
         const bool sharePresent = s_sharePresent && m_context.sharedWithHost();
+        const uint32_t composedWidth = width, composedHeight = height;
         if (sharePresent)
         {
             // The host draws this texture with raylib, so its filtering has to
@@ -2666,7 +2667,11 @@ void main()
                 }
             }
         }
-        if (sharePresent && (m_presentShared[0] == 0 || m_presentSharedWidth != width || m_presentSharedHeight != height))
+        // Grow-only: the display size changes constantly through the logos, the
+        // FMV movies and the intro (letterboxing, display-mode switches).
+        // Recreating two full-size textures on every change churned VRAM and
+        // hitched exactly there; the host samples the used sub-rect instead.
+        if (sharePresent && (m_presentShared[0] == 0 || m_presentSharedWidth < width || m_presentSharedHeight < height))
         {
             for (int i = 0; i < 2; ++i)
             {
@@ -2677,13 +2682,13 @@ void main()
                 m_presentShared[i] = 0;
                 m_presentSharedFramebuffer[i] = 0;
             }
-            m_presentSharedWidth = width;
-            m_presentSharedHeight = height;
+            m_presentSharedWidth = std::max(m_presentSharedWidth, width);
+            m_presentSharedHeight = std::max(m_presentSharedHeight, height);
             for (int i = 0; i < 2; ++i)
             {
                 gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_presentShared[i]);
-                gl.glTextureStorage2D(m_presentShared[i], 1, GL_RGBA8, static_cast<GLsizei>(width),
-                                      static_cast<GLsizei>(height));
+                gl.glTextureStorage2D(m_presentShared[i], 1, GL_RGBA8, static_cast<GLsizei>(m_presentSharedWidth),
+                                      static_cast<GLsizei>(m_presentSharedHeight));
                 // The host samples this with raylib; it can override the filter.
                 gl.glTextureParameteri(m_presentShared[i], GL_TEXTURE_MIN_FILTER,
                                        m_presentSharedFilter != 0 ? m_presentSharedFilter : GL_LINEAR);
@@ -2752,10 +2757,10 @@ void main()
             gl.glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
             gl.glFlush();
             frame.glTexture = m_presentShared[m_presentSharedIndex];
-            frame.glWidth = width;
-            frame.glHeight = height;
-            frame.width = width;
-            frame.height = height;
+            frame.glWidth = m_presentSharedWidth;
+            frame.glHeight = m_presentSharedHeight;
+            frame.width = composedWidth;
+            frame.height = composedHeight;
             frame.rowPixels = width;
             frame.displayFbp = frame.sourceFbp = (crt1 ? c1 : c2).target->block / 32u;
             m_presentSharedIndex ^= 1;
