@@ -500,10 +500,13 @@ texture packs from `mods/`, Windows build under Wine.
      runtime prompt art resolves the keyboard cells to the menu actions
      (Enter / Backspace / arrows) while a menu is open, and the controller
      art falls back to the classic glyphs (identical to the shipped art).
-     Open with the owner: whether Backspace / B should send Circle or
-     Triangle in menus (currently Triangle), and the map's own roles (the
-     game's legend shows Square = Target; the owner listed Triangle =
-     target / Square = legend).
+     **B is the back button** (modern convention): the game's own menus read
+     Triangle as back, so the menu map sends Triangle from B and Circle from
+     Y (the In menus column shows this; the prompt text/art follow via
+     hostButtonForPs2). The keyboard's Backspace already sends Triangle.
+     Open with the owner: the map's own roles (the game's legend shows
+     Square = Target; the owner listed Triangle = target / Square =
+     legend).
    - **Map-screen icons covered (2026-10-13 late).** The map legend draws
      its button icons as their own textures; miss logging + single-key
      colour tests on the owner's capture 6209 found them:
