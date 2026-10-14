@@ -8,6 +8,8 @@
 #endif
 
 #include "runtime/ps2_platform.h"
+
+#include <thread>
 #include "ThreadNaming.h"
 
 #include <cstdlib>
@@ -30,6 +32,21 @@ std::filesystem::path ps2ExecutableDirectory()
 #else
     return std::filesystem::current_path(ec);
 #endif
+}
+
+namespace
+{
+    std::thread::id g_hostThread;
+}
+
+void ps2SetHostThread()
+{
+    g_hostThread = std::this_thread::get_id();
+}
+
+bool ps2IsHostThread()
+{
+    return g_hostThread == std::this_thread::get_id();
 }
 
 std::filesystem::path ps2ConfigDirectory()

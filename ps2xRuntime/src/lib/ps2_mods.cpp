@@ -225,6 +225,14 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
     // forever, which rebuilds the whole replacement index every frame.
     static std::mutex s_mutex;
     std::lock_guard lock(s_mutex);
+    // The game thread calls this on every pad read, but regenerating the prompt
+    // art writes PNGs and rescans the folder (0.1-30 ms measured) and it fires
+    // on every context change - entering a vehicle, opening the map. That is a
+    // dropped frame and a gap in the audio, so only the host frame loop does it;
+    // the game thread just sets the art context (a cheap atomic store) and
+    // leaves. The host runs this every frame, so nothing is missed.
+    if (!ps2IsHostThread())
+        return;
     // Auto follows the active input device: rebuild the replacement index only
     // when the resolved set changes (rare; the rebuild rescan is not cheap).
     // A single stray key or wheel event can flip the automatic set for one

@@ -17,6 +17,12 @@ std::filesystem::path ps2ExecutableDirectory();
 // The folder is created if missing.
 std::filesystem::path ps2ConfigDirectory();
 
+// Marks the calling thread as the host frame loop (raylib's). Some work is far
+// too slow to run from the emulated game thread - a stall there is a dropped
+// frame and a gap in the audio - so it is deferred to the host thread.
+void ps2SetHostThread();
+bool ps2IsHostThread();
+
 // Opens a folder in the desktop's file manager.
 void ps2OpenFolder(const std::string &path);
 

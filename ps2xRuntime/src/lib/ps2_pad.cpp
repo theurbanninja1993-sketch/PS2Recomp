@@ -1,4 +1,5 @@
 #include "runtime/ps2_pad.h"
+#include "runtime/ps2_platform.h"
 #include "runtime/ps2_mods.h"
 #include "runtime/ps2_prompt_art.h"
 
@@ -234,13 +235,6 @@ bool ps2IsRealGamepad(int pad)
     return pad >= 0 && pad < 4 && padSnapshot().mapped[pad];
 }
 
-namespace
-{
-    // Which thread runs the host frame loop. The pad derivation must not run on
-    // the emulated game thread (see ps2MapUnrecognisedPads).
-    std::thread::id g_hostThread;
-}
-
 #if defined(__linux__)
 // GLFW numbers a joystick's raw buttons and axes by walking the device's evdev
 // codes in ascending order (see its openJoystickDevice), so the device's own
@@ -405,7 +399,7 @@ static void ps2MapUnrecognisedPads()
     // device, which is far too slow to run from the emulated game thread: it
     // stalled the game for a good fraction of a second, which showed up as
     // frame hitches and as the sound engine's audio arriving in bursts.
-    if (std::this_thread::get_id() != g_hostThread)
+    if (!ps2IsHostThread())
         return;
     const PadSnapshot snapshot = padSnapshot();
     // A device GLFW has no mapping for is usually not a gamepad at all - a
@@ -1090,7 +1084,7 @@ bool PSPadBackend::applyFakeMouse(float &yaw, float &pitch)
 
 void PSPadBackend::updateHostInput()
 {
-    g_hostThread = std::this_thread::get_id();
+    ps2SetHostThread();
     ps2MapUnrecognisedPads();
     // F7: a marker in the log (playtest notes: "it happened here").
     // F8: snapshot EE RAM to ram_f8_<frame>.bin (memory diffing while playing,
