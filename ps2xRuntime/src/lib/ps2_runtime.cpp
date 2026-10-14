@@ -499,13 +499,24 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     uint32_t displayFbp = 0u;
     uint32_t sourceFbp = 0u;
     bool usedPreferredDisplaySource = false;
+    uint64_t frameId = 0u;
     if (!rt->gs().copyLatchedHostPresentationFrame(s_scratch,
                                                    width,
                                                    height,
                                                    &displayFbp,
                                                    &sourceFbp,
-                                                   &usedPreferredDisplaySource))
+                                                   &usedPreferredDisplaySource,
+                                                   &frameId))
     {
+        // No new picture since the last one (the latch is taken, or the GS got
+        // nothing): keep drawing the texture already uploaded rather than
+        // clearing it to black. Only the very first presents have nothing yet.
+        if (s_hasUploadedFrame)
+        {
+            outWidth = s_lastWidth != 0u ? s_lastWidth : FB_WIDTH;
+            outHeight = s_lastHeight != 0u ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
+            return;
+        }
         Image blank = GenImageColor(tex.width, tex.height, BLACK); // the texture may have grown (upscaling)
         UpdateTexture(tex, blank.data);
         UnloadImage(blank);
@@ -516,6 +527,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         s_hasUploadedFrame = true;
         return;
     }
+    // The same picture again (a repeat present): the texture is already
+    // current, so skip the upload.
+    static uint64_t s_lastUploadedFrameId = 0u;
+    if (frameId != 0u && frameId == s_lastUploadedFrameId)
+    {
+        outWidth = width;
+        outHeight = height;
+        s_lastWidth = width;
+        s_lastHeight = height;
+        s_hasUploadedFrame = true;
+        return;
+    }
+    s_lastUploadedFrameId = frameId;
 
     PS2_IF_AGRESSIVE_LOGS({
         static uint32_t s_uploadDebugCount = 0u;

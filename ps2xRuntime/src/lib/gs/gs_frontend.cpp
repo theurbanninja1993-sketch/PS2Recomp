@@ -669,6 +669,7 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 void GS::latchHostPresentationFrame()
 {
     GSPresentationRequest request{};
+    const uint64_t inputSeq = m_gsInputSeq;
     {
         std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
         if (m_privRegs && gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
@@ -681,6 +682,13 @@ void GS::latchHostPresentationFrame()
             m_hostPresentationWidth = m_hostPresentationHeight = 0u;
             return;
         }
+        // Nothing has been fed to the GS since the last latch: this present is
+        // a repeat of the picture already latched (the game renders at ~30 Hz
+        // and presents at 60 Hz, so half of the presents are repeats). Skip
+        // the recompose; the host keeps drawing the texture it already has (or
+        // is handed no frame, which it treats the same way).
+        if (inputSeq == m_hostPresentationInputSeq)
+            return;
         request = buildPresentationRequestUnlocked();
     }
 
@@ -696,6 +704,9 @@ void GS::latchHostPresentationFrame()
     }
 
     const bool hasFrame = static_cast<bool>(frame);
+    m_hostPresentationInputSeq = inputSeq;
+    if (hasFrame)
+        ++m_hostPresentationFrameId;
     const uint32_t displayFbp = frame.displayFbp;
     const uint32_t sourceFbp = frame.sourceFbp;
     const uint32_t width = frame.width;
@@ -726,9 +737,12 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                           uint32_t &outHeight,
                                           uint32_t *outDisplayFbp,
                                           uint32_t *outSourceFbp,
-                                          bool *outUsedPreferred)
+                                          bool *outUsedPreferred,
+                                          uint64_t *outFrameId)
 {
     std::lock_guard<std::mutex> lock(m_presentationMutex);
+    if (outFrameId)
+        *outFrameId = m_hostPresentationFrameId;
     if (!m_hasHostPresentationFrame || m_hostPresentationFrame.empty())
     {
         outPixels.clear();
@@ -801,6 +815,7 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    ++m_gsInputSeq;
     if (!data || sizeBytes < 16 || !m_backend)
         return;
     if (gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
@@ -1048,6 +1063,7 @@ bool GS::tryProcessNativeImageUploadPacket(const uint8_t *data, uint32_t sizeByt
 
 void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
 {
+    ++m_gsInputSeq;
     switch (regDesc)
     {
     case 0x00:
@@ -1233,6 +1249,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
 void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    ++m_gsInputSeq;
     if (gsCaptureActive(m_backend.get(), m_localMemoryStorage != nullptr))
         gsCaptureRecord(2u, &regAddr, 1u, &value, 8u);
     writeRegisterUnlocked(regAddr, value);
@@ -1782,6 +1799,7 @@ void GS::vertexKick(bool drawing)
 
 void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 {
+    ++m_gsInputSeq;
     if (m_backend)
         m_backend->UploadImage(data, sizeBytes);
 }
