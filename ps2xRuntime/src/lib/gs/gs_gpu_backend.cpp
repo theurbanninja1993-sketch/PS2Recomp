@@ -132,12 +132,32 @@ void GSGpuBackend::runSync(const std::function<void()> &fn, const char *why) con
             auto &site = s_sites[why];
             ++site.first;
             site.second += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            if (++s_calls % 20000u == 0u)
+            if (++s_calls % 5000u == 0u || s_calls == 1u) // the first one creates the file
             {
-                std::cerr << "[sync:gs]";
+                // Written to sync.log next to the executable as well as stderr:
+                // the Windows build has no console, so stderr alone means these
+                // numbers are never actually seen there.
+                static FILE *s_file = std::fopen("sync.log", "a");
+                char line[1024];
+                int written = std::snprintf(line, sizeof(line), "[sync:gs]");
                 for (auto &[name, entry] : s_sites)
-                    std::cerr << " " << name << "=" << entry.first << "/" << static_cast<int>(entry.second * 1000.0) << "ms";
-                std::cerr << std::endl;
+                {
+                    if (written < 0 || static_cast<size_t>(written) >= sizeof(line))
+                        break;
+                    written += std::snprintf(line + written, sizeof(line) - static_cast<size_t>(written),
+                                             " %s=%llu/%dms", name.c_str(),
+                                             static_cast<unsigned long long>(entry.first),
+                                             static_cast<int>(entry.second * 1000.0));
+                }
+                if (written > 0 && static_cast<size_t>(written) < sizeof(line) - 1)
+                    line[written++] = '\n';
+                line[written < 0 ? 0 : (static_cast<size_t>(written) < sizeof(line) ? written : sizeof(line) - 1)] = '\0';
+                if (s_file != nullptr)
+                {
+                    std::fputs(line, s_file);
+                    std::fflush(s_file);
+                }
+                std::fputs(line, stderr);
                 s_sites.clear();
             }
         }
