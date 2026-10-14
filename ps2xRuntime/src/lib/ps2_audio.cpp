@@ -135,9 +135,18 @@ namespace
         const size_t read = g_streamRing.readFrame.load(std::memory_order_relaxed);
         const size_t available = write - read;
 
-        const size_t target = StreamRing::kFrames / 8u; // ~85 ms
-        const double error = static_cast<double>(available) - static_cast<double>(target);
-        const double ratio = std::clamp(1.0 + error / static_cast<double>(target) * kDriftLimit,
+        // How much to hold back before the next gap. The emulated sound engine
+        // does not submit smoothly: the laptop's log shows the ring sitting near
+        // empty and then ~10000 frames (~0.2 s) arriving at once, so a shallow
+        // ring runs dry between bursts and the silence is heard as crackling.
+        // Start shallow (low latency) and grow on every dry callback, decaying
+        // back when it has been steady - a fast machine keeps low latency, a
+        // jittery one buffers enough to bridge its bursts.
+        constexpr size_t kTargetStep = StreamRing::kFrames / 64u; // ~10.7 ms
+        static size_t s_target = StreamRing::kFrames / 8u;        // ~85 ms
+        static int s_cleanCallbacks = 0;
+        const double error = static_cast<double>(available) - static_cast<double>(s_target);
+        const double ratio = std::clamp(1.0 + error / static_cast<double>(s_target) * kDriftLimit,
                                         1.0 - kDriftLimit, 1.0 + kDriftLimit);
 
         size_t produced = 0;
@@ -156,7 +165,16 @@ namespace
             s_readPos += ratio;
         }
         if (produced < frames)
+        {
             g_ps2AudioFramesUnderrun.fetch_add(frames - produced, std::memory_order_relaxed);
+            s_target = std::min(StreamRing::kFrames / 2u, s_target + kTargetStep);
+            s_cleanCallbacks = 0;
+        }
+        else if (++s_cleanCallbacks > 200) // ~a few seconds without a dry callback
+        {
+            s_cleanCallbacks = 0;
+            s_target = std::max(StreamRing::kFrames / 8u, s_target - kTargetStep);
+        }
         std::memset(out + produced * 2u, 0, (frames - produced) * 2u * sizeof(int16_t));
 
         const size_t consumed = static_cast<size_t>(s_readPos);
