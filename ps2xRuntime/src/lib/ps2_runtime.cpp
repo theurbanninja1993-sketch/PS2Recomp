@@ -1,6 +1,7 @@
 #include "ps2_runtime.h"
 #include "runtime/ps2_host_settings.h"
 #include "runtime/ps2_pad.h"
+#include "runtime/ps2_platform.h"
 #include "runtime/ps2_music_station.h"
 #include "runtime/ps2_mods.h"
 #include "ps2_log.h"
@@ -3100,6 +3101,7 @@ void PS2Runtime::run()
 
     std::thread gameThread([&]()
                            {
+        ps2RaiseCurrentThreadPriority(); // feeds the audio ring too: keep it scheduled evenly
         ThreadNaming::SetCurrentThreadName("GameThread");
         try
         {

@@ -24,6 +24,12 @@ std::filesystem::path ps2ConfigDirectory();
 void ps2SetHostThread();
 bool ps2IsHostThread();
 
+// Ask the OS to schedule this thread favourably. The emulated game thread both
+// runs the game and feeds the audio ring, and when it is scheduled in lumps the
+// audio arrives in lumps and the ring runs dry between them. Best effort:
+// failures (no privileges) are ignored.
+void ps2RaiseCurrentThreadPriority();
+
 // Resident memory of this process in MB (0 when unavailable). Reported in the
 // perf log: a footprint that keeps climbing over a session is a leak.
 size_t ps2ProcessResidentMb();

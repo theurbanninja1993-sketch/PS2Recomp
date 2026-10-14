@@ -4,13 +4,17 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #include <shellapi.h>
 #endif
 
 #include "runtime/ps2_platform.h"
 
 #include <thread>
+#if !defined(_WIN32)
+#include <sys/resource.h>
 #include <unistd.h>
+#endif
 #include <cstdio>
 #include "ThreadNaming.h"
 
@@ -51,12 +55,37 @@ bool ps2IsHostThread()
     return g_hostThread == std::this_thread::get_id();
 }
 
+void ps2RaiseCurrentThreadPriority()
+{
+#if defined(_WIN32)
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#else
+    // Lowering the nice value needs privileges; if it fails the thread simply
+    // keeps the default, which is what happens today anyway.
+    setpriority(PRIO_PROCESS, 0, -5);
+#endif
+}
+
 size_t ps2ProcessResidentMb()
 {
 #if defined(_WIN32)
-    // Not reported on Windows: K32GetProcessMemoryInfo pulls a static stub into
-    // the executable rather than importing the API, and the build would not
-    // start. Task Manager gives the same number.
+    // Resolved at run time: mingw's headers alias GetProcessMemoryInfo to the
+    // K32 form, which links a static stub into the executable instead of
+    // importing psapi, and a stub in a shipped binary is not worth the risk.
+    using GetProcessMemoryInfoFn = BOOL(WINAPI *)(HANDLE, PPROCESS_MEMORY_COUNTERS, DWORD);
+    static const GetProcessMemoryInfoFn s_get = []() -> GetProcessMemoryInfoFn
+    {
+        HMODULE psapi = LoadLibraryW(L"psapi.dll");
+        return psapi != nullptr
+                   ? reinterpret_cast<GetProcessMemoryInfoFn>(GetProcAddress(psapi, "GetProcessMemoryInfo"))
+                   : nullptr;
+    }();
+    if (s_get != nullptr)
+    {
+        PROCESS_MEMORY_COUNTERS counters{};
+        if (s_get(GetCurrentProcess(), &counters, sizeof(counters)))
+            return counters.WorkingSetSize / (1024u * 1024u);
+    }
     return 0u;
 #else
     FILE *file = std::fopen("/proc/self/statm", "r");
