@@ -22,4 +22,10 @@ std::string ps2PromptArtDirectory();
 // true when files were (re)written and the replacement index needs a refresh.
 bool ps2PromptArtRefreshIfNeeded();
 
+// The pad context the art is drawn for. The pad backend sets the predicted
+// context on a fresh Start press (the game's pause flag only becomes visible
+// next frame, which used to leave one frame of gameplay keys on the map);
+// -1 follows the real pad context again.
+void ps2PromptArtSetContext(int context);
+
 #endif

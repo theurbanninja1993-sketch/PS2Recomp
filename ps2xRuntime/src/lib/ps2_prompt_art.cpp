@@ -106,6 +106,16 @@ namespace
         }
     }
 
+    // The context the art is drawn for: the pad's prediction on a menu
+    // toggle, or the real pad context (-1 = follow it).
+    std::atomic<int> g_artContext{-1};
+
+    int artContextValue()
+    {
+        const int c = g_artContext.load(std::memory_order_relaxed);
+        return c >= 0 ? c : currentContext();
+    }
+
     // ------------------------------------------------------- controller sets
     struct SetStyle
     {
@@ -485,7 +495,7 @@ namespace
                     mix(h, ps2HostSettings().keys[keyboardActionFor(cell.ps2Button)][i]);
             return h;
         }
-        const int context = currentContext();
+        const int context = artContextValue();
         for (const TextureArt &t : kTextures)
             mix(h, hostButtonForPs2(t.ps2Button, context));
         for (const SheetCell &cell : kSheetCells)
@@ -493,6 +503,11 @@ namespace
         return h;
     }
 } // namespace
+
+void ps2PromptArtSetContext(int context)
+{
+    g_artContext.store(context, std::memory_order_relaxed);
+}
 
 std::string ps2PromptArtDirectory()
 {
@@ -519,7 +534,7 @@ bool ps2PromptArtRefreshIfNeeded()
     static std::string s_pendingSet;
     static int s_pendingFrames = 0;
 
-    const int context = currentContext();
+    const int context = artContextValue();
     const uint64_t sig = effectiveSignature(set);
     if (sig == s_appliedSig && set == s_appliedSet)
     {

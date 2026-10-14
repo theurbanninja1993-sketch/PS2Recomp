@@ -1,4 +1,6 @@
 #include "runtime/ps2_pad.h"
+#include "runtime/ps2_mods.h"
+#include "runtime/ps2_prompt_art.h"
 
 extern std::atomic<bool> g_ps2DumpRamRequest; // ps2_runtime.cpp
 #include "runtime/ps2_host_settings.h"
@@ -269,6 +271,26 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     // menu layout never leaks into gameplay.
     const int context = inMenu ? ps2controls::Menus : (driving ? ps2controls::InVehicle : ps2controls::OnFoot);
     ps2controls::setCurrentContext(context);
+    // The game's pause flag only becomes visible next frame, so the prompt
+    // art would show the gameplay keys for one frame after pressing Start.
+    // A fresh Start press predicts the toggle for the art only; the pad
+    // mapping keeps the real context until the flag is seen. The prompt
+    // layers are rebuilt here, early in the frame, so the new art lands
+    // before this frame's draw.
+    {
+        const int pad = ps2ActiveGamepad();
+        bool startPressed = pad >= 0 && IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_MIDDLE_RIGHT);
+        if (!startPressed)
+        {
+            auto pressedKey = [](int binding)
+            { return binding != ps2controls::kNone && binding < ps2controls::kMouseBase && IsKeyPressed(binding); };
+            startPressed = pressedKey(settings.keys[ps2controls::Pause][0]) ||
+                           pressedKey(settings.keys[ps2controls::Pause][1]);
+        }
+        const int predicted = inMenu ? (driving ? ps2controls::InVehicle : ps2controls::OnFoot) : ps2controls::Menus;
+        ps2PromptArtSetContext(startPressed ? predicted : -1);
+    }
+    ps2ModsRefreshButtonPromptsIfNeeded();
 
     // Gamepad: each host button maps to a PS2 button per context (the
     // Classic / Modern / Custom layout in the settings), sticks as they are.
