@@ -217,6 +217,9 @@ namespace gsgpu
         std::deque<std::pair<gsrepl::Key, std::unique_ptr<gsrepl::Image>>> m_replPendingUploads;
         size_t m_replUploadedThisFrame = 0;
         uint64_t m_statReplDraws = 0, m_statReplHits = 0, m_statReplMisses = 0, m_statReplLoaded = 0, m_statReplHashes = 0;
+        // PS2X_TEXREPL_STATS: prints the accumulated replacement-related
+        // render-thread counters (called at the interval and at teardown).
+        void emitTexreplStats();
 
         uint32_t m_scale = 1;
         std::atomic<uint32_t> m_requestedScale{1};

@@ -887,6 +887,8 @@ void main()
             flushBatch();
             readbackVram(); // leave local memory complete for the owner
         }
+        if (std::getenv("PS2X_TEXREPL_STATS") && replacementsActive())
+            emitTexreplStats();
         if (std::getenv("PS2X_GS_GPU_STATS"))
         {
             std::cerr << "[gs:gpu] draws=" << m_statDraws << " resolves=" << m_statResolves << " loads=" << m_statLoads
@@ -2477,6 +2479,37 @@ void main()
         return 0; // loading: the original texture this time
     }
 
+    void Renderer::emitTexreplStats()
+    {
+        std::cerr << "[texrepl] draws=" << m_statReplDraws << " hits=" << m_statReplHits << " misses=" << m_statReplMisses
+                  << " loaded=" << m_statReplLoaded << " hashed=" << m_statReplHashes
+                  << " textures=" << m_textureHashes.size() << " pendingUploads=" << m_replPendingUploads.size()
+                  << " mirrorMs=" << static_cast<int>(g_texreplMirrorSecs * 1000.0)
+                  << " hashMs=" << static_cast<int>(g_texreplHashSecs * 1000.0);
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            uint64_t *bytes = pass == 0 ? g_texreplMirrorBytes : g_texreplHashBytes;
+            std::cerr << (pass == 0 ? " mirrorTop=" : " hashTop=");
+            for (int n = 0; n < 3; ++n)
+            {
+                int best = -1;
+                for (int psm = 0; psm < 64; ++psm)
+                    if (bytes[psm] != 0u && (best < 0 || bytes[psm] > bytes[best]))
+                        best = psm;
+                if (best < 0)
+                    break;
+                std::cerr << (n ? "," : "") << "psm" << std::hex << best << std::dec << ":" << (bytes[best] >> 20)
+                          << "MB";
+                bytes[best] = 0u;
+            }
+        }
+        std::memset(g_texreplMirrorBytes, 0, sizeof(g_texreplMirrorBytes));
+        std::memset(g_texreplHashBytes, 0, sizeof(g_texreplHashBytes));
+        g_texreplMirrorSecs = 0.0;
+        g_texreplHashSecs = 0.0;
+        std::cerr << std::endl;
+    }
+
     PresentationFrame Renderer::present(const GSPresentationRequest &request)
     {
         // Presentation reads local memory (both circuits, preferred source).
@@ -2486,37 +2519,16 @@ void main()
         if (replacementsActive())
         {
             static const bool s_stats = std::getenv("PS2X_TEXREPL_STATS") != nullptr;
-            static uint32_t s_presents = 0;
-            if (s_stats && ++s_presents % 300u == 0u)
+            static const uint32_t s_interval = []()
             {
-                std::cerr << "[texrepl] draws=" << m_statReplDraws << " hits=" << m_statReplHits << " misses=" << m_statReplMisses
-                          << " loaded=" << m_statReplLoaded << " hashed=" << m_statReplHashes
-                          << " textures=" << m_textureHashes.size() << " pendingUploads=" << m_replPendingUploads.size()
-                          << " mirrorMs=" << static_cast<int>(g_texreplMirrorSecs * 1000.0)
-                          << " hashMs=" << static_cast<int>(g_texreplHashSecs * 1000.0);
-                for (int pass = 0; pass < 2; ++pass)
-                {
-                    uint64_t *bytes = pass == 0 ? g_texreplMirrorBytes : g_texreplHashBytes;
-                    std::cerr << (pass == 0 ? " mirrorTop=" : " hashTop=");
-                    for (int n = 0; n < 3; ++n)
-                    {
-                        int best = -1;
-                        for (int psm = 0; psm < 64; ++psm)
-                            if (bytes[psm] != 0u && (best < 0 || bytes[psm] > bytes[best]))
-                                best = psm;
-                        if (best < 0)
-                            break;
-                        std::cerr << (n ? "," : "") << "psm" << std::hex << best << std::dec << ":" << (bytes[best] >> 20)
-                                  << "MB";
-                        bytes[best] = 0u;
-                    }
-                }
-                std::memset(g_texreplMirrorBytes, 0, sizeof(g_texreplMirrorBytes));
-                std::memset(g_texreplHashBytes, 0, sizeof(g_texreplHashBytes));
-                g_texreplMirrorSecs = 0.0;
-                g_texreplHashSecs = 0.0;
-                std::cerr << std::endl;
-            }
+                const char *env = std::getenv("PS2X_TEXREPL_STATS");
+                if (!env || !*env || std::strcmp(env, "1") == 0)
+                    return 300u;
+                return static_cast<uint32_t>(std::strtoul(env, nullptr, 10));
+            }();
+            static uint32_t s_presents = 0;
+            if (s_stats && ++s_presents % s_interval == 0u)
+                emitTexreplStats();
         }
         PresentationFrame frame;
         if (m_gpu && m_scale > 1u)

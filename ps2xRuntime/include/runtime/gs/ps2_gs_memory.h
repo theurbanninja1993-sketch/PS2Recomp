@@ -570,6 +570,15 @@ namespace GSMem
 	// row writer (use the per-pixel functions).
 	bool WriteRow(u32 psm, u8* data, u32 bp, u32 bw, u32 x, u32 y, const u32* values, u32 count);
 
+	// Writes one whole 32x16 4-bit tile - exactly the 256-byte GS block at
+	// (tileX, tileY), which must be a multiple of 32 / 16 - straight from
+	// row-major 4-bit source data (`src` is the tile's top-left pixel, `src`
+	// rows `srcRowBytes` apart). Used for upload mirroring: it is ~3x faster
+	// than per-pixel WriteRow because the block is written in one pass, with
+	// the (fixed) in-block nibble layout applied by a lookup instead of the
+	// page/block/column walk per pixel.
+	void WriteT4Tile(u8* data, u32 bp, u32 bw, u32 tileX, u32 tileY, const u8* src, u32 srcRowBytes);
+
 	u32 ReadCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
 	u32 ReadZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
 

@@ -1651,11 +1651,31 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
     const uint32_t dsax = m_transfer.trxpos.dsax;
     const uint32_t xEnd = dsax + m_transfer.trxreg.rrw;
     const uint32_t total = m_transferState.totalPixels;
+    const uint32_t rrw = m_transfer.trxreg.rrw;
+    const uint32_t rrh = m_transfer.trxreg.rrh;
+    const bool writes = m_uploadWrites;
+    // Whole-image 4-bit (T4) uploads that land on 32x16 tile boundaries - all
+    // of VCS's T4 texture uploads do - are mirrored tile by tile (256-byte GS
+    // blocks) instead of pixel by pixel: ~3x faster, and this is the mirror
+    // path that costs the most while a texture pack is active. The fallback
+    // below handles every other shape, unchanged.
+    if (writes && (dpsm & 0x3Fu) == GS_PSM_T4 && m_transferState.copiedPixels == 0u && sizeBytes >= (total + 1u) / 2u &&
+        (dsax & 31u) == 0u && (m_transfer.trxpos.dsay & 15u) == 0u && (rrw & 31u) == 0u && (rrh & 15u) == 0u)
+    {
+        const uint32_t srcRowBytes = rrw / 2u;
+        for (uint32_t tileY = 0; tileY < rrh; tileY += 16u)
+            for (uint32_t tileX = 0; tileX < rrw; tileX += 32u)
+                GSMem::WriteT4Tile(m_vram, dbp, dbw, dsax + tileX, m_transfer.trxpos.dsay + tileY,
+                                   data + tileY * srcRowBytes + tileX / 2u, srcRowBytes);
+        m_transferState.copiedPixels = total;
+        m_transferState.direction = 3u;
+        m_transferState.totalPixels = 0u;
+        return;
+    }
     // Row-wise: x/y advance incrementally (no divide per pixel) and the
     // format's writer is looked up once - this runs for every texture upload
     // while a texture pack is active (the CPU copy that textures are hashed from).
     const auto write = m_writeVramFuncs[dpsm & 0x3Fu];
-    const bool writes = m_uploadWrites;
     uint32_t copied = m_transferState.copiedPixels;
     uint32_t x = m_transferState.x, y = m_transferState.y;
     // Pixels are gathered per row and written with GSMem::WriteRow.
