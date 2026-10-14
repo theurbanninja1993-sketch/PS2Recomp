@@ -1616,6 +1616,21 @@ namespace
             if (rdram[addr] != value)
                 rdram[addr] = value;
         }
+        // Trigger the game's own "video settings changed" apply, which is what
+        // actually latches the aspect into the viewport and HUD (the frontend
+        // toggle writes these two flags). Once per setting change, and on the
+        // first frame so a launch with 16:9 already applies.
+        static int s_lastWidescreen = -1;
+        const int wanted = widescreen ? 1 : 0;
+        if (wanted != s_lastWidescreen)
+        {
+            s_lastWidescreen = wanted;
+            const uint32_t one = 1u;
+            if (static_cast<size_t>(0x00487480u) + 4u <= PS2_RAM_SIZE)
+                std::memcpy(rdram + 0x00487480u, &one, 4);
+            if (static_cast<size_t>(0x0048A1DCu) + 4u <= PS2_RAM_SIZE)
+                std::memcpy(rdram + 0x0048A1DCu, &one, 4);
+        }
     }
 
     bool vcsCutsceneCamera(const uint8_t *rdram)
