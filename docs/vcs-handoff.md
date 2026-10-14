@@ -591,6 +591,24 @@ texture packs from `mods/`, Windows build under Wine.
      accelerate", 2520 = "Press Square to use the vehicle's brakes") with
      the owner's settings (DualSense + Modern): the prompts now read as
      large L2/R2 pills.
+   - **Menu flips rebuild only the prompt layers (2026-10-13 late).** The
+     runtime art rewrites on every pad-context change (menu open, vehicle
+     entry/exit with remapped layouts) and each rewrite ran a full
+     `ps2ModsRefresh`, rescanning every mod folder (~1 s with a big
+     disabled pack). The mods' replacement files are now cached in
+     `g_modsIndex` and `ps2IndexWithPrompts()` rebuilds the prompt set +
+     runtime art on top of it; the full scan runs only at startup, on
+     Rescan and on mod toggles.
+   - **Prompt flips are now same-frame (2026-10-13 late).** The wrong keys
+     for a moment when opening the map (owner: "E for back" then Backspace)
+     had two more sources: the menu debounce still waited two frames (now
+     one - the first frame that sees the pause flag rewrites), and the
+     replacement textures reloaded through the async worker, so the map
+     kept the gameplay keycaps until it caught up. Replacement files up to
+     256 KB (all the prompt art) now load inline on the render thread at
+     the first draw that needs them; big pack textures still use the
+     worker. This also removed the reload latency on vehicle entry/exit
+     (relevant to the slowdown report).
    - Also done: the dropdown now has **"Original (PS2 art / texture packs)"**
      (= Off, shows the game's own art and any texture-pack art), it lives in
      the **Controls tab** (next to the gamepad layouts) with a glyph preview,
