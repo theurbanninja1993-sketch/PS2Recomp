@@ -366,25 +366,22 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         if (held(pc::Fire))
             press(Circle);
 
-        // Left stick: WASD; in vehicles forward / back are the pedals.
+        // Left stick: WASD; in vehicles forward / back are the pedals. In the
+        // game's menus WASD navigates like the arrow keys (discrete D-pad
+        // steps, no analog stick) and the mouse wheel zooms the map (R1 in,
+        // L1 out).
+        const bool inMenu = context == ps2controls::Menus;
         float moveX = 0.0f, moveY = 0.0f;
-        if (held(pc::MoveLeft))
-            moveX -= 1.0f;
-        if (held(pc::MoveRight))
-            moveX += 1.0f;
-        if (driving)
+        if (inMenu)
         {
             if (held(pc::MoveForward))
-                press(Cross);
+                press(Up);
             if (held(pc::MoveBackward))
-                press(Square);
-            if (held(pc::Handbrake))
-                press(R1);
-            if (held(pc::Horn))
-                press(L1);
-        }
-        else
-        {
+                press(Down);
+            if (held(pc::MoveLeft))
+                press(Left);
+            if (held(pc::MoveRight))
+                press(Right);
             if (held(pc::Sprint))
                 press(Cross);
             if (held(pc::Jump))
@@ -393,10 +390,55 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 press(L1);
             if (held(pc::Aim))
                 press(R1);
-            if (held(pc::MoveForward))
-                moveY -= 1.0f;
-            if (held(pc::MoveBackward))
-                moveY += 1.0f;
+            int zoom = m_wheelSteps.exchange(0, std::memory_order_relaxed);
+            if (zoom == 0)
+            {
+                // The wheel is also read by the mouse-look path when the mouse
+                // is captured; either source gives at most one step per frame.
+                const float wheel = GetMouseWheelMove();
+                if (wheel != 0.0f)
+                    zoom = wheel > 0.0f ? 1 : -1;
+            }
+            if (m_menuZoomPulse == 0 && zoom != 0)
+                m_menuZoomPulse = zoom > 0 ? 4 : -4;
+            if (m_menuZoomPulse > 0)
+                press(R1);
+            else if (m_menuZoomPulse < 0)
+                press(L1);
+            m_menuZoomPulse += m_menuZoomPulse > 0 ? -1 : (m_menuZoomPulse < 0 ? 1 : 0);
+        }
+        else
+        {
+            if (held(pc::MoveLeft))
+                moveX -= 1.0f;
+            if (held(pc::MoveRight))
+                moveX += 1.0f;
+            if (driving)
+            {
+                if (held(pc::MoveForward))
+                    press(Cross);
+                if (held(pc::MoveBackward))
+                    press(Square);
+                if (held(pc::Handbrake))
+                    press(R1);
+                if (held(pc::Horn))
+                    press(L1);
+            }
+            else
+            {
+                if (held(pc::Sprint))
+                    press(Cross);
+                if (held(pc::Jump))
+                    press(Square);
+                if (held(pc::Interact))
+                    press(L1);
+                if (held(pc::Aim))
+                    press(R1);
+                if (held(pc::MoveForward))
+                    moveY -= 1.0f;
+                if (held(pc::MoveBackward))
+                    moveY += 1.0f;
+            }
         }
         if (moveX != 0.0f)
             data[6] = static_cast<uint8_t>(128 + moveX * 127);
@@ -404,23 +446,27 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             data[7] = static_cast<uint8_t>(128 + moveY * 127);
 
         // Weapon cycling: mouse wheel / the Next weapon key, as short R2
-        // (next) / L2 (previous) presses.
-        const int steps = m_wheelSteps.exchange(0, std::memory_order_relaxed);
-        if (m_weaponPulse == 0 && steps != 0)
-            m_weaponPulse = steps < 0 ? 4 : -4;
-        auto pressedNow = [](int binding)
+        // (next) / L2 (previous) presses. In the game's menus the wheel is the
+        // map zoom instead (above).
+        if (!inMenu)
         {
-            if (binding == pc::kNone || binding >= pc::kMouseBase)
-                return binding >= pc::kMouseBase && IsMouseButtonPressed(binding - pc::kMouseBase);
-            return IsKeyPressed(binding);
-        };
-        if (m_weaponPulse == 0 && (pressedNow(settings.keys[pc::NextWeapon][0]) || pressedNow(settings.keys[pc::NextWeapon][1])))
-            m_weaponPulse = 4;
-        if (!driving && m_weaponPulse > 0)
-            press(R2);
-        if (!driving && m_weaponPulse < 0)
-            press(L2);
-        m_weaponPulse += m_weaponPulse > 0 ? -1 : (m_weaponPulse < 0 ? 1 : 0);
+            const int steps = m_wheelSteps.exchange(0, std::memory_order_relaxed);
+            if (m_weaponPulse == 0 && steps != 0)
+                m_weaponPulse = steps < 0 ? 4 : -4;
+            auto pressedNow = [](int binding)
+            {
+                if (binding == pc::kNone || binding >= pc::kMouseBase)
+                    return binding >= pc::kMouseBase && IsMouseButtonPressed(binding - pc::kMouseBase);
+                return IsKeyPressed(binding);
+            };
+            if (m_weaponPulse == 0 && (pressedNow(settings.keys[pc::NextWeapon][0]) || pressedNow(settings.keys[pc::NextWeapon][1])))
+                m_weaponPulse = 4;
+            if (!driving && m_weaponPulse > 0)
+                press(R2);
+            if (!driving && m_weaponPulse < 0)
+                press(L2);
+            m_weaponPulse += m_weaponPulse > 0 ? -1 : (m_weaponPulse < 0 ? 1 : 0);
+        }
     }
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);

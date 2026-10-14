@@ -84,6 +84,7 @@ private:
     std::atomic<int> m_wheelSteps{0};
     std::atomic<bool> m_movingInput{false};
     int m_weaponPulse = 0; // pad reads left on a scripted weapon-cycle press (+ next, - previous)
+    int m_menuZoomPulse = 0; // the same for the map zoom (wheel in the menu context)
 };
 
 #endif
