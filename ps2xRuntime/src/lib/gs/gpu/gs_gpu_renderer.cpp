@@ -366,7 +366,7 @@ bool is16BitPsm(uint psm)
 }
 )";
 
-        const char *kVertexShader = R"(#version 460 core
+        const char *kVertexShader = R"(#version 450 core
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in uint a_z;
 layout(location = 2) in vec4 a_color;
@@ -621,7 +621,7 @@ void main()
 
         // Upscaled display output: the PCRTC merge of the two read circuits
         // (circuit 2 or the background below, circuit 1 blended over it).
-        const char *kComposeShader = R"(#version 460 core
+        const char *kComposeShader = R"(#version 450 core
 layout(binding = 0) uniform sampler2D u_circuit1;
 layout(binding = 1) uniform sampler2D u_circuit2;
 uniform ivec4 u_rect1; // read origin and size in target pixels; size 0 = circuit off
@@ -646,7 +646,7 @@ void main()
 )";
 
         // Full-target triangle for load passes (rows limited by the scissor).
-        const char *kFullscreenVertexShader = R"(#version 460 core
+        const char *kFullscreenVertexShader = R"(#version 450 core
 void main()
 {
     vec2 p = vec2((gl_VertexID & 1) * 4 - 1, (gl_VertexID & 2) * 2 - 1);
@@ -935,7 +935,7 @@ void main()
         GL &gl = m_context.gl;
         gl.glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
-        const std::string header = std::string("#version 460 core\n") + kVramGlsl;
+        const std::string header = std::string("#version 450 core\n") + kVramGlsl;
         m_draw.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kVertexShader),
                                      compileShader(gl, GL_FRAGMENT_SHADER, header + kFragmentShader)});
         m_loadColor.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),

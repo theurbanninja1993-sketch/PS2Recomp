@@ -92,9 +92,24 @@ namespace gsgpu
             return false;
         }
         auto createContextAttribs = reinterpret_cast<CreateContextAttribsFn>(wglGetProcAddress("wglCreateContextAttribsARB"));
-        const int attributes[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, 6,
-                                  WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
-        HGLRC context = createContextAttribs ? createContextAttribs(dc, nullptr, attributes) : nullptr;
+        // The renderer only needs core 4.5 (direct state access); ask for 4.6
+        // first and take 4.5 if the driver caps there, so machines with older
+        // drivers still get the GPU renderer instead of the CPU fallback.
+        auto createCoreContext = [&](const int major, const int minor) -> HGLRC
+        {
+            const int attributes[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, major,
+                                      WGL_CONTEXT_MINOR_VERSION_ARB, minor,
+                                      WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
+            return createContextAttribs ? createContextAttribs(dc, nullptr, attributes) : nullptr;
+        };
+        HGLRC context = nullptr;
+        const int requestedMinor = []()
+        {
+            const char *env = std::getenv("PS2X_GL_VERSION");
+            return env != nullptr ? std::atoi(env) : 6;
+        }();
+        for (int minor = requestedMinor; minor >= 5 && context == nullptr; --minor)
+            context = createCoreContext(4, minor);
         wglMakeCurrent(nullptr, nullptr);
         wglDeleteContext(legacy);
         if (!context || !wglMakeCurrent(dc, context))
@@ -186,14 +201,26 @@ namespace gsgpu
             error = "eglBindAPI(OpenGL) failed";
             return false;
         }
-        const EGLint contextAttributes[] = {
-            EGL_CONTEXT_MAJOR_VERSION, 4,
-            EGL_CONTEXT_MINOR_VERSION, 6,
-            EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-            EGL_NONE};
-        // Surfaceless: no config, no surface (EGL_KHR_no_config_context +
-        // EGL_KHR_surfaceless_context); rendering goes to framebuffer objects.
-        EGLContext context = eglCreateContext(display, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, contextAttributes);
+        // Core 4.5 is all the renderer uses (direct state access); ask for 4.6
+        // first and fall back to 4.5 so drivers that cap there still get the
+        // GPU renderer instead of the CPU rasterizer.
+        const int requestedMinor = []()
+        {
+            const char *env = std::getenv("PS2X_GL_VERSION");
+            return env != nullptr ? std::atoi(env) : 6;
+        }();
+        EGLContext context = EGL_NO_CONTEXT;
+        for (int minor = requestedMinor; minor >= 5 && context == EGL_NO_CONTEXT; --minor)
+        {
+            const EGLint contextAttributes[] = {
+                EGL_CONTEXT_MAJOR_VERSION, 4,
+                EGL_CONTEXT_MINOR_VERSION, minor,
+                EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                EGL_NONE};
+            // Surfaceless: no config, no surface (EGL_KHR_no_config_context +
+            // EGL_KHR_surfaceless_context); rendering goes to framebuffer objects.
+            context = eglCreateContext(display, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, contextAttributes);
+        }
         if (context == EGL_NO_CONTEXT)
         {
             error = "eglCreateContext (GL 4.6 core) failed";
