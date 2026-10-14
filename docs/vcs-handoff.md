@@ -626,22 +626,21 @@ texture packs from `mods/`, Windows build under Wine.
      stock `xpad` only handles USB); an unmapped hid-generic node would
      explain "seen but dead".
 
-10. **Steam Controller / Steam Input testing.** Goal: exercise the Steam
-    prompt set + the Steam device path without the Steam client. The
-    Steam Controller (2015) is exposed as a gamepad by the kernel's
-    `hid-steam` driver (it drops lizard mode when the input node is
-    opened; needs `CONFIG_HID_STEAM`), and user-space bridges can present
-    it as a virtual pad with any name - name it "Steam Controller" so
-    `ps2InputDeviceKind()` matches "steam" and Auto picks the Steam set:
-    - `rodrigorc/inputmap` (virtual devices from real ones, SteamController
-      decoder; by the hid-steam author) - the main option for the 2015 pad.
-    - `benashby/steam-puck-bridge` - for the 2nd-gen Steam Controller
-      (Puck dongle 28de:1304): lizard mode off + a virtual Xbox 360 pad
-      via uinput, explicitly without Steam running.
-    - `kozec/sc-controller` is the older GUI alternative (own config
-      format, not Steam Input layouts).
+10. **Steam Controller (2026, Puck dongle) / Steam Input testing.** Goal:
+    exercise the Steam prompt set + the Steam device path without the Steam
+    client. The owner has the **2026 Steam Controller** (Puck dongle
+    `28de:1304`):
+    - `benashby/steam-puck-bridge` - the Linux userspace driver for that
+      dongle: disables lizard mode and exposes a virtual Xbox 360 gamepad via
+      uinput, explicitly without Steam running. Main option for this pad.
+    - Name the virtual pad "Steam Controller" so `ps2InputDeviceKind()`
+      matches "steam" and Auto picks the Steam prompt set.
+    - The older tools target the 2015 pad only - fallback references:
+      `rodrigorc/inputmap` (virtual devices, by the hid-steam author) and
+      `kozec/sc-controller` (GUI, own config format); the kernel `hid-steam`
+      driver is likewise the 2015 driver.
     - Note: real Steam Input (action sets/layouts) still needs the Steam
-      client; these tools just make the device usable as a normal gamepad,
+      client; the bridge just makes the device usable as a normal gamepad,
       which is what the port needs for its Steam prompt set.
 
 ## Third-party assets (release-page credits)
