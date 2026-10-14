@@ -9,6 +9,8 @@ extern std::atomic<bool> g_ps2DumpRamRequest; // ps2_runtime.cpp
 #include "ps2_host_backend.h"
 #include <atomic>
 #include <mutex>
+#include <set>
+#include <thread>
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 #include <algorithm>
@@ -232,6 +234,13 @@ bool ps2IsRealGamepad(int pad)
     return pad >= 0 && pad < 4 && padSnapshot().mapped[pad];
 }
 
+namespace
+{
+    // Which thread runs the host frame loop. The pad derivation must not run on
+    // the emulated game thread (see ps2MapUnrecognisedPads).
+    std::thread::id g_hostThread;
+}
+
 #if defined(__linux__)
 // GLFW numbers a joystick's raw buttons and axes by walking the device's evdev
 // codes in ascending order (see its openJoystickDevice), so the device's own
@@ -392,27 +401,48 @@ static bool ps2BuildEvdevMapping(const char *guid, const std::string &name, std:
 static void ps2MapUnrecognisedPads()
 {
 #if defined(__linux__)
+    // Host thread only. Deriving a mapping walks /dev/input and ioctls every
+    // device, which is far too slow to run from the emulated game thread: it
+    // stalled the game for a good fraction of a second, which showed up as
+    // frame hitches and as the sound engine's audio arriving in bursts.
+    if (std::this_thread::get_id() != g_hostThread)
+        return;
     const PadSnapshot snapshot = padSnapshot();
+    // A device GLFW has no mapping for is usually not a gamepad at all - a
+    // keyboard or mouse exposing a phantom joystick node - and deriving one for
+    // those means opening and ioctl'ing the whole input tree for nothing. Only
+    // look at names that name a pad family, and only ever try a given GUID once.
+    static std::mutex s_mutex;
+    static std::set<std::string> s_attempted;
     std::string generated;
-    for (int i = 0; i < 4; ++i)
     {
-        if (!snapshot.present[i] || snapshot.mapped[i] || snapshot.name[i].empty())
-            continue;
-        std::string mapping;
-        if (ps2BuildEvdevMapping(glfwGetJoystickGUID(i), snapshot.name[i], mapping))
-            generated += mapping + "\n";
+        std::lock_guard lock(s_mutex);
+        for (int i = 0; i < 4; ++i)
+        {
+            if (!snapshot.present[i] || snapshot.mapped[i] || snapshot.name[i].empty())
+                continue;
+            std::string lower = snapshot.name[i];
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            static const char *const kFamilies[] = {"xbox", "x-box", "dualsense", "dualshock",
+                                                    "playstation", "ps4", "ps5", "switch",
+                                                    "pro controller", "steam", "8bitdo", "gamepad"};
+            bool family = false;
+            for (const char *needle : kFamilies)
+                family = family || lower.find(needle) != std::string::npos;
+            if (!family)
+                continue;
+            const char *guid = glfwGetJoystickGUID(i);
+            if (guid == nullptr || s_attempted.count(guid) != 0u)
+                continue;
+            s_attempted.insert(guid);
+            std::string mapping;
+            if (ps2BuildEvdevMapping(guid, snapshot.name[i], mapping))
+                generated += mapping + "\n";
+        }
     }
     if (generated.empty())
         return;
-    // Throttle: the mapping only becomes visible to the snapshot after its next
-    // refresh, so without this we would reinstall it on every call until then.
-    static std::mutex s_mutex;
-    static std::chrono::steady_clock::time_point s_next{};
-    std::lock_guard lock(s_mutex);
-    const auto now = std::chrono::steady_clock::now();
-    if (now < s_next)
-        return;
-    s_next = now + std::chrono::seconds(2);
     if (glfwUpdateGamepadMappings(generated.c_str()))
         std::fprintf(stderr, "[pad] derived mapping(s) from the device:\n%s", generated.c_str());
 #endif
@@ -421,7 +451,6 @@ static void ps2MapUnrecognisedPads()
 int ps2ActiveGamepad()
 {
     ps2ApplyGamepadMappings();
-    ps2MapUnrecognisedPads();
     const PadSnapshot snapshot = padSnapshot();
     int active = -1;
     {
@@ -1061,6 +1090,8 @@ bool PSPadBackend::applyFakeMouse(float &yaw, float &pitch)
 
 void PSPadBackend::updateHostInput()
 {
+    g_hostThread = std::this_thread::get_id();
+    ps2MapUnrecognisedPads();
     // F7: a marker in the log (playtest notes: "it happened here").
     // F8: snapshot EE RAM to ram_f8_<frame>.bin (memory diffing while playing,
     // e.g. finding the radio station variable).
