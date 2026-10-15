@@ -1226,7 +1226,14 @@ bool PS2Runtime::initialize(const char *title)
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
-        SetTargetFPS(60);
+        // The host loop is the *present* loop: the emulation runs on its own
+        // thread, paced by the VBlank clock, so raising this cap does not speed
+        // the game up - it only lets the display be refreshed more often than the
+        // game produces pictures. That is the frame structure interpolation needs
+        // (the repeats are where a synthesized frame goes); on its own it shows
+        // each picture twice and looks exactly like 60. With VSync on, a 60 Hz
+        // display simply blocks at the swap and nothing changes.
+        SetTargetFPS(120);
         SetExitKey(KEY_NULL); // Esc is the pause button, not "close window"
         if (m_debugUiInitCallback)
         {
@@ -3469,6 +3476,23 @@ void PS2Runtime::run()
             }
             DrawText(TextFormat("game %d fps", s_gameFps), 10, 10, 20, LIME);
             DrawText(TextFormat("host %d fps  %.1f ms", GetFPS(), GetFrameTime() * 1000.0f), 10, 34, 20, RAYWHITE);
+        }
+        // The host rate in the perf log too, independent of the overlay: the game
+        // rate is already there and the two together are how a pacing change is
+        // checked without a visible window.
+        if (const char *perfPath = std::getenv("PS2X_PERF_LOG"))
+        {
+            static double s_lastHostLog = 0.0;
+            const double hostNow = GetTime();
+            if (hostNow - s_lastHostLog >= 5.0)
+            {
+                s_lastHostLog = hostNow;
+                if (FILE *f = std::fopen(perfPath, "a"))
+                {
+                    std::fprintf(f, "[host] fps=%d frameMs=%.2f\n", GetFPS(), GetFrameTime() * 1000.0f);
+                    std::fclose(f);
+                }
+            }
         }
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {

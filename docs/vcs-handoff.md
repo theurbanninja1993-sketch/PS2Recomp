@@ -1089,6 +1089,39 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
 14. **Frame rates above 60 (owner ask).** The emulation is locked to 60
     VBlanks/s - the game's logic runs per VBlank - so anything above 60 must be
     *interpolated*, not emulated. Three shapes, cheapest first:
+
+    **Step 1 DONE (2026-10-15): the host loop runs at 120.** `SetTargetFPS(120)`
+    in `ps2_runtime.cpp`. The emulation is unaffected and that is verified, not
+    assumed: the game runs on its own thread (`gameThread` -> `m_eeScheduler->run()`)
+    paced by the VBlank clock, and the host loop is only the *present* loop. On a
+    headless run with VSync forced off the host measured 120 fps (8.33 ms/frame)
+    while every game sample stayed at 59.7-60.0. With VSync on a 60 Hz display the
+    swap blocks and nothing changes at all, which is the right default.
+
+    On its own this gains nothing visible - each picture is shown twice - but it
+    is the frame structure interpolation hangs on: the repeats are where a
+    synthesized frame goes. There is a `[host] fps= frameMs=` line in
+    `PS2X_PERF_LOG` now, so the host rate can be checked without a window (the
+    perf log's own `fps=` is the *game* rate; do not confuse the two, as this
+    note's author did once).
+
+    **Step 2 (next): synthesize the repeats.** The host keeps the last two
+    composed frames (A, the previous, and B, the current) and on the frames the
+    game produced nothing it shows A warped by *half* of the last known camera
+    motion - the same `ps2CameraHomography`, already verified. Notes from working
+    out where it belongs:
+    - The renderer is the right place, not a raylib shader in the host: it holds
+      the camera, the homography and the overlay mask, and the host only has the
+      frames.
+    - It needs a per-host-frame entry point (the compose still runs at 60, when
+      the game presents), so the host calls the renderer for the repeats.
+    - The HUD must be *copied*, not warped: it is identical in A and B, and the
+      mask already says which pixels it is. A synthesized frame shown every other
+      frame with a wobbling HUD is worse than 60, which is why step 3 gates this.
+
+    **Step 3: the overlay mask fix** (item 13, parked). Needed for quality, not
+    for the plumbing.
+
     - **Reprojection (as in item 13).** Generate intermediate display frames by
       warping the previous composed frame along the camera delta. Reuses the
       same warp pass, so items 13 and 14 are one piece of machinery. Quality:
