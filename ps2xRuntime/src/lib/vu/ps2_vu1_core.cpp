@@ -207,6 +207,29 @@ void VU1Interpreter::applyDestAcc(const float *result, uint8_t dest)
 void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
                                          uint8_t laneFlags[4])
 {
+    // PS2X_VU1_SKIP_MACFLAGS: diagnostic only. Skips the per-lane MAC flag
+    // computation but keeps the result normalisation, so the arithmetic is
+    // unchanged - only the flags are wrong. If a capture reports the same
+    // mismatches and gifHash with this on, nothing in it reads MAC flags, and
+    // the timing difference is the flag path's cost.
+    static const bool s_skipFlags = std::getenv("PS2X_VU1_SKIP_MACFLAGS") != nullptr;
+    if (s_skipFlags)
+    {
+        for (uint32_t component = 0; component < 4u; ++component)
+        {
+            laneFlags[component] = 0u;
+            if ((dest & laneForComponent(component)) == 0u)
+                continue;
+            uint32_t bits = 0u;
+            std::memcpy(&bits, &result[component], 4);
+            const uint32_t exponent = (bits >> 23) & 0xFFu;
+            if (exponent >= 2u && exponent <= 253u)
+                continue;
+            uint32_t flags = 0u;
+            result[component] = normalizeResult(result[component], flags);
+        }
+        return;
+    }
     for (uint32_t component = 0; component < 4u; ++component)
     {
         laneFlags[component] = 0u;
