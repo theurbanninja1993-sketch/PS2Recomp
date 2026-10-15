@@ -2224,7 +2224,20 @@ void EeScheduler::processDueDeadlines()
                 // wake-up jitter is still made up so the average stays 60 Hz.
                 auto anchor = scheduled.hostDeadline;
                 const auto now = std::chrono::steady_clock::now();
-                if (now - anchor > kVBlankCatchUpLimit)
+                // PS2X_VBLANK_CATCHUP_MS: how much lateness a VBlank may still
+                // make up. Beyond this the anchor jumps to now, so the deficit
+                // is dropped and never recovered - one long frame costs frame
+                // rate for the rest of the session. The 4 ms default exists
+                // because catching up used to run game logic and music faster
+                // than real time; the IOP is clocked by real time now, so that
+                // reason is weaker than it was. Try 50.
+                static const auto s_catchUpLimit = []()
+                {
+                    const char *env = std::getenv("PS2X_VBLANK_CATCHUP_MS");
+                    return env ? std::chrono::microseconds(std::strtoll(env, nullptr, 10) * 1000)
+                               : std::chrono::duration_cast<std::chrono::microseconds>(kVBlankCatchUpLimit);
+                }();
+                if (now - anchor > s_catchUpLimit)
                     anchor = now;
                 ps2PerfLogVBlank(std::chrono::duration<double, std::milli>(now - scheduled.hostDeadline).count(), m_eeCycle);
                 static const bool s_stats = std::getenv("PS2X_SYNC_STATS") != nullptr;
