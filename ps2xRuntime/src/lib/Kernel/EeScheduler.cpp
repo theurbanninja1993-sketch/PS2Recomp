@@ -702,17 +702,20 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
             extern std::atomic<uint64_t> g_gsGpuResolves, g_gsGpuLoads, g_gsGpuReadbacks;
             extern std::atomic<uint64_t> g_gsGpuBarriers, g_gsGpuMemBarriers, g_gsGpuSyncAlias, g_gsGpuSyncTexture;
             extern std::atomic<uint64_t> g_gsGpuSyncStale, g_gsGpuTargets;
-            static uint64_t s_lastGs[9] = {};
-            std::atomic<uint64_t> *counters[9] = {&g_gsGpuResolves, &g_gsGpuLoads, &g_gsGpuReadbacks,
+            static uint64_t s_lastGs[8] = {};
+            std::atomic<uint64_t> *counters[8] = {&g_gsGpuResolves, &g_gsGpuLoads, &g_gsGpuReadbacks,
                                                   &g_gsGpuBarriers, &g_gsGpuMemBarriers, &g_gsGpuSyncAlias,
-                                                  &g_gsGpuSyncTexture, &g_gsGpuSyncStale, &g_gsGpuTargets};
-            static const char *names[9] = {"gsRes", "gsLoad", "gsRb", "gsBar", "gsMem", "gsAlias", "gsTex", "gsStale", "gsTargets"};
-            for (size_t i = 0; i < 9; ++i)
+                                                  &g_gsGpuSyncTexture, &g_gsGpuSyncStale};
+            static const char *names[8] = {"gsRes", "gsLoad", "gsRb", "gsBar", "gsMem", "gsAlias", "gsTex", "gsStale"};
+            for (size_t i = 0; i < 8; ++i)
             {
                 const uint64_t now = counters[i]->load(std::memory_order_relaxed);
                 std::fprintf(s_file, " %s=%llu", names[i], static_cast<unsigned long long>(now - s_lastGs[i]));
                 s_lastGs[i] = now;
             }
+            // gsTargets is a level, not a running total: report it as-is.
+            std::fprintf(s_file, " gsTargets=%llu",
+                         static_cast<unsigned long long>(g_gsGpuTargets.load(std::memory_order_relaxed)));
         }
     }
     // Per-thread CPU, keyed by thread id (see ps2ThreadCpuTicks). This is the

@@ -1122,6 +1122,16 @@ void main()
     {
         if (!target.gpuDirty())
             return;
+        // PS2X_GS_GPU_SKIP_RESOLVE: diagnostic only, gives the ceiling. Local
+        // memory stops being brought up to date, so expect a wrong picture;
+        // the point is the frame rate the driver could reach without this work.
+        static const bool s_skipResolve = std::getenv("PS2X_GS_GPU_SKIP_RESOLVE") != nullptr;
+        if (s_skipResolve)
+        {
+            target.dirtyY0 = ~0u;
+            target.dirtyY1 = 0;
+            return;
+        }
         ++m_statResolves;
         ++m_statResolveReasons[m_syncReason];
         g_gsGpuResolves.fetch_add(1u, std::memory_order_relaxed);
@@ -1132,8 +1142,16 @@ void main()
         else if (m_syncReason == "stale")
             g_gsGpuSyncStale.fetch_add(1u, std::memory_order_relaxed);
         GL &gl = m_context.gl;
-        g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
-        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT); // VRAM readers and the target's draws
+        // PS2X_GS_GPU_SKIP_MEMBARRIER: diagnostic only. One glMemoryBarrier per
+        // resolve (~590 a frame in dense scenes) is a pipeline-synchronising
+        // call, so this says whether the barriers or the resolve draws are the
+        // driver's cost. Expect visual artifacts with it on.
+        static const bool s_skipMemBarrier = std::getenv("PS2X_GS_GPU_SKIP_MEMBARRIER") != nullptr;
+        if (!s_skipMemBarrier)
+        {
+            g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
+            gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT); // VRAM readers and the target's draws
+        }
         const uint32_t y0 = target.dirtyY0;
         const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
         gl.glUseProgram(m_resolve.id);
