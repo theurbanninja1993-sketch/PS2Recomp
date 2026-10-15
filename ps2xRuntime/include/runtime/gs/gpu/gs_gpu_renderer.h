@@ -165,7 +165,7 @@ namespace gsgpu
         void clearUniformCaches()
         {
             for (Program *p : {&m_draw, &m_loadColor, &m_loadDepth, &m_resolve, &m_hostToLocal, &m_localToLocal,
-                               &m_clutLoad, &m_compose, &m_mask, &m_maskCopy, &m_blur})
+                               &m_clutLoad, &m_compose, &m_mask, &m_maskCopy, &m_blur, &m_synth})
                 p->uniforms.clear();
         }
         void flushBatch();
@@ -324,6 +324,25 @@ namespace gsgpu
         GLuint m_composeTexture = 0, m_composeFramebuffer = 0;
         uint32_t m_composeWidth = 0, m_composeHeight = 0;
         Ps2CameraState m_blurPrevCamera; // the camera of the last composed frame
+        // Frame interpolation: the camera of the last two composed frames, the
+        // texture the last compose produced, and the texture a synthesized frame
+        // is written into. The camera is tracked every compose, not just when the
+        // blur is on, because the interpolation deltas need it too.
+        Ps2CameraState m_interpPrevCamera, m_interpCamera;
+        bool m_interpHavePrev = false;
+        GLuint m_lastComposedTexture = 0;
+        uint32_t m_lastComposedWidth = 0, m_lastComposedHeight = 0;
+        Program m_synth;
+        GLuint m_synthTexture = 0, m_synthFramebuffer = 0;
+        uint32_t m_synthWidth = 0, m_synthHeight = 0;
+        // Reads the published camera into m_interpCamera, tracking the previous
+        // one. Called once per compose, whatever else is enabled.
+        void trackCamera();
+        // Warps the last composed frame forward by half the last camera motion and
+        // writes it into m_synthTexture, leaving the overlays alone. Returns the
+        // texture (0 if it could not make one). Called by the host on the frames
+        // the game produced no new picture.
+        GLuint synthesizeHostFrame(uint32_t &outWidth, uint32_t &outHeight);
         void ensureBlurTargets(GL &gl, uint32_t width, uint32_t height);
         // Smears the frame the compose just drew along the camera's motion,
         // scaling the smear per pixel by the overlay mask in its alpha, and

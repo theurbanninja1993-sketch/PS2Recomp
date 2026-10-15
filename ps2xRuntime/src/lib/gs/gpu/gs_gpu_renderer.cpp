@@ -780,6 +780,48 @@ void main()
 }
 )";
 
+        // Frame interpolation: warp the last composed frame forward by half the
+        // last camera motion, so the frame shown between two game pictures is the
+        // midpoint of the motion rather than a repeat. The overlays must not move
+        // - the HUD is identical in both pictures - so where the mask says overlay
+        // the source is taken as-is.
+        const char *kSynthShader = R"(#version 450 core
+layout(binding = 0) uniform sampler2D u_source;
+layout(binding = 1) uniform sampler2D u_mask;
+uniform vec3 u_warp0; // the half-step extrapolation, column-major
+uniform vec3 u_warp1;
+uniform vec3 u_warp2;
+uniform vec2 u_size;
+uniform float u_maskValid;
+out vec4 o_color;
+void main()
+{
+    vec2 uv = gl_FragCoord.xy / u_size;
+    vec4 cur = texture(u_source, uv);
+    // The mask is on the scene target, which is the same size and within a
+    // couple of rows of the composed frame, so a plain uv lookup is close enough
+    // for a protective region. Take the minimum of the neighbours so its edge
+    // cannot land a texel either side and flicker.
+    float mask = 0.0;
+    if (u_maskValid > 0.5)
+    {
+        vec2 texel = 1.0 / u_size;
+        mask = min(min(min(texture(u_mask, uv).r, texture(u_mask, uv + vec2(texel.x, 0.0)).r),
+                       texture(u_mask, uv - vec2(texel.x, 0.0)).r),
+                   min(texture(u_mask, uv + vec2(0.0, texel.y)).r,
+                       texture(u_mask, uv - vec2(0.0, texel.y)).r));
+    }
+    if (mask > 0.0)
+    {
+        o_color = vec4(cur.rgb, 1.0); // an overlay: do not move it
+        return;
+    }
+    vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uv, 1.0);
+    vec2 src = q.xy / q.z;
+    o_color = vec4(texture(u_source, clamp(src, vec2(0.0), vec2(1.0))).rgb, 1.0);
+}
+)";
+
         // Full-target triangle for load passes (rows limited by the scissor).
         const char *kFullscreenVertexShader = R"(#version 450 core
 void main()
@@ -1150,6 +1192,8 @@ void main()
                                          compileShader(gl, GL_FRAGMENT_SHADER, kMaskCopyFragmentShader)});
         m_blur.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
                                      compileShader(gl, GL_FRAGMENT_SHADER, kBlurShader)});
+        m_synth.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
+                                      compileShader(gl, GL_FRAGMENT_SHADER, kSynthShader)});
         // A source target that has no mask yet still has to write something: an
         // explicit zero, so the copy overwrites rather than leaving stale bits.
         if (m_zeroMask == 0)
@@ -1978,6 +2022,53 @@ void main()
         // and the per-primitive perspective divisor and Z range. The last two are
         // the candidates for telling screen-space overlays (q == 1, constant Z)
         // from world geometry, which the blur and interpolation both need.
+        // PS2X_FRAME_INTERP_TEST=1: make one synthesized frame and write it (and
+        // the frame it came from) out as PGMs, so the warp can be checked by eye
+        // from a capture, which has no game running to drive the host path.
+        {
+            static const bool s_interpTest = std::getenv("PS2X_FRAME_INTERP_TEST") != nullptr;
+            if (s_interpTest && m_presentIndex == 45u && m_lastComposedTexture != 0)
+            {
+                const uint32_t w = m_lastComposedWidth, h = m_lastComposedHeight;
+                std::vector<uint8_t> before(static_cast<size_t>(w) * h * 4u, 0u);
+                GL &gl = m_context.gl;
+                gl.glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+                gl.glPixelStorei(GL_PACK_ALIGNMENT, 4);
+                gl.glGetTextureSubImage(m_lastComposedTexture, 0, 0, 0, 0, static_cast<GLsizei>(w),
+                                        static_cast<GLsizei>(h), 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                                        static_cast<GLsizei>(before.size()), before.data());
+                uint32_t sw = 0, sh = 0;
+                const GLuint synth = synthesizeHostFrame(sw, sh);
+                if (synth != 0)
+                {
+                    std::vector<uint8_t> after(static_cast<size_t>(sw) * sh * 4u, 0u);
+                    gl.glGetTextureSubImage(synth, 0, 0, 0, 0, static_cast<GLsizei>(sw), static_cast<GLsizei>(sh), 1,
+                                            GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(after.size()), after.data());
+                    if (const char *dir = std::getenv("PS2X_FRAME_INTERP_DUMP"))
+                    {
+                        char path[1024];
+                        std::snprintf(path, sizeof(path), "%s_source.ppm", dir);
+                        if (FILE *f = std::fopen(path, "wb"))
+                        {
+                            std::fprintf(f, "P6\n%u %u\n255\n", w, h);
+                            for (size_t i = 0; i + 3u < before.size(); i += 4u)
+                                std::fwrite(&before[i], 1, 3, f);
+                            std::fclose(f);
+                        }
+                        std::snprintf(path, sizeof(path), "%s_synth.ppm", dir);
+                        if (FILE *f = std::fopen(path, "wb"))
+                        {
+                            std::fprintf(f, "P6\n%u %u\n255\n", sw, sh);
+                            for (size_t i = 0; i + 3u < after.size(); i += 4u)
+                                std::fwrite(&after[i], 1, 3, f);
+                            std::fclose(f);
+                        }
+                        std::cerr << "[gs] frame interp: wrote " << dir << "_source.ppm and " << dir
+                                  << "_synth.ppm (" << sw << "x" << sh << ")" << std::endl;
+                    }
+                }
+            }
+        }
         {
             static const char *s_traceDraws = std::getenv("PS2X_GS_TRACE_DRAWS");
             if (s_traceDraws != nullptr &&
@@ -3294,8 +3385,132 @@ void main()
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
     }
 
+    // Reads the published camera, keeping the previous one. Called once per
+    // compose whatever else is enabled: the interpolation deltas are between
+    // composed frames, so this must not depend on the blur being on.
+    void Renderer::trackCamera()
+    {
+        Ps2CameraState cur;
+        // The same synthetic camera the blur uses, for testing from a capture
+        // (which has no game running to publish a real one).
+        static const char *s_fake = std::getenv("PS2X_BLUR_FAKE_CAMERA");
+        if (s_fake != nullptr)
+        {
+            const float yaw = static_cast<float>(std::atof(s_fake)) * static_cast<float>(m_presentIndex) *
+                              3.14159265f / 180.0f;
+            cur.front[0] = std::cos(yaw);
+            cur.front[1] = std::sin(yaw);
+            cur.front[2] = 0.0f;
+            cur.up[0] = 0.0f;
+            cur.up[1] = 0.0f;
+            cur.up[2] = 1.0f;
+            cur.pos[0] = 0.0f;
+            cur.pos[1] = 0.0f;
+            cur.pos[2] = 16.0f;
+            cur.viewX = 0.7f;
+            cur.viewY = 0.525f;
+            cur.valid = true;
+            m_interpPrevCamera = m_interpCamera;
+            m_interpCamera = cur;
+            m_interpHavePrev = m_interpHavePrev || cur.valid;
+            return;
+        }
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            const uint64_t before = g_ps2CameraFrame.load(std::memory_order_relaxed);
+            cur = g_ps2Camera;
+            if (g_ps2CameraFrame.load(std::memory_order_relaxed) == before)
+                break;
+        }
+        m_interpPrevCamera = m_interpCamera;
+        m_interpCamera = cur;
+        m_interpHavePrev = m_interpHavePrev || cur.valid;
+    }
+
+    // Warps the last composed frame forward by half the last camera motion and
+    // writes it into m_synthTexture. Overlays are copied, not warped: the HUD is
+    // identical in the two pictures it sits between, so moving it would be wrong.
+    // Returns the texture, or 0 if it cannot make one.
+    GLuint Renderer::synthesizeHostFrame(uint32_t &outWidth, uint32_t &outHeight)
+    {
+        if (m_synth.id == 0 || m_lastComposedTexture == 0 || !m_interpHavePrev || !m_interpPrevCamera.valid ||
+            !m_interpCamera.valid || m_lastComposedWidth == 0 || m_lastComposedHeight == 0)
+            return 0;
+
+        static const float s_depth = []()
+        {
+            const char *env = std::getenv("PS2X_BLUR_DEPTH");
+            return env ? static_cast<float>(std::atof(env)) : 200.0f;
+        }();
+        const Ps2CameraHomography h = ps2CameraHomography(m_interpPrevCamera, m_interpCamera, s_depth);
+        if (!h.usable)
+            return 0;
+
+        // The extrapolation: a point moves from its previous position toward its
+        // current one, so half a step past the current frame is 1.5*p - 0.5*H*p.
+        // h.m is column-major, and H is only defined up to scale, so normalise by
+        // its bottom-right entry before blending.
+        const float inv = h.m[8] != 0.0f ? 1.0f / h.m[8] : 1.0f;
+        float ext[9];
+        for (int i = 0; i < 9; ++i)
+            ext[i] = -0.5f * h.m[i] * inv;
+        ext[0] += 1.5f;
+        ext[4] += 1.5f;
+        ext[8] += 1.5f;
+
+        GL &gl = m_context.gl;
+        const uint32_t w = m_lastComposedWidth, hgt = m_lastComposedHeight;
+        if (m_synthTexture == 0 || m_synthWidth < w || m_synthHeight < hgt)
+        {
+            if (m_synthTexture != 0)
+            {
+                gl.glDeleteFramebuffers(1, &m_synthFramebuffer);
+                gl.glDeleteTextures(1, &m_synthTexture);
+            }
+            m_synthWidth = std::max(m_synthWidth, w);
+            m_synthHeight = std::max(m_synthHeight, hgt);
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_synthTexture);
+            gl.glTextureStorage2D(m_synthTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_synthWidth),
+                                  static_cast<GLsizei>(m_synthHeight));
+            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            gl.glCreateFramebuffers(1, &m_synthFramebuffer);
+            gl.glNamedFramebufferTexture(m_synthFramebuffer, GL_COLOR_ATTACHMENT0, m_synthTexture, 0);
+            gl.glNamedFramebufferDrawBuffer(m_synthFramebuffer, GL_COLOR_ATTACHMENT0);
+        }
+
+        const Target *maskTarget = m_overlayTarget;
+        const bool maskValid = maskTarget != nullptr && maskTarget->maskTexture != 0;
+        Program &p = m_synth;
+        useProgram(p.id);
+        setUniform3f(p, uniform(p, "u_warp0"), ext[0], ext[1], ext[2]);
+        setUniform3f(p, uniform(p, "u_warp1"), ext[3], ext[4], ext[5]);
+        setUniform3f(p, uniform(p, "u_warp2"), ext[6], ext[7], ext[8]);
+        setUniform2f(p, uniform(p, "u_size"), static_cast<float>(w), static_cast<float>(hgt));
+        setUniform1f(p, uniform(p, "u_maskValid"), maskValid ? 1.0f : 0.0f);
+        gl.glBindTextureUnit(0, m_lastComposedTexture);
+        gl.glBindTextureUnit(1, maskValid ? maskTarget->maskTexture : m_synthTexture);
+        bindFramebuffer(m_synthFramebuffer);
+        setViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(hgt));
+        setScissorTest(false);
+        setBlend(false);
+        setDepthTest(false);
+        setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        bindVao(m_emptyVao);
+        gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
+        outWidth = w;
+        outHeight = hgt;
+        return m_synthTexture;
+    }
+
     void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
     {
+        // Every composed frame is a sample for the interpolation, whatever else is
+        // enabled - so this runs before any early return.
+        trackCamera();
         // The host draws the composed frame with raylib between our frames, and
         // if its context shares state with ours those calls change bindings
         // behind the cache's back. Dropping the cache here costs a handful of
@@ -3527,6 +3742,9 @@ void main()
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
         if (reproject)
             blurCompose(gl, width, height, displayFramebuffer);
+        m_lastComposedTexture = sharePresent ? m_presentShared[m_presentSharedIndex] : m_presentTexture;
+        m_lastComposedWidth = width;
+        m_lastComposedHeight = height;
         if (sharePresent)
         {
             // Make the write visible to the host's context (it draws this
@@ -3662,6 +3880,12 @@ void main()
         m_feedbackWidth = m_feedbackHeight = 0;
         m_drawColor = m_drawDepth = nullptr;
         destroyBlurTargets();
+        if (m_synthTexture != 0)
+        {
+            gl.glDeleteFramebuffers(1, &m_synthFramebuffer);
+            gl.glDeleteTextures(1, &m_synthTexture);
+            m_synthTexture = m_synthFramebuffer = 0;
+        }
     }
 
     bool Renderer::clearFramebuffer(const GSContext &context, uint32_t rgba)

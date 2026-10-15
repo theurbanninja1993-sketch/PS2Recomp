@@ -1113,22 +1113,29 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     rate from VBlank ticks, so the two can be cross-checked. Do not confuse them -
     this note's author did, twice.
 
-    **Step 2 (next): synthesize the repeats.** The host keeps the last two
-    composed frames (A, the previous, and B, the current) and on the frames the
-    game produced nothing it shows A warped by *half* of the last known camera
-    motion - the same `ps2CameraHomography`, already verified. Notes from working
-    out where it belongs:
-    - The renderer is the right place, not a raylib shader in the host: it holds
-      the camera, the homography and the overlay mask, and the host only has the
-      frames.
-    - It needs a per-host-frame entry point (the compose still runs at 60, when
-      the game presents), so the host calls the renderer for the repeats.
-    - The HUD must be *copied*, not warped: it is identical in A and B, and the
-      mask already says which pixels it is. A synthesized frame shown every other
-      frame with a wobbling HUD is worse than 60, which is why step 3 gates this.
+    **Step 2 (in progress): the synthesis, renderer side DONE and verified.**
+    The renderer now tracks the camera on every compose (not just when the blur is
+    on - the interpolation deltas need it), remembers the texture the last compose
+    produced, and has `synthesizeHostFrame()`: it warps that frame forward by half
+    the last camera motion (the homography extrapolated as `1.5*I - 0.5*H`,
+    normalised by H's bottom-right entry first) into its own texture, taking the
+    source as-is wherever the overlay mask says overlay.
 
-    **Step 3: the overlay mask fix** (item 13, parked). Needed for quality, not
-    for the plumbing.
+    Verified from a capture with the synthetic camera: the world is displaced by
+    the half-step while the clock, bars, weapon icon, minimap and subtitle are
+    unmoved. `PS2X_FRAME_INTERP_TEST=1` plus `PS2X_FRAME_INTERP_DUMP=<prefix>`
+    writes the source and the synthesized frame out as PPMs for that check. With
+    no env set the renderer is byte-identical over 61 frames, so it is inert.
+
+    **What is left is the host wiring**, and it is the fiddly part: the renderer
+    lives on the render thread, so the host cannot call `synthesizeHostFrame`
+    directly. It needs a path through the GS frontend and backend (the same queue
+    `Present` uses), and the host then draws the returned texture on the frames
+    the game produced no new picture - which the camera-publish gate already
+    identifies, since it keys off the VBlank tick. The texture is a plain GL id,
+    so it can be wrapped as a raylib Texture2D the way the shared present texture
+    already is. Until that exists the synthesis is only reachable from the test
+    hook.
 
     - **Reprojection (as in item 13).** Generate intermediate display frames by
       warping the previous composed frame along the camera delta. Reuses the
