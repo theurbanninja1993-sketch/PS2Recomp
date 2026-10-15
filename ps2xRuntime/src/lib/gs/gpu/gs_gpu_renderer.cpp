@@ -1207,7 +1207,13 @@ void main()
         if (!bytesToRows(target, beginByte, endByte, y0, y1))
             return;
         if (target.gpuDirty())
+        {
+            // Attribute it here too: resolveTarget records m_syncReason, and
+            // without this the resolves this path triggers are blamed on
+            // whatever operation ran before them.
+            m_syncReason = "stale";
             resolveTarget(target); // keep its drawn rows; VRAM there is current
+        }
         target.staleY0 = std::min(target.staleY0, y0);
         target.staleY1 = std::max(target.staleY1, y1);
     }
