@@ -1680,6 +1680,9 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
+// Defined here, read by the perf log.
+std::atomic<uint64_t> g_ps2Vu1ExitEnded{0}, g_ps2Vu1ExitBudget{0}, g_ps2Vu1ExitContinue{0};
+
 void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                          uint8_t *vuData, uint32_t dataSize,
                          GS &gs, PS2Memory *memory, uint32_t maxCycles)
@@ -1708,6 +1711,13 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         static uint64_t s_tsc = 0;
         if (s_timeStats)
             s_tsc += __builtin_ia32_rdtsc() - tscStart;
+        // Which way the compiled program left. If `continue`/`budget` dominate,
+        // the interpreter loop below runs the rest of the program - at ~10x the
+        // cost of the compiled path (measured with tools/vu1_replay) - which is
+        // what a gameplay profile showing VU1Interpreter::* but no vu1p_* means.
+        (exit == VU1CompiledEnded ? g_ps2Vu1ExitEnded : exit == VU1CompiledBudget ? g_ps2Vu1ExitBudget
+                                                                                   : g_ps2Vu1ExitContinue)
+            .fetch_add(1u, std::memory_order_relaxed);
         if (exit == VU1CompiledEnded)
             programEnded = true;
         static const bool s_stats = std::getenv("PS2X_VU1_COMPILED_STATS") != nullptr;

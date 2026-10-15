@@ -759,6 +759,18 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
     const uint64_t compiled = g_ps2Vu1CompiledCalls.load(), interpreted = g_ps2Vu1InterpretedCalls.load();
     static uint64_t s_lastRevalidations = 0, s_lastRecomputes = 0;
     const uint64_t revalidations = g_ps2Vu1LookupRevalidations.load(), recomputes = g_ps2Vu1LookupRecomputes.load();
+    {
+        extern std::atomic<uint64_t> g_ps2Vu1ExitEnded, g_ps2Vu1ExitBudget, g_ps2Vu1ExitContinue;
+        static uint64_t s_lastVu1Exit[3] = {};
+        std::atomic<uint64_t> *exits[3] = {&g_ps2Vu1ExitEnded, &g_ps2Vu1ExitBudget, &g_ps2Vu1ExitContinue};
+        static const char *exitNames[3] = {"vu1End", "vu1Budget", "vu1Cont"};
+        for (size_t i = 0; i < 3; ++i)
+        {
+            const uint64_t now = exits[i]->load(std::memory_order_relaxed);
+            std::fprintf(s_file, " %s=%llu", exitNames[i], static_cast<unsigned long long>(now - s_lastVu1Exit[i]));
+            s_lastVu1Exit[i] = now;
+        }
+    }
     std::fprintf(s_file, " vu1Compiled=%llu vu1Interpreted=%llu lookups=%llu/%llu\n", static_cast<unsigned long long>(compiled - s_lastCompiled),
                  static_cast<unsigned long long>(interpreted - s_lastInterpreted),
                  static_cast<unsigned long long>(revalidations - s_lastRevalidations), static_cast<unsigned long long>(recomputes - s_lastRecomputes));
