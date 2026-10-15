@@ -274,6 +274,10 @@ namespace gsgpu
         Program m_draw, m_loadColor, m_loadDepth, m_resolve, m_hostToLocal, m_localToLocal, m_clutLoad, m_compose;
         GLuint m_presentTexture = 0, m_presentFramebuffer = 0; // upscaled display output
         uint32_t m_presentWidth = 0, m_presentHeight = 0;
+        // PS2X_GS_TRACE_DRAWS=<presentIndex>: the presented-frame counter and a
+        // per-frame draw counter, for logging one frame's draws in order.
+        uint64_t m_presentIndex = 0;
+        uint64_t m_frameDrawIndex = 0;
         // Downscale target for the presentation readback (see upscalePresentation).
         GLuint m_readbackTexture = 0, m_readbackFramebuffer = 0;
         uint32_t m_readbackWidth = 0, m_readbackHeight = 0;

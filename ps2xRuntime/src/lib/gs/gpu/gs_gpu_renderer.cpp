@@ -1749,6 +1749,27 @@ void main()
                                  c.tex0.th);
             }
         }
+        // PS2X_GS_TRACE_DRAWS=<presentIndex>: log every draw of one presented
+        // frame in order - index, target, texture, depth state, geometry bounds.
+        // Written to find where the 3D scene ends and the screen-space HUD begins
+        // (the motion blur needed that split, and so does interpolation).
+        {
+            static const char *s_traceDraws = std::getenv("PS2X_GS_TRACE_DRAWS");
+            if (s_traceDraws != nullptr &&
+                static_cast<uint64_t>(std::strtoull(s_traceDraws, nullptr, 10)) == m_presentIndex)
+            {
+                const Target *col = m_drawColor;
+                const GSContext &c = m_keyState.context;
+                std::fprintf(stderr,
+                             "[gs:draw] n=%llu target=%dx%d %dx%d at (%d,%d) ztst=%u zw=%u tme=%d abe=%d tbp=%u tw=%u "
+                             "th=%u psm=%u fbp=%u\n",
+                             (unsigned long long)++m_frameDrawIndex, col ? static_cast<int>(col->width) : 0,
+                             col ? static_cast<int>(col->height) : 0, m_batchX1 - m_batchX0 + 1,
+                             m_batchY1 - m_batchY0 + 1, m_batchX0, m_batchY0, (c.test >> 17) & 3u, c.zbuf.zmask,
+                             m_keyState.prim.tme ? 1 : 0, m_keyState.prim.abe ? 1 : 0, c.tex0.tbp0, c.tex0.tw, c.tex0.th,
+                             c.tex0.psm, c.frame.fbp);
+            }
+        }
         m_batchY0 = static_cast<int32_t>(std::floor(minY));
         m_batchY1 = static_cast<int32_t>(std::ceil(maxY)) - 1; // an edge at y covers rows < y
         GL &gl = m_context.gl;
@@ -2778,6 +2799,8 @@ void main()
 
     PresentationFrame Renderer::present(const GSPresentationRequest &request)
     {
+        ++m_presentIndex;
+        m_frameDrawIndex = 0;
         // Presentation reads local memory (both circuits, preferred source).
         m_syncReason = "present";
         m_replUploadedThisFrame = 0;
