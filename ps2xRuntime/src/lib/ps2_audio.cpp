@@ -1,4 +1,5 @@
 #include <atomic>
+#include "ThreadNaming.h"
 #include "runtime/ps2_audio.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_host_backend.h"
@@ -129,6 +130,14 @@ namespace
     constexpr double kDriftLimit = 0.02; // never stretch or squeeze more than 2%
     void streamCallback(void *bufferData, unsigned int frames)
     {
+        // This runs on the audio device's thread, which is not ours; name it
+        // once so the per-thread CPU report can tell it apart from the rest.
+        static const bool s_named = []()
+        {
+            ThreadNaming::SetCurrentThreadName("AudioCallback");
+            return true;
+        }();
+        (void)s_named;
         static double s_readPos = 0.0; // fractional position, device thread only
         int16_t *out = static_cast<int16_t *>(bufferData);
         const size_t write = g_streamRing.writeFrame.load(std::memory_order_acquire);

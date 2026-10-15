@@ -1,4 +1,5 @@
 #include "runtime/gs/gs_threaded_backend.h"
+#include "ThreadNaming.h"
 
 #if defined(__linux__)
 #include <sys/syscall.h>
@@ -129,7 +130,10 @@ GSThreadedBackend::GSThreadedBackend(BackendFactory factory, uint32_t workerCoun
     for (uint32_t index = 0; index < workerCount; ++index)
     {
         m_workers[index]->thread = std::thread([this, index]()
-                                               { workerLoop(index); });
+                                               {
+                                                   ThreadNaming::SetCurrentThreadName(("GsRaster" + std::to_string(index)).c_str());
+                                                   workerLoop(index);
+                                               });
     }
 }
 

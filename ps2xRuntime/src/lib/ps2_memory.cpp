@@ -2284,7 +2284,10 @@ void PS2Memory::processPendingTransfers()
             m_vif1Batches.push_back(std::move(batch));
             if (!m_vif1Worker.joinable())
                 m_vif1Worker = std::thread([this]()
-                                           { asyncVif1WorkerLoop(); });
+                                           {
+                                               ThreadNaming::SetCurrentThreadName("Vif1Worker");
+                                               asyncVif1WorkerLoop();
+                                           });
         }
         m_vif1QueueCv.notify_one();
         vif1Deferred = true;
