@@ -2,6 +2,7 @@
 #define PS2_RUNTIME_H
 
 #include <cstring>
+#include <chrono>
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -523,6 +524,9 @@ private:
     // IOP time follows the VBlank clock (real time), not the EE cycle count
     // (recompiled code over-counts busy stretches): see advanceIopEeCycles.
     uint64_t m_iopEeAllowed = 0; // EE cycles of IOP time real time allows so far
+    // When the IOP's allowance was last topped up, so it can be clocked by real
+    // time rather than by VBlanks (see advanceIopVBlank).
+    std::chrono::steady_clock::time_point m_iopLastReal{};
     PS2AudioBackend m_audioBackend;
     PSPadBackend m_padBackend;
     PS2RomDevice m_romDevice;

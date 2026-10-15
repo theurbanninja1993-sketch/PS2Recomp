@@ -790,7 +790,8 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
 
 namespace
 {
-    // EE cycles per NTSC VBlank (294.912 MHz / 59.94 Hz).
+    // The EE clock, and the cycles in one NTSC VBlank (294.912 MHz / 59.94 Hz).
+    constexpr uint64_t kEeClockHz = 294'912'000u;
     constexpr uint64_t kEeCyclesPerVBlank = 4'920'120u;
     const bool g_iopFreeRun = std::getenv("PS2X_IOP_FREE_RUN") != nullptr;
 }
@@ -819,10 +820,25 @@ void PS2Runtime::advanceIopVBlank() noexcept
 {
     if (g_iopFreeRun)
         return;
+    const auto now = std::chrono::steady_clock::now();
     const uint64_t iopEe = m_iopSubsystem->cycles() * 8u;
     if (m_iopEeAllowed == 0u)
-        m_iopEeAllowed = iopEe; // first VBlank: start from where boot left the IOP
-    m_iopEeAllowed += kEeCyclesPerVBlank;
+    {
+        // First VBlank: start from where boot left the IOP.
+        m_iopEeAllowed = iopEe;
+        m_iopLastReal = now;
+    }
+    // Top the allowance up by *real* elapsed time, not by one VBlank per VBlank.
+    // A late VBlank is a VBlank the emulation never got, and the SPU2 is clocked
+    // by the IOP, so the audio it did not produce is lost for good - the video
+    // catches up by rendering extra frames, audio cannot. Measured on the
+    // owner's laptop: the emulation runs 20-35% behind and the audio is short by
+    // the same 20-35%, while the production rate per *emulated* time is exact.
+    // Capped at two VBlanks so a long stall cannot produce a burst.
+    const double elapsed = std::chrono::duration<double>(now - m_iopLastReal).count();
+    m_iopLastReal = now;
+    const uint64_t realEeCycles = static_cast<uint64_t>(elapsed * static_cast<double>(kEeClockHz));
+    m_iopEeAllowed += std::min<uint64_t>(realEeCycles, 2u * kEeCyclesPerVBlank);
     // Keep within two VBlanks of real time when the EE reports too few cycles.
     if (m_iopEeAllowed > iopEe + 2u * kEeCyclesPerVBlank)
         m_iopSubsystem->runEeCycles(m_iopEeAllowed - iopEe - kEeCyclesPerVBlank);
