@@ -8,6 +8,7 @@
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_mods.h" // PS2X_MODS_DIR texture packs (PS2X_TEXREPL_DUMP)
+#include "runtime/ps2_host_settings.h" // renderer settings (motion blur and friends)
 #include "ps2_runtime.h"
 
 #include <csignal>
@@ -81,6 +82,11 @@ int main(int argc, char **argv)
     // replacement path - and PS2X_TEXREPL_DUMP's normal-texture hook - runs
     // during the replay, exactly like in game.
     ps2ModsRefresh();
+
+    // Apply the renderer settings once, as the live loop does when the settings
+    // are first read. Without this a replay ignores the motion blur (and anything
+    // else the settings drive), which silently tests a different renderer.
+    ps2HostSettingsApplyRenderer();
 
     std::vector<Record> records;
     std::vector<uint8_t> initialVram;

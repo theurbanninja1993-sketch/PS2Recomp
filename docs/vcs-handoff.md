@@ -1002,6 +1002,16 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     Next: the same motion vectors are what item 14 needs, so the overlay split
     has to be solved once, properly, before either is worth shipping.
 
+    **Owner's note (2026-10-15): per-object motion blur is a task for later.**
+    The camera-only blur cannot know that a car or a ped is moving, so anything
+    crossing a still camera stays sharp, and anything moving while the camera
+    moves is smeared by the camera's motion rather than its own. Per-object would
+    need motion vectors per object, which the GS stream does not carry: the port
+    would have to derive them from the game's own transform data (the same way
+    the camera is read from `TheCamera.Cams[0]`), or from a depth+reprojection
+    pair across frames. Worth revisiting once item 14 is settled, since frame
+    interpolation wants the same per-object motion.
+
     **Progress (2026-10-15): the overlay split is solved and verified.** A
     gameplay capture (F9, `gs_capture_<frame>.bin` in the working directory)
     replayed through `tools/gs_replay` gave the answer, which is *measured* now

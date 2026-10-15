@@ -752,7 +752,16 @@ void main()
 {
     vec2 uv = gl_FragCoord.xy / u_size;
     vec4 cur = texture(u_current, uv);
-    float mask = cur.a; // 1 = world, 0 = screen-space overlay
+    // 1 = world, 0 = screen-space overlay. Take the minimum of the neighbours
+    // too: the mask is resampled as it travels through the game's frame copies,
+    // so its edge can land a texel either side of the HUD, and a pixel adjacent
+    // to the HUD that flickers between blurred and sharp reads as the HUD itself
+    // jittering.
+    vec2 texel = 1.0 / u_size;
+    float mask = min(min(min(cur.a, texture(u_current, uv + vec2(texel.x, 0.0)).a),
+                         texture(u_current, uv - vec2(texel.x, 0.0)).a),
+                     min(texture(u_current, uv + vec2(0.0, texel.y)).a,
+                         texture(u_current, uv - vec2(0.0, texel.y)).a));
     if (u_shutter <= 0.0 || mask <= 0.0)
     {
         o_color = vec4(cur.rgb, 1.0);
@@ -3221,12 +3230,14 @@ void main()
             }
         }
 
-        // Depth in world units: 1 unit is about 0.1 m, so 100 is ~10 m, roughly
-        // what fills a chase-camera frame. It only scales the translation part.
+        // Depth in world units: 1 unit is about 0.1 m, so 200 is ~20 m, roughly
+        // what fills a chase-camera frame. It only scales the translation part -
+        // rotation is exact - so raising it is how "too smeary while driving" is
+        // dialled back without touching turns.
         static const float s_depth = []()
         {
             const char *env = std::getenv("PS2X_BLUR_DEPTH");
-            return env ? static_cast<float>(std::atof(env)) : 100.0f;
+            return env ? static_cast<float>(std::atof(env)) : 200.0f;
         }();
 
         const Ps2CameraHomography warp = ps2CameraHomography(m_blurPrevCamera, cur, s_depth);
@@ -3566,13 +3577,14 @@ void main()
         frame.height = readHeight;
         frame.rowPixels = readWidth;
         frame.displayFbp = frame.sourceFbp = (crt1 ? c1 : c2).target->block / 32u;
-        // PS2X_GS_PRESENT_DUMP=<prefix>: write presented frames 20..80 (every
-        // other one) as binary PPMs <prefix>_NNN.ppm, for A/B checks.
+        // PS2X_GS_PRESENT_DUMP=<prefix>: write presented frames 20..80 as binary
+        // PPMs <prefix>_NNN.ppm, for A/B checks. Every present, so consecutive
+        // frames can be compared - the field alternation shows there.
         if (const char *dumpPath = std::getenv("PS2X_GS_PRESENT_DUMP"))
         {
             static int s_presents = 0;
             ++s_presents;
-            if (s_presents >= 20 && s_presents <= 80 && (s_presents % 2) == 0)
+            if (s_presents >= 20 && s_presents <= 80)
             {
                 char path[1024];
                 std::snprintf(path, sizeof(path), "%s_%03d.ppm", dumpPath, s_presents);
