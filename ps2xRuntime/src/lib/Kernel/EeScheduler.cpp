@@ -698,6 +698,21 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
             std::fprintf(s_file, " gsDraws=%llu", static_cast<unsigned long long>(draws - s_lastGsDraws));
             s_lastGsDraws = draws;
         }
+        {
+            extern std::atomic<uint64_t> g_gsGpuResolves, g_gsGpuLoads, g_gsGpuReadbacks;
+            extern std::atomic<uint64_t> g_gsGpuBarriers, g_gsGpuMemBarriers, g_gsGpuSyncAlias, g_gsGpuSyncTexture;
+            static uint64_t s_lastGs[7] = {};
+            std::atomic<uint64_t> *counters[7] = {&g_gsGpuResolves, &g_gsGpuLoads, &g_gsGpuReadbacks,
+                                                  &g_gsGpuBarriers, &g_gsGpuMemBarriers, &g_gsGpuSyncAlias,
+                                                  &g_gsGpuSyncTexture};
+            static const char *names[7] = {"gsRes", "gsLoad", "gsRb", "gsBar", "gsMem", "gsAlias", "gsTex"};
+            for (size_t i = 0; i < 7; ++i)
+            {
+                const uint64_t now = counters[i]->load(std::memory_order_relaxed);
+                std::fprintf(s_file, " %s=%llu", names[i], static_cast<unsigned long long>(now - s_lastGs[i]));
+                s_lastGs[i] = now;
+            }
+        }
     }
     // Per-thread CPU, keyed by thread id (see ps2ThreadCpuTicks). This is the
     // number that says which thread is the bottleneck, and it works on Windows

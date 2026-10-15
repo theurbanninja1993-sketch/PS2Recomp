@@ -30,6 +30,16 @@ std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 // Draw calls issued to GL. One per state-change flush, so this is the number
 // the GPU driver's own threads have to process each frame.
 std::atomic<uint64_t> g_gsGpuDraws{0};
+// What the draw path asks the driver to do beyond the draws themselves. Both
+// barriers are pipeline-synchronising operations, so their counts say whether
+// the driver thread is paying for state churn or for synchronisation.
+std::atomic<uint64_t> g_gsGpuResolves{0};
+std::atomic<uint64_t> g_gsGpuLoads{0};
+std::atomic<uint64_t> g_gsGpuReadbacks{0};
+std::atomic<uint64_t> g_gsGpuBarriers{0};    // glTextureBarrier (feedback draws)
+std::atomic<uint64_t> g_gsGpuMemBarriers{0}; // glMemoryBarrier (target resolves)
+std::atomic<uint64_t> g_gsGpuSyncAlias{0};   // resolves because targets alias
+std::atomic<uint64_t> g_gsGpuSyncTexture{0}; // resolves to feed a texture read
 std::atomic<uint32_t> g_gsGpuPresentWidth{0};
 std::atomic<uint32_t> g_gsGpuPresentHeight{0};
 // Set once the GL path is really running (see the Renderer constructor).
@@ -1079,6 +1089,7 @@ void main()
         if (rows == 0u)
             return;
         ++m_statLoads;
+        g_gsGpuLoads.fetch_add(1u, std::memory_order_relaxed);
         GL &gl = m_context.gl;
         Program &program = target.depth ? m_loadDepth : m_loadColor;
         gl.glUseProgram(program.id);
@@ -1111,7 +1122,13 @@ void main()
             return;
         ++m_statResolves;
         ++m_statResolveReasons[m_syncReason];
+        g_gsGpuResolves.fetch_add(1u, std::memory_order_relaxed);
+        if (m_syncReason == "alias")
+            g_gsGpuSyncAlias.fetch_add(1u, std::memory_order_relaxed);
+        else if (m_syncReason == "texture")
+            g_gsGpuSyncTexture.fetch_add(1u, std::memory_order_relaxed);
         GL &gl = m_context.gl;
+        g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT); // VRAM readers and the target's draws
         const uint32_t y0 = target.dirtyY0;
         const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
@@ -1466,6 +1483,7 @@ void main()
         if (readsTarget)
         {
             gl.glBindTextureUnit(1, color.texture);
+            g_gsGpuBarriers.fetch_add(1u, std::memory_order_relaxed);
             gl.glTextureBarrier();
         }
 
@@ -1727,6 +1745,7 @@ void main()
         m_syncReason = "readback";
         resolveRange(0u, kLocalMemoryBytes);
         ++m_statReadbacks;
+        g_gsGpuReadbacks.fetch_add(1u, std::memory_order_relaxed);
         ScopeTimer timer{m_timeReadback};
         GL &gl = m_context.gl;
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
