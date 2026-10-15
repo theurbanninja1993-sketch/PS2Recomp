@@ -10,6 +10,7 @@
 #include <mutex>
 #include <thread>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -115,13 +116,50 @@ namespace gsgpu
             bool operator==(const DrawKey &other) const;
         };
 
+        // Uniform values, cached per program and indexed by location so the
+        // lookup is a vector index rather than a map probe on the hot path.
+        // Uniforms are per-program (glProgramUniform*), so a cached value is
+        // only invalidated by another glProgramUniform on the same program -
+        // nothing outside the renderer can touch these.
+        enum class UniformKind : uint8_t { Int, Uint, Float };
+        struct UniformSlot
+        {
+            uint8_t valid = 0;
+            uint8_t count = 0;
+            UniformKind kind = UniformKind::Int;
+            uint32_t bits[4] = {};
+        };
         struct Program
         {
             GLuint id = 0;
             std::unordered_map<const char *, GLint> locations;
+            std::vector<UniformSlot> uniforms;
         };
+        // Sets a uniform only if it differs. Bit comparison, so floats compare
+        // exactly (the same value is stored bit-identically).
+        void setUniformBits(Program &program, GLint location, UniformKind kind, uint32_t count, const uint32_t *bits);
+        void setUniform1i(Program &p, GLint l, int32_t v) { const uint32_t b[1] = {static_cast<uint32_t>(v)}; setUniformBits(p, l, UniformKind::Int, 1, b); }
+        void setUniform2i(Program &p, GLint l, int32_t a, int32_t c) { const uint32_t b[2] = {static_cast<uint32_t>(a), static_cast<uint32_t>(c)}; setUniformBits(p, l, UniformKind::Int, 2, b); }
+        void setUniform4i(Program &p, GLint l, int32_t a, int32_t c, int32_t d, int32_t e) { const uint32_t b[4] = {static_cast<uint32_t>(a), static_cast<uint32_t>(c), static_cast<uint32_t>(d), static_cast<uint32_t>(e)}; setUniformBits(p, l, UniformKind::Int, 4, b); }
+        void setUniform1ui(Program &p, GLint l, uint32_t a) { const uint32_t b[1] = {a}; setUniformBits(p, l, UniformKind::Uint, 1, b); }
+        void setUniform2ui(Program &p, GLint l, uint32_t a, uint32_t c) { const uint32_t b[2] = {a, c}; setUniformBits(p, l, UniformKind::Uint, 2, b); }
+        void setUniform3ui(Program &p, GLint l, uint32_t a, uint32_t c, uint32_t d) { const uint32_t b[3] = {a, c, d}; setUniformBits(p, l, UniformKind::Uint, 3, b); }
+        void setUniform4ui(Program &p, GLint l, uint32_t a, uint32_t c, uint32_t d, uint32_t e) { const uint32_t b[4] = {a, c, d, e}; setUniformBits(p, l, UniformKind::Uint, 4, b); }
+        void setUniform1f(Program &p, GLint l, float v) { uint32_t b[1]; std::memcpy(b, &v, 4); setUniformBits(p, l, UniformKind::Float, 1, b); }
+        void setUniform2f(Program &p, GLint l, float a, float c) { uint32_t b[2]; std::memcpy(b, &a, 4); std::memcpy(b + 1, &c, 4); setUniformBits(p, l, UniformKind::Float, 2, b); }
+        void setUniform3f(Program &p, GLint l, float a, float c, float d) { uint32_t b[3]; std::memcpy(b, &a, 4); std::memcpy(b + 1, &c, 4); std::memcpy(b + 2, &d, 4); setUniformBits(p, l, UniformKind::Float, 3, b); }
+        void setUniform4f(Program &p, GLint l, float a, float c, float d, float e) { uint32_t b[4]; std::memcpy(b, &a, 4); std::memcpy(b + 1, &c, 4); std::memcpy(b + 2, &d, 4); std::memcpy(b + 3, &e, 4); setUniformBits(p, l, UniformKind::Float, 4, b); }
 
         void initGpuObjects();
+        // Clears every program's cached uniform values. initGpuObjects() only
+        // reassigns .id, so a recreated context would otherwise keep values
+        // cached against the old program objects and skip setting them.
+        void clearUniformCaches()
+        {
+            for (Program *p : {&m_draw, &m_loadColor, &m_loadDepth, &m_resolve, &m_hostToLocal, &m_localToLocal,
+                               &m_clutLoad, &m_compose})
+                p->uniforms.clear();
+        }
         void flushBatch();
         void applyDrawState(const DrawKey &key, const GSDrawState &state);
         GLint uniform(Program &program, const char *name);

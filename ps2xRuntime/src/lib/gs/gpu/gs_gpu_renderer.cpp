@@ -34,6 +34,7 @@ std::atomic<uint64_t> g_gsGpuDraws{0};
 // calls, so this is the number to measure locally - the fps effect is only
 // visible on the owner's driver.
 std::atomic<uint64_t> g_gsGpuStateSkips{0};
+std::atomic<uint64_t> g_gsGpuUniformSkips{0};
 // Row volume of the two sync passes vs the real draws: says whether they are
 // pixel-heavy (narrow them) or call-heavy (batch them).
 std::atomic<uint64_t> g_gsGpuResolveRows{0};
@@ -952,6 +953,63 @@ void main()
         }
     }
 
+    void Renderer::setUniformBits(Program &program, GLint location, UniformKind kind, uint32_t count,
+                                  const uint32_t *bits)
+    {
+        if (location < 0)
+            return; // inactive uniform: nothing to set
+        if (static_cast<size_t>(location) >= program.uniforms.size())
+            program.uniforms.resize(static_cast<size_t>(location) + 1u);
+        UniformSlot &slot = program.uniforms[static_cast<size_t>(location)];
+        if (slot.valid != 0u && slot.count == count && slot.kind == kind &&
+            std::memcmp(slot.bits, bits, count * sizeof(uint32_t)) == 0)
+        {
+            ++g_gsGpuUniformSkips;
+            return;
+        }
+        slot.valid = 1u;
+        slot.count = static_cast<uint8_t>(count);
+        slot.kind = kind;
+        std::memcpy(slot.bits, bits, count * sizeof(uint32_t));
+        GL &gl = m_context.gl;
+        switch (kind)
+        {
+        case UniformKind::Int:
+            switch (count)
+            {
+            case 1u: gl.glProgramUniform1i(program.id, location, static_cast<GLint>(bits[0])); break;
+            case 2u: gl.glProgramUniform2i(program.id, location, static_cast<GLint>(bits[0]), static_cast<GLint>(bits[1])); break;
+            case 4u: gl.glProgramUniform4i(program.id, location, static_cast<GLint>(bits[0]), static_cast<GLint>(bits[1]), static_cast<GLint>(bits[2]), static_cast<GLint>(bits[3])); break;
+            default: break;
+            }
+            break;
+        case UniformKind::Uint:
+            switch (count)
+            {
+            case 1u: gl.glProgramUniform1ui(program.id, location, bits[0]); break;
+            case 2u: gl.glProgramUniform2ui(program.id, location, bits[0], bits[1]); break;
+            case 3u: gl.glProgramUniform3ui(program.id, location, bits[0], bits[1], bits[2]); break;
+            case 4u: gl.glProgramUniform4ui(program.id, location, bits[0], bits[1], bits[2], bits[3]); break;
+            default: break;
+            }
+            break;
+        case UniformKind::Float:
+        {
+            float f[4] = {};
+            std::memcpy(f, bits, count * sizeof(uint32_t));
+            switch (count)
+            {
+            case 1u: gl.glProgramUniform1f(program.id, location, f[0]); break;
+            case 2u: gl.glProgramUniform2f(program.id, location, f[0], f[1]); break;
+            case 3u: gl.glProgramUniform3f(program.id, location, f[0], f[1], f[2]); break;
+            case 4u: gl.glProgramUniform4f(program.id, location, f[0], f[1], f[2], f[3]); break;
+            default: break;
+            }
+            break;
+        }
+        }
+    }
+
     GLint Renderer::uniform(Program &program, const char *name)
     {
         auto it = program.locations.find(name);
@@ -964,6 +1022,7 @@ void main()
 
     void Renderer::initGpuObjects()
     {
+        clearUniformCaches(); // program objects may be new
         GL &gl = m_context.gl;
         gl.glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
@@ -1107,8 +1166,8 @@ void main()
         GL &gl = m_context.gl;
         Program &program = target.depth ? m_loadDepth : m_loadColor;
         useProgram(program.id);
-        gl.glProgramUniform3ui(program.id, uniform(program, "u_buffer"), target.block, target.bw, target.psm);
-        gl.glProgramUniform1ui(program.id, uniform(program, "u_scale"), m_scale);
+        setUniform3ui(program, uniform(program, "u_buffer"), target.block, target.bw, target.psm);
+        setUniform1ui(program, uniform(program, "u_scale"), m_scale);
         bindFramebuffer(target.loadFramebuffer);
         setViewport(0, 0, static_cast<GLsizei>(target.width * m_scale), static_cast<GLsizei>(target.height * m_scale));
         setScissorTest(true);
@@ -1223,10 +1282,10 @@ void main()
         const uint32_t y0 = target.dirtyY0;
         const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
         useProgram(m_resolve.id);
-        gl.glProgramUniform4ui(m_resolve.id, uniform(m_resolve, "u_buffer"), target.block, target.bw, target.psm,
+        setUniform4ui(m_resolve, uniform(m_resolve, "u_buffer"), target.block, target.bw, target.psm,
                                target.depth ? 1u : 0u);
-        gl.glProgramUniform3ui(m_resolve.id, uniform(m_resolve, "u_rows"), y0, rows, target.width);
-        gl.glProgramUniform1ui(m_resolve.id, uniform(m_resolve, "u_scale"), m_scale);
+        setUniform3ui(m_resolve, uniform(m_resolve, "u_rows"), y0, rows, target.width);
+        setUniform1ui(m_resolve, uniform(m_resolve, "u_scale"), m_scale);
         gl.glBindTextureUnit(0, target.texture);
         gl.glDispatchCompute((target.width + 63u) / 64u, (rows + 3u) / 4u, 1u);
         // The matching barrier is issued by resolveGroupEnd() at the end of the
@@ -1539,7 +1598,7 @@ void main()
 
         // Blend: Cv = (A - B) * C / 128 + D, A/B/D in {Cs, Cd, 0}, C in {As, Ad, FIX}.
         auto set1 = [&](const char *name, int value)
-        { gl.glProgramUniform1i(p.id, uniform(p, name), value); };
+        { setUniform1i(p, uniform(p, name), value); };
         const uint64_t alpha = ctx.alpha;
         const uint32_t a = alpha & 3u, b = (alpha >> 2) & 3u, c = (alpha >> 4) & 3u, d = (alpha >> 6) & 3u;
         const float sk = float(a == 0u) - float(b == 0u), sc = float(d == 0u);
@@ -1559,13 +1618,13 @@ void main()
         {
             setBlend(false);
         }
-        gl.glProgramUniform4f(p.id, uniform(p, "u_blend"), sk, sc, dk, dc);
+        setUniform4f(p, uniform(p, "u_blend"), sk, sc, dk, dc);
         set1("u_abe", state.prim.abe ? 1 : 0);
         set1("u_csel", static_cast<int>(c));
         set1("u_pabe", state.pabe ? 1 : 0);
-        gl.glProgramUniform2f(p.id, uniform(p, "u_targetSize"), static_cast<float>(color.width),
+        setUniform2f(p, uniform(p, "u_targetSize"), static_cast<float>(color.width),
                               static_cast<float>(color.height));
-        gl.glProgramUniform1f(p.id, uniform(p, "u_fix"), static_cast<float>((alpha >> 32) & 0xFFu));
+        setUniform1f(p, uniform(p, "u_fix"), static_cast<float>((alpha >> 32) & 0xFFu));
 
         // Tests.
         const uint64_t test = ctx.test;
@@ -1592,19 +1651,19 @@ void main()
         set1("u_fge", state.prim.fge ? 1 : 0);
         set1("u_tfx", static_cast<int>(ctx.tex0.tfx));
         set1("u_tcc", static_cast<int>(ctx.tex0.tcc));
-        gl.glProgramUniform3f(p.id, uniform(p, "u_fogColor"), float(state.fogR), float(state.fogG), float(state.fogB));
+        setUniform3f(p, uniform(p, "u_fogColor"), float(state.fogR), float(state.fogG), float(state.fogB));
         if (state.prim.tme)
         {
             const uint64_t clamp = ctx.clamp;
-            gl.glProgramUniform4ui(p.id, uniform(p, "u_tex"), ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, ctx.tex0.cpsm);
-            gl.glProgramUniform4ui(p.id, uniform(p, "u_tex2"), ctx.tex0.csm, ctx.tex0.csa,
+            setUniform4ui(p, uniform(p, "u_tex"), ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, ctx.tex0.cpsm);
+            setUniform4ui(p, uniform(p, "u_tex2"), ctx.tex0.csm, ctx.tex0.csa,
                                    static_cast<uint32_t>(clamp & 0xFu), state.linearFilter ? 1u : 0u);
-            gl.glProgramUniform4i(p.id, uniform(p, "u_region"), static_cast<int>((clamp >> 4) & 0x3FFu),
+            setUniform4i(p, uniform(p, "u_region"), static_cast<int>((clamp >> 4) & 0x3FFu),
                                   static_cast<int>((clamp >> 14) & 0x3FFu), static_cast<int>((clamp >> 24) & 0x3FFu),
                                   static_cast<int>((clamp >> 34) & 0x3FFu));
-            gl.glProgramUniform2i(p.id, uniform(p, "u_texSize"), static_cast<int>(state.textureWidth),
+            setUniform2i(p, uniform(p, "u_texSize"), static_cast<int>(state.textureWidth),
                                   static_cast<int>(state.textureHeight));
-            gl.glProgramUniform3ui(p.id, uniform(p, "u_texa"), state.texa.ta0, state.texa.ta1, state.texa.aem ? 1u : 0u);
+            setUniform3ui(p, uniform(p, "u_texa"), state.texa.ta0, state.texa.ta1, state.texa.aem ? 1u : 0u);
         }
         set1("u_rtScale", textureSource != 0 ? scale : 0);
         if (textureSource != 0)
@@ -1954,8 +2013,8 @@ void main()
         // the compute write can overtake their fragment shaders (write after read).
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         useProgram(m_clutLoad.id);
-        gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut"), tex0.cpsm, tex0.cbp, tex0.csm, tex0.csa);
-        gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut2"), texclut.cbw, texclut.cou, texclut.cov,
+        setUniform4ui(m_clutLoad, uniform(m_clutLoad, "u_clut"), tex0.cpsm, tex0.cbp, tex0.csm, tex0.csa);
+        setUniform4ui(m_clutLoad, uniform(m_clutLoad, "u_clut2"), texclut.cbw, texclut.cou, texclut.cov,
                                fourBit ? 1u : 0u);
         gl.glDispatchCompute(1u, 1u, 1u);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -1988,11 +2047,11 @@ void main()
         const auto &buf = m_transfer.bitbltbuf;
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); // earlier draws finish reading VRAM first
         useProgram(m_hostToLocal.id);
-        gl.glProgramUniform4ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_dest"), buf.dbp,
+        setUniform4ui(m_hostToLocal, uniform(m_hostToLocal, "u_dest"), buf.dbp,
                                std::max<uint32_t>(buf.dbw, 1u), buf.dpsm, m_transfer.trxreg.rrw);
-        gl.glProgramUniform4ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_pos"), m_transfer.trxpos.dsax,
+        setUniform4ui(m_hostToLocal, uniform(m_hostToLocal, "u_pos"), m_transfer.trxpos.dsax,
                                m_transfer.trxpos.dsay, m_transferState.copiedPixels, pixels);
-        gl.glProgramUniform1ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_bits"), bitsPerPixel(buf.dpsm));
+        setUniform1ui(m_hostToLocal, uniform(m_hostToLocal, "u_bits"), bitsPerPixel(buf.dpsm));
         gl.glDispatchCompute((pixels + 63u) / 64u, 1u, 1u);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
     }
@@ -2010,13 +2069,13 @@ void main()
         GL &gl = m_context.gl;
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); // earlier draws finish reading VRAM first
         useProgram(m_localToLocal.id);
-        gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_source"), buf.sbp,
+        setUniform4ui(m_localToLocal, uniform(m_localToLocal, "u_source"), buf.sbp,
                                std::max<uint32_t>(buf.sbw, 1u), buf.spsm, command.trxpos.ssax);
-        gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_dest"), buf.dbp,
+        setUniform4ui(m_localToLocal, uniform(m_localToLocal, "u_dest"), buf.dbp,
                                std::max<uint32_t>(buf.dbw, 1u), buf.dpsm, command.trxpos.dsax);
-        gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_rect"), rrw, rrh, command.trxpos.ssay,
+        setUniform4ui(m_localToLocal, uniform(m_localToLocal, "u_rect"), rrw, rrh, command.trxpos.ssay,
                                command.trxpos.dsay);
-        gl.glProgramUniform2ui(m_localToLocal.id, uniform(m_localToLocal, "u_mode"), command.trxpos.dir,
+        setUniform2ui(m_localToLocal, uniform(m_localToLocal, "u_mode"), command.trxpos.dir,
                                overlap ? 1u : 0u);
         gl.glDispatchCompute(overlap ? 1u : (rrw * rrh + 63u) / 64u, 1u, 1u);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
@@ -2906,18 +2965,18 @@ void main()
         const Circuit &top = crt1 ? c1 : c2; // a lone circuit is drawn as "circuit 1" at full weight
         Program &p = m_compose;
         useProgram(p.id);
-        gl.glProgramUniform4i(p.id, uniform(p, "u_rect1"), static_cast<GLint>(top.x * s), static_cast<GLint>(top.y * s),
+        setUniform4i(p, uniform(p, "u_rect1"), static_cast<GLint>(top.x * s), static_cast<GLint>(top.y * s),
                               static_cast<GLint>(top.width * s), static_cast<GLint>(top.height * s));
         if (both)
-            gl.glProgramUniform4i(p.id, uniform(p, "u_rect2"), static_cast<GLint>(c2.x * s), static_cast<GLint>(c2.y * s),
+            setUniform4i(p, uniform(p, "u_rect2"), static_cast<GLint>(c2.x * s), static_cast<GLint>(c2.y * s),
                                   static_cast<GLint>(c2.width * s), static_cast<GLint>(c2.height * s));
         else
-            gl.glProgramUniform4i(p.id, uniform(p, "u_rect2"), 0, 0, 0, 0);
-        gl.glProgramUniform3f(p.id, uniform(p, "u_bg"), float(request.bgcolor & 0xFFu) / 255.0f,
+            setUniform4i(p, uniform(p, "u_rect2"), 0, 0, 0, 0);
+        setUniform3f(p, uniform(p, "u_bg"), float(request.bgcolor & 0xFFu) / 255.0f,
                               float((request.bgcolor >> 8) & 0xFFu) / 255.0f, float((request.bgcolor >> 16) & 0xFFu) / 255.0f);
         const bool mmod = ((request.pmode >> 5) & 1u) != 0u, slbg = ((request.pmode >> 7) & 1u) != 0u;
         const float alp = static_cast<float>((request.pmode >> 8) & 0xFFu) / 255.0f;
-        gl.glProgramUniform2f(p.id, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
+        setUniform2f(p, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, top.target->texture);
         gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
         bindFramebuffer(
