@@ -656,10 +656,14 @@ void main()
         const char *kComposeShader = R"(#version 450 core
 layout(binding = 0) uniform sampler2D u_circuit1;
 layout(binding = 1) uniform sampler2D u_circuit2;
+layout(binding = 2) uniform sampler2D u_overlay1; // screen-space overlay mask for circuit 1
 uniform ivec4 u_rect1; // read origin and size in target pixels; size 0 = circuit off
 uniform ivec4 u_rect2;
 uniform vec3 u_bg;
 uniform vec2 u_mode;   // MMOD ALP factor (or < 0: circuit 1's alpha), SLBG
+uniform float u_overlayValid; // 0 = no mask (nothing to exclude)
+uniform float u_overlayToAlpha; // 1 = put the mask in alpha for the blur pass
+uniform float u_overlayDebug; // 1 = show the mask itself (PS2X_OVERLAY_MASK_DEBUG)
 out vec4 o_color;
 void main()
 {
@@ -673,7 +677,30 @@ void main()
         float factor = u_mode.x >= 0.0 ? u_mode.x : min(1.0, src.a * 2.0);
         dst = mix(dst, src.rgb, factor);
     }
-    o_color = vec4(dst, 1.0);
+    // The overlay mask: 1 where a screen-space primitive was drawn (the HUD, the
+    // minimap). Those do not move with the camera, so the motion blur and frame
+    // interpolation must leave them alone. It rides in alpha for the blur pass
+    // (0 = leave alone, 1 = warp), and only when something will consume it - the
+    // display texture itself must stay opaque.
+    float overlay = 0.0;
+    if (u_overlayValid > 0.5 && u_rect1.z > 0 && p.x < u_rect1.z && p.y < u_rect1.w)
+        overlay = texelFetch(u_overlay1, u_rect1.xy + p, 0).r;
+    if (u_overlayDebug > 0.5)
+    {
+        o_color = vec4(overlay, 0.0, 0.0, 1.0); // red = left alone by the blur
+        return;
+    }
+    o_color = vec4(dst, u_overlayToAlpha > 0.5 ? 1.0 - overlay : 1.0);
+}
+)";
+
+        // Screen-space overlay mask: 1 wherever an overlay primitive lands. The
+        // vertex shader is the draw one, so the geometry lands in the same place.
+        const char *kMaskFragmentShader = R"(#version 450 core
+out float o_mask;
+void main()
+{
+    o_mask = 1.0;
 }
 )";
 
@@ -1041,6 +1068,12 @@ void main()
         m_clutLoad.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kClutLoadShader)});
         m_compose.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
                                         compileShader(gl, GL_FRAGMENT_SHADER, kComposeShader)});
+        m_mask.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kVertexShader),
+                                     compileShader(gl, GL_FRAGMENT_SHADER, kMaskFragmentShader)});
+        // PS2X_OVERLAY_MASK=1: build the screen-space overlay mask. It is what
+        // the motion blur and frame interpolation need to leave the HUD alone;
+        // opt-in until one of them owns it.
+        m_maskEnabled = std::getenv("PS2X_OVERLAY_MASK") != nullptr;
 
         gl.glCreateBuffers(1, &m_vramBuffer);
         gl.glNamedBufferStorage(m_vramBuffer, kLocalMemoryBytes, nullptr, GL_DYNAMIC_STORAGE_BIT);
@@ -1665,6 +1698,48 @@ void main()
         bindVao(m_vao);
     }
 
+    // Marks the pending batch in the target's overlay mask. Only called for
+    // primitives with no perspective (see the note in flushBatch): the HUD and
+    // the minimap are drawn in screen space, so they do not move with the camera
+    // and the blur/interpolation passes must leave them alone. The mask is
+    // cleared once per frame, on first use.
+    void Renderer::drawOverlayMask(GL &gl, Target &target)
+    {
+        if (target.depth || target.texture == 0)
+            return;
+        const uint32_t w = target.width * m_scale, h = target.height * m_scale;
+        if (target.maskTexture == 0)
+        {
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &target.maskTexture);
+            gl.glTextureStorage2D(target.maskTexture, 1, GL_R8, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+            gl.glTextureParameteri(target.maskTexture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.glTextureParameteri(target.maskTexture, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.glTextureParameteri(target.maskTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.glTextureParameteri(target.maskTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            gl.glCreateFramebuffers(1, &target.maskFramebuffer);
+            gl.glNamedFramebufferTexture(target.maskFramebuffer, GL_COLOR_ATTACHMENT0, target.maskTexture, 0);
+            gl.glNamedFramebufferDrawBuffer(target.maskFramebuffer, GL_COLOR_ATTACHMENT0);
+            target.maskFrame = ~0ull;
+        }
+        if (target.maskFrame != m_presentIndex)
+        {
+            target.maskFrame = m_presentIndex;
+            const GLfloat zero = 0.0f;
+            gl.glClearNamedFramebufferfv(target.maskFramebuffer, GL_COLOR, 0, &zero);
+        }
+        Program &p = m_mask;
+        useProgram(p.id);
+        setUniform2f(p, uniform(p, "u_targetSize"), static_cast<float>(target.width), static_cast<float>(target.height));
+        bindFramebuffer(target.maskFramebuffer);
+        setBlend(false);
+        setDepthTest(false);
+        setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        // Viewport, scissor and VAO are the ones applyDrawState just set for this
+        // same target, and the next draw re-applies all of it.
+        gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
+        gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
+    }
+
     void Renderer::flushBatch()
     {
         if (!m_gpu || m_vertices.empty())
@@ -1717,13 +1792,24 @@ void main()
         }
         float minY = m_vertices[0].y, maxY = m_vertices[0].y;
         float minX = m_vertices[0].x, maxX = m_vertices[0].x;
+        // A screen-space overlay has no perspective, so its STQ q stays exactly 1:
+        // measured on a gameplay capture, every HUD draw is q == 1.0 and every
+        // world draw is 0.006..0.11. But a full-frame pass - the game's own blur
+        // display blend, a display copy - is also q == 1, and those are the frame
+        // itself, not an overlay. Width tells them apart: the frame is full width
+        // and an overlay never is (the widest HUD draw measured is 557 of 640).
+        bool overlay = true;
         for (const Vertex &v : m_vertices)
         {
             minY = std::min(minY, v.y);
             maxY = std::max(maxY, v.y);
             minX = std::min(minX, v.x);
             maxX = std::max(maxX, v.x);
+            overlay = overlay && std::fabs(v.q - 1.0f) < 1e-4f;
         }
+        if (m_drawColor != nullptr && m_drawColor->width != 0 &&
+            maxX - minX >= static_cast<float>(m_drawColor->width) * 0.95f)
+            overlay = false;
         m_batchX0 = static_cast<int32_t>(std::floor(minX));
         m_batchX1 = static_cast<int32_t>(std::ceil(maxX)) - 1;
         // PS2X_GS_TRACE_FULLSCREEN: log every draw covering most of its target.
@@ -1750,9 +1836,10 @@ void main()
             }
         }
         // PS2X_GS_TRACE_DRAWS=<presentIndex>: log every draw of one presented
-        // frame in order - index, target, texture, depth state, geometry bounds.
-        // Written to find where the 3D scene ends and the screen-space HUD begins
-        // (the motion blur needed that split, and so does interpolation).
+        // frame in order - index, target, texture, depth state, geometry bounds,
+        // and the per-primitive perspective divisor and Z range. The last two are
+        // the candidates for telling screen-space overlays (q == 1, constant Z)
+        // from world geometry, which the blur and interpolation both need.
         {
             static const char *s_traceDraws = std::getenv("PS2X_GS_TRACE_DRAWS");
             if (s_traceDraws != nullptr &&
@@ -1760,14 +1847,24 @@ void main()
             {
                 const Target *col = m_drawColor;
                 const GSContext &c = m_keyState.context;
+                float qmin = m_vertices[0].q, qmax = m_vertices[0].q;
+                uint32_t zmin = m_vertices[0].z, zmax = m_vertices[0].z;
+                for (const Vertex &v : m_vertices)
+                {
+                    qmin = std::min(qmin, v.q);
+                    qmax = std::max(qmax, v.q);
+                    zmin = std::min(zmin, v.z);
+                    zmax = std::max(zmax, v.z);
+                }
                 std::fprintf(stderr,
                              "[gs:draw] n=%llu target=%dx%d %dx%d at (%d,%d) ztst=%u zw=%u tme=%d abe=%d tbp=%u tw=%u "
-                             "th=%u psm=%u fbp=%u\n",
+                             "th=%u psm=%u fbp=%u q=%.4f..%.4f z=%u..%u v=%zu\n",
                              (unsigned long long)++m_frameDrawIndex, col ? static_cast<int>(col->width) : 0,
                              col ? static_cast<int>(col->height) : 0, m_batchX1 - m_batchX0 + 1,
                              m_batchY1 - m_batchY0 + 1, m_batchX0, m_batchY0, (c.test >> 17) & 3u, c.zbuf.zmask,
                              m_keyState.prim.tme ? 1 : 0, m_keyState.prim.abe ? 1 : 0, c.tex0.tbp0, c.tex0.tw, c.tex0.th,
-                             c.tex0.psm, c.frame.fbp);
+                             c.tex0.psm, c.frame.fbp, static_cast<double>(qmin), static_cast<double>(qmax),
+                             static_cast<unsigned>(zmin), static_cast<unsigned>(zmax), m_vertices.size());
             }
         }
         m_batchY0 = static_cast<int32_t>(std::floor(minY));
@@ -1790,6 +1887,8 @@ void main()
         gl.glNamedBufferSubData(m_vbo, 0, static_cast<GLsizeiptr>(bytes), m_vertices.data());
         gl.glVertexArrayVertexBuffer(m_vao, 0, m_vbo, 0, sizeof(Vertex));
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
+        if (m_maskEnabled && overlay && m_drawColor != nullptr)
+            drawOverlayMask(gl, *m_drawColor);
         m_framebufferWriteSinceBarrier = true;
         ++m_statDraws;
         g_gsGpuDraws.fetch_add(1u, std::memory_order_relaxed);
@@ -2801,6 +2900,48 @@ void main()
     {
         ++m_presentIndex;
         m_frameDrawIndex = 0;
+        // PS2X_OVERLAY_MASK_DUMP=<path>: once, write the frame's overlay mask out
+        // as a PGM so the 3D/overlay split can be checked by eye. Dumped here, at
+        // the end of a frame, so it holds every overlay draw.
+        if (m_maskEnabled)
+        {
+            static const char *s_dump = std::getenv("PS2X_OVERLAY_MASK_DUMP");
+            static bool s_dumped = false;
+            if (s_dump != nullptr && !s_dumped)
+            {
+                for (auto &target : m_targets)
+                {
+                    // The draws set maskFrame to the present index as it was
+                    // during the frame; present() has just incremented it.
+                    if (target->maskTexture == 0 || target->maskFrame + 1u != m_presentIndex)
+                        continue;
+                    const uint32_t w = target->width * m_scale, h = target->height * m_scale;
+                    std::vector<uint8_t> px(static_cast<size_t>(w) * h, 0u);
+                    GL &gl = m_context.gl;
+                    gl.glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+                    gl.glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    gl.glGetTextureSubImage(target->maskTexture, 0, 0, 0, 0, static_cast<GLsizei>(w),
+                                            static_cast<GLsizei>(h), 1, GL_RED, GL_UNSIGNED_BYTE,
+                                            static_cast<GLsizei>(px.size()), px.data());
+                    if (FILE *f = std::fopen(s_dump, "wb"))
+                    {
+                        std::fprintf(f, "P5\n%u %u\n255\n", w, h);
+                        std::fwrite(px.data(), 1, px.size(), f);
+                        std::fclose(f);
+                    }
+                    std::cerr << "[gs] overlay mask: dumped " << w << "x" << h << " (block " << target->block << ") to "
+                              << s_dump << std::endl;
+                    s_dumped = true;
+                    break;
+                }
+            }
+        }
+        {
+            static const char *s_traceDraws = std::getenv("PS2X_GS_TRACE_DRAWS");
+            if (s_traceDraws != nullptr &&
+                static_cast<uint64_t>(std::strtoull(s_traceDraws, nullptr, 10)) + 1u == m_presentIndex)
+                std::fprintf(stderr, "[gs:present] --- start of frame %llu ---\n", (unsigned long long)m_presentIndex);
+        }
         // Presentation reads local memory (both circuits, preferred source).
         m_syncReason = "present";
         m_replUploadedThisFrame = 0;
@@ -3049,6 +3190,21 @@ void main()
         setUniform2f(p, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, top.target->texture);
         gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
+        // The overlay mask, for the passes that must leave the HUD alone. The mask
+        // is per target, and with two display circuits the compose blends them, so
+        // it is only usable when both name the same target - which is what field
+        // mode does (the two circuits are the two fields of one buffer).
+        {
+            static const bool s_overlayDebug = std::getenv("PS2X_OVERLAY_MASK_DEBUG") != nullptr;
+            const bool sameTarget = !both || c2.target == top.target;
+            const bool overlayValid = m_maskEnabled && sameTarget && top.target->maskTexture != 0;
+            gl.glBindTextureUnit(2, overlayValid ? top.target->maskTexture : top.target->texture);
+            setUniform1f(p, uniform(p, "u_overlayValid"), overlayValid ? 1.0f : 0.0f);
+            // Nothing consumes the mask yet, and the display texture has to stay
+            // opaque, so the alpha channel is left alone until one does.
+            setUniform1f(p, uniform(p, "u_overlayToAlpha"), 0.0f);
+            setUniform1f(p, uniform(p, "u_overlayDebug"), s_overlayDebug ? 1.0f : 0.0f);
+        }
         bindFramebuffer(
                              sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer);
         setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
@@ -3176,6 +3332,11 @@ void main()
         {
             gl.glDeleteFramebuffers(1, &target->loadFramebuffer);
             gl.glDeleteTextures(1, &target->texture);
+            if (target->maskTexture != 0)
+            {
+                gl.glDeleteFramebuffers(1, &target->maskFramebuffer);
+                gl.glDeleteTextures(1, &target->maskTexture);
+            }
         }
         m_targets.clear();
         if (m_feedbackTexture != 0)

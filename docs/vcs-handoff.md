@@ -1002,6 +1002,48 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     Next: the same motion vectors are what item 14 needs, so the overlay split
     has to be solved once, properly, before either is worth shipping.
 
+    **Progress (2026-10-15): the overlay split is solved and verified.** A
+    gameplay capture (F9, `gs_capture_<frame>.bin` in the working directory)
+    replayed through `tools/gs_replay` gave the answer, which is *measured* now
+    rather than guessed:
+
+    - **The signal is the perspective divisor.** Every world draw has STQ
+      `q` between 0.006 and 0.11; every screen-space overlay draw has `q`
+      **exactly 1.0**. That is what a 2D sprite is - no perspective - and it
+      separates the two sets cleanly across a whole frame.
+    - **A full-frame pass is also `q == 1`** (the game's own blur display blend,
+      the display copies), and those are the frame itself, not an overlay. Width
+      tells them apart: the frame is full width, and the widest overlay draw
+      measured is 557 of 640.
+    - `PS2X_GS_TRACE_DRAWS=<presentIndex>` prints one frame's draws in order with
+      the texture, depth state, bounds, `q` range and Z range - that is how the
+      above was measured.
+
+    The renderer now builds the mask: `flushBatch` marks every primitive that is
+    `q == 1` and not full width into a per-target R8 texture (one extra draw per
+    overlay batch, created lazily, cleared once per frame). The compose can show
+    it with `PS2X_OVERLAY_MASK_DEBUG=1`, and `PS2X_OVERLAY_MASK_DUMP=<path>`
+    writes it out as a PGM. **Verified against the capture**: the mask is exactly
+    the HUD - clock, weapon icon, health and armour bars, minimap, subtitle - with
+    the world untouched, 2.1% of the frame. Default vs mask-on is byte-identical
+    over 31 frames, so it costs nothing until something reads it.
+
+    **The catch, and it is why the blur smeared the HUD.** The mask lands on the
+    *scene* target (`fbp 140`), but by compose time the frame has been **copied
+    through other buffers to the display target** - and those copies are
+    full-screen `q == 1` quads themselves, so the display's own mask is useless.
+    The compose reads the display, so it cannot see the mask yet. Two ways
+    forward, both now grounded: propagate the mask along with the pixels through
+    the copies, or apply the blur on the scene target at the display copy. This
+    is also the answer to "why did the HUD smear" - it is baked into the pixels
+    before the port ever composes.
+
+    **A second correction, from the same reading.** `key.zte` is `(test >> 16) &
+    1`, the ZTE *enable*, while `(test >> 17) & 3` is the ZTST *mode* (0=NEVER,
+    1=ALWAYS, 2=GEQUAL, 3=GREATER). The HUD draws with ZTE=1 and ZTST=ALWAYS, so
+    a ZTE-based test counts them as depth-tested and never fires - which is
+    exactly what the withdrawn exclusion did. `q` is the reliable signal.
+
 14. **Frame rates above 60 (owner ask).** The emulation is locked to 60
     VBlanks/s - the game's logic runs per VBlank - so anything above 60 must be
     *interpolated*, not emulated. Three shapes, cheapest first:

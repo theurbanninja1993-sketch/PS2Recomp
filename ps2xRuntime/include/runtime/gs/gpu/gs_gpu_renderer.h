@@ -81,6 +81,13 @@ namespace gsgpu
             uint32_t beginByte = 0, endByte = 0;
             GLuint texture = 0;
             GLuint loadFramebuffer = 0; // the texture alone, for load passes
+            // Screen-space overlay mask (the HUD, the minimap): 1 where a
+            // primitive with no perspective (q == 1) was drawn. The compose reads
+            // it so the motion blur and interpolation can leave those pixels
+            // alone - they do not move with the camera. Lazily created.
+            GLuint maskTexture = 0;
+            GLuint maskFramebuffer = 0;
+            uint64_t maskFrame = ~0ull; // frame the mask was last cleared for
             // Rows the GPU drew that VRAM lacks, and rows whose texture
             // contents are stale (VRAM changed). A target never has both.
             uint32_t dirtyY0 = ~0u, dirtyY1 = 0;
@@ -157,10 +164,13 @@ namespace gsgpu
         void clearUniformCaches()
         {
             for (Program *p : {&m_draw, &m_loadColor, &m_loadDepth, &m_resolve, &m_hostToLocal, &m_localToLocal,
-                               &m_clutLoad, &m_compose})
+                               &m_clutLoad, &m_compose, &m_mask})
                 p->uniforms.clear();
         }
         void flushBatch();
+        // Draws the pending batch into the target's overlay mask, creating it on
+        // first use. Called from flushBatch for primitives with no perspective.
+        void drawOverlayMask(GL &gl, Target &target);
         void applyDrawState(const DrawKey &key, const GSDrawState &state);
         GLint uniform(Program &program, const char *name);
 
@@ -272,6 +282,11 @@ namespace gsgpu
         GLuint m_vramBuffer = 0, m_swizzleBuffer = 0, m_clutBuffer = 0, m_stagingBuffer = 0;
         size_t m_stagingCapacity = 0;
         Program m_draw, m_loadColor, m_loadDepth, m_resolve, m_hostToLocal, m_localToLocal, m_clutLoad, m_compose;
+        // Writes 1 wherever a screen-space overlay primitive lands (see
+        // drawOverlayMask); reuses the draw vertex shader so the geometry lands
+        // in the same place.
+        Program m_mask;
+        bool m_maskEnabled = false;
         GLuint m_presentTexture = 0, m_presentFramebuffer = 0; // upscaled display output
         uint32_t m_presentWidth = 0, m_presentHeight = 0;
         // PS2X_GS_TRACE_DRAWS=<presentIndex>: the presented-frame counter and a
