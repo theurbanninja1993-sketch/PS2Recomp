@@ -2281,10 +2281,53 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
     m_vu0.reset(); // zeroes the cycle counter, so measure from here
     VuStatsScope statsScope(0, m_vu0.state().cycles);
     copyVu0ContextToState(ctx, m_vu0.state());
+    // PS2X_VU0_CAPTURE=<file>: record VU0 microprogram runs (up to 4 per program
+    // that has no compiled version, enough for vu1_recomp to trace its jump
+    // targets) in the VU1 capture format, tagged 'CVU0' so the tooling can tell
+    // VU0's 4 KB code/data from VU1's 16 KB. This is how the VU0 programs get
+    // generated: VU0 microcode is loaded by the game in gameplay, not at boot.
+    static FILE *s_vu0Capture = nullptr;
+    static std::unordered_map<uint64_t, uint32_t> s_vu0Captured;
+    static const bool s_vu0CaptureInit = [&]()
+    {
+        if (const char *env = std::getenv("PS2X_VU0_CAPTURE"); env && *env)
+        {
+            s_vu0Capture = std::fopen(env, "wb");
+            if (s_vu0Capture)
+                std::cerr << "[vu0:capture] recording uncompiled programs to " << env << std::endl;
+        }
+        return true;
+    }();
+    (void)s_vu0CaptureInit;
+    FILE *recordTo = nullptr;
+    if (s_vu0Capture != nullptr &&
+        m_vu0.lookupCompiled(vu0Code, PS2_VU0_CODE_SIZE, &m_memory, startPC) == nullptr)
+    {
+        uint32_t &runs = s_vu0Captured[ps2Vu1ProgramKey(vu0Code, PS2_VU0_CODE_SIZE, startPC & 0xFF8u)];
+        if (runs < 4u)
+        {
+            ++runs;
+            recordTo = s_vu0Capture;
+        }
+    }
+    if (recordTo)
+    {
+        const uint32_t header[4] = {0x30555643u /* 'CVU0' */, startPC, 0u, ctx->vu0_itop};
+        std::fwrite(header, sizeof(header), 1, recordTo);
+        std::fwrite(&m_vu0.state(), sizeof(VU1State), 1, recordTo);
+        std::fwrite(vu0Code, 1, PS2_VU0_CODE_SIZE, recordTo);
+        std::fwrite(vu0Data, 1, PS2_VU0_DATA_SIZE, recordTo);
+    }
     m_vu0.execute(vu0Code, PS2_VU0_CODE_SIZE,
                   vu0Data, PS2_VU0_DATA_SIZE,
                   m_gs, &m_memory,
                   startPC, 0u, ctx->vu0_itop, 4096);
+    if (recordTo)
+    {
+        std::fwrite(&m_vu0.state(), sizeof(VU1State), 1, recordTo);
+        std::fwrite(vu0Data, 1, PS2_VU0_DATA_SIZE, recordTo);
+        std::fflush(recordTo);
+    }
     copyVu0StateToContext(m_vu0.state(), ctx);
 }
 
@@ -3445,6 +3488,28 @@ void PS2Runtime::run()
             });
             if ((s_presentedFrames % 1200u) == 0u)
                 writePcSamples();
+            // PS2X_VU0_DUMP=<prefix>: one-shot dump of VU0 code+data memory at
+            // frame 300. Temporary probe: is the game's VU0 microcode resident
+            // even when nothing calls it (the intro)?
+            {
+                static const char *s_vu0Dump = std::getenv("PS2X_VU0_DUMP");
+                static bool s_vu0Dumped = false;
+                if (s_vu0Dump != nullptr && !s_vu0Dumped && s_presentedFrames >= 300u)
+                {
+                    s_vu0Dumped = true;
+                    if (FILE *f = std::fopen((std::string(s_vu0Dump) + "_code.bin").c_str(), "wb"))
+                    {
+                        std::fwrite(m_memory.getVU0Code(), 1, PS2_VU0_CODE_SIZE, f);
+                        std::fclose(f);
+                    }
+                    if (FILE *f = std::fopen((std::string(s_vu0Dump) + "_data.bin").c_str(), "wb"))
+                    {
+                        std::fwrite(m_memory.getVU0Data(), 1, PS2_VU0_DATA_SIZE, f);
+                        std::fclose(f);
+                    }
+                    std::cerr << "[vu0] dumped code+data to " << s_vu0Dump << "_*.bin" << std::endl;
+                }
+            }
             // PS2X_EXIT_AFTER_FRAME=<n>: exit cleanly at frame n (PGO training
             // runs need the profile written, which a signal would skip).
             {

@@ -209,9 +209,17 @@ uint64_t ps2Vu1ProgramKey(const uint8_t *code, uint32_t codeSize, uint32_t start
 VU1CompiledFn VU1Interpreter::lookupCompiled(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t startPC)
 {
     const auto &programs = compiledPrograms();
-    if (programs.empty() || m_unit != Unit::VU1 || memory == nullptr || vuCode != memory->getVU1Code())
+    if (programs.empty() || memory == nullptr)
         return nullptr;
-    const uint64_t generation = memory->getVU1CodeGeneration();
+    // VU0 and VU1 are the same interpreter class and the same generated code;
+    // only the code memory (4 KB vs 16 KB) and its generation counter differ.
+    // VU0 has no interpreter-side compiled path otherwise, and it is the unit
+    // with the headroom (measured 5.3 us/call interpreted vs ~6 us/record for
+    // compiled VU1 in tools/vu1_replay).
+    const bool vu1 = m_unit == Unit::VU1;
+    if (vu1 ? vuCode != memory->getVU1Code() : vuCode != memory->getVU0Code())
+        return nullptr;
+    const uint64_t generation = vu1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
     if (vuCode != m_compiledCode)
     {
         m_compiledCode = vuCode;
