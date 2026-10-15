@@ -2227,15 +2227,23 @@ void EeScheduler::processDueDeadlines()
                 // PS2X_VBLANK_CATCHUP_MS: how much lateness a VBlank may still
                 // make up. Beyond this the anchor jumps to now, so the deficit
                 // is dropped and never recovered - one long frame costs frame
-                // rate for the rest of the session. The 4 ms default exists
-                // because catching up used to run game logic and music faster
-                // than real time; the IOP is clocked by real time now, so that
-                // reason is weaker than it was. Try 50.
+                // rate for the rest of the session, which is why gameplay fps
+                // did not move when average CPU came down (VU0 compiled, the
+                // resolve skip): the loss is in the tail, not the mean.
+                //
+                // Default 50 ms, owner-measured at matched scene density:
+                //   draws/frame   <=150   150-250   250-350   overall
+                //   4 ms           56.9      53.6      49.1      51.2
+                //   50 ms          58.8      59.9      56.7      58.6
+                // No audio speed-up and no lurching with it (the IOP is clocked
+                // by real time, so catch-up no longer runs the game fast - that
+                // was the reason for the 4 ms cap). Lower it if that ever
+                // returns; the cycle deadline is unaffected either way.
                 static const auto s_catchUpLimit = []()
                 {
                     const char *env = std::getenv("PS2X_VBLANK_CATCHUP_MS");
                     return env ? std::chrono::microseconds(std::strtoll(env, nullptr, 10) * 1000)
-                               : std::chrono::duration_cast<std::chrono::microseconds>(kVBlankCatchUpLimit);
+                               : std::chrono::microseconds(50'000); // 50 ms, was kVBlankCatchUpLimit (4 ms)
                 }();
                 if (now - anchor > s_catchUpLimit)
                     anchor = now;
