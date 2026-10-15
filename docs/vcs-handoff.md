@@ -843,6 +843,42 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       from transforms the port already has for the vehicle-look work. Opt-in
       only; this is a taste change, not a fix.
 
+    **Findings (2026-10-15).** The off switch is implemented; the guess above
+    was wrong in a way worth recording. The effect is *not* one
+    framebuffer-feedback quad. It is a **multi-pass ping-pong accumulation**:
+    the game accumulates previous frames into two 256x256 buffers (adjacent in
+    VRAM, TEX0 base **13440** and **14464**) in a ~9-pass cycle per frame, then
+    blends the result over the display (fbp=140). Each pass lerps toward its
+    source by destination-alpha/128, which is the trails decay.
+    - Consequence for the fix: skipping only the accumulation leaves the
+      buffers stale and shows a **frozen ghost**; skipping only the display
+      blend keeps the cost. Both have to go.
+    - Every pass - the textured ones and the texture-less ones, which still
+      carry the buffer in TEX0 - names one of the two buffers as its texture
+      base, so a single test in `flushBatch` drops the whole effect. Measured
+      on `scratch/gs_capture.bin`: draws 4,969 -> 4,537 (~8 a frame), resolves
+      8,349 -> 7,716, loads 4,965 -> 4,461, i.e. **~8.5% of the GPU passes as
+      well as the look**. The scene renders straight into the display buffer
+      and the blur is merely blended over it, so skipping leaves the scene
+      sharp rather than frozen.
+    - Shipped as **Display > Motion blur: PS2 / Off**, default PS2.
+      `PS2X_MOTIONBLUR_OFF=1` forces it off without the menu;
+      `PS2X_MOTIONBLUR_BUFS=a,b` overrides the buffer addresses;
+      `PS2X_GS_TRACE_FULLSCREEN=1` logs every draw covering most of its target,
+      which is how this was identified.
+    - **Still open:** the two buffer addresses come from one capture. A level
+      that allocates VRAM differently would need them re-derived (the trace
+      above is the tool), or the rule made structural. A *game-side* gate
+      would be cleaner still: the blur strength is the destination alpha the
+      game writes, so if the game keeps that in a variable, zeroing it removes
+      the effect at the source - findable with the RAM-dump/F8 diffing used for
+      the radio station variable. Not needed now that the renderer-side switch
+      works, but it would survive VRAM layout changes.
+    - Not yet verified by eye in gameplay (the owner should confirm the
+      picture looks right and the blur is gone). `tools/gs_replay` cannot check
+      it: its presented-frame dump returns nothing, and the vramHash is
+      *expected* to change when the blur stops writing VRAM.
+
 ## Third-party assets (release-page credits)
 
 Both packs are by **AL2009man**, MIT-licensed, (c) 2024 Al. Lopez:
