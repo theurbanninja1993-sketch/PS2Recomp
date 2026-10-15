@@ -1140,11 +1140,28 @@ void main()
             return;
         m_framebufferWriteSinceBarrier = false;
         static const bool s_skip = std::getenv("PS2X_GS_GPU_SKIP_MEMBARRIER") != nullptr;
-        if (!s_skip)
+        if (s_skip)
+            return;
+        // Ordering prior framebuffer writes against this resolve's texture read.
+        // Only GL_FRAMEBUFFER_BARRIER_BIT is needed - the old pair also carried
+        // GL_SHADER_STORAGE_BARRIER_BIT, which is about shader storage writes
+        // and has nothing to do with a read.
+        //
+        // PS2X_GS_TEXBARRIER=1: use glTextureBarrier() instead. It is the
+        // precise ARB_texture_barrier tool for framebuffer -> texture feedback,
+        // but it is specified for *drawing* commands' fetches, and this read is
+        // a compute dispatch, so it is not guaranteed here. Try it, do not
+        // assume it.
+        static const bool s_texBarrier = std::getenv("PS2X_GS_TEXBARRIER") != nullptr;
+        if (s_texBarrier)
+        {
+            g_gsGpuBarriers.fetch_add(1u, std::memory_order_relaxed);
+            m_context.gl.glTextureBarrier();
+        }
+        else
         {
             g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
-            // Prior draws are read by this resolve's compute stage.
-            m_context.gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
+            m_context.gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
         }
     }
 
@@ -1163,11 +1180,13 @@ void main()
             return;
         m_vramWriteSinceBarrier = false;
         static const bool s_skip = std::getenv("PS2X_GS_GPU_SKIP_MEMBARRIER") != nullptr;
-        if (!s_skip)
-        {
-            g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
-            m_context.gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
-        }
+        if (s_skip)
+            return;
+        // Ordering the resolves' VRAM writes against the read that follows.
+        // Only GL_SHADER_STORAGE_BARRIER_BIT is needed: GL_BUFFER_UPDATE_BARRIER_BIT
+        // is about glBufferSubData-style updates, not shader storage writes.
+        g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
+        m_context.gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
     void Renderer::resolveTarget(Target &target)
