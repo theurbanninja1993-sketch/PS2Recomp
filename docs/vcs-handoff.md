@@ -815,6 +815,34 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       client; the bridge just makes the device usable as a normal gamepad,
       which is what the port needs for its Steam prompt set.
 
+11. **Motion blur: a setting to turn the PS2 effect off, and possibly a
+    modern replacement (owner ask, 2026-10-15).** The PS2 effect is a
+    full-screen smear the owner wants gone, with a better one as a
+    possible later extra. Two parts:
+    - **Off switch, game side first.** If the effect is gated by a config
+      byte or a branch on a settings value, patching that gate is the right
+      fix - it removes the cost as well as the look. The port already has
+      both mechanisms: the `.pnach`-style write path
+      (`ps2ModsApplyPatches`, re-applied every presented frame) and the
+      `game_overrides` function hooks. Find the gate by watching which
+      variable the blur code reads (RAM dump + F8 diffing, as the radio
+      station variable was found).
+    - **Off switch, renderer side as the fallback.** The effect is a
+      framebuffer feedback - a screen-sized primitive that samples the
+      colour buffer and blends it back over itself, probably once per frame
+      near presentation - which is also why it is expensive as well as ugly.
+      Verify that first: `PS2X_GS_GPU_STATS`/`PS2X_GS_TRACE_FRAME`, or dump
+      the draw list for a frame, and look for a full-target quad with the
+      frame's own colour buffer as its texture. If it is that, the GPU
+      renderer can skip the pass by primitive size/target/texture.
+      Expose it in **Display** as `Motion blur: PS2 / Off / Modern` rather
+      than an env var, and default to PS2 so nothing changes silently.
+    - **Modern replacement (optional, after the off switch).** The port
+      already composes the display and keeps the previous frame, so a
+      smoother accumulation is cheap there - camera-relative, or per-object
+      from transforms the port already has for the vehicle-look work. Opt-in
+      only; this is a taste change, not a fix.
+
 ## Third-party assets (release-page credits)
 
 Both packs are by **AL2009man**, MIT-licensed, (c) 2024 Al. Lopez:
