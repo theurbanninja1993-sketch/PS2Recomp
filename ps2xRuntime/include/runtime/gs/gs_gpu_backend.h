@@ -24,7 +24,13 @@ namespace gsgpu
 extern std::atomic<uint32_t> g_gsGpuScaleRequest;
 // Settings > Display > Motion blur. When true the renderer skips the draws
 // that read the game's blur accumulation buffers, so the picture stays sharp.
+// Both "Off" and "Modern" set it: Modern replaces the game's smear with its own.
 extern std::atomic<bool> g_gsMotionBlurOff;
+// "Modern": blur the composed frame along the camera's motion, leaving the
+// screen-space overlays (the HUD, the minimap) sharp. Strength is how far the
+// smear reaches, in frames of camera motion.
+extern std::atomic<bool> g_gsModernBlur;
+extern std::atomic<float> g_gsModernBlurStrength;
 
 namespace gsgpu
 {

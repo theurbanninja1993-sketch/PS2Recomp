@@ -26,6 +26,8 @@ namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<bool> g_gsMotionBlurOff{false};
+std::atomic<bool> g_gsModernBlur{false};
+std::atomic<float> g_gsModernBlurStrength{0.0f};
 // The host window size, published by the main thread each frame (0 = unknown).
 // The upscaled display readback is capped to it: the composed frame is only
 // ever shown at window size, so transferring more than that is pure waste.
@@ -724,6 +726,51 @@ void main()
 }
 )";
 
+        // Motion blur: smear the composed frame along the camera's own motion.
+        // u_warp maps a current screen coordinate to where that content was in
+        // the previous frame (see ps2CameraHomography), so uv - prev is the
+        // per-pixel screen motion over one frame and the taps run from uv back
+        // along it. That is a shutter: the picture is integrated over the
+        // interval the frame represents. Deliberately not a blend against the
+        // previous frame - that accumulates, and an accumulated frame reads as a
+        // sharp double image (ghosting) rather than a blur.
+        //
+        // The compose puts the overlay mask in alpha (1 = world, 0 = HUD), so the
+        // smear is scaled per pixel: the HUD and the minimap are drawn in screen
+        // space and do not move with the camera, so they must stay sharp.
+        const char *kBlurShader = R"(#version 450 core
+layout(binding = 0) uniform sampler2D u_current;
+// Column-major, passed as three columns.
+uniform vec3 u_warp0;
+uniform vec3 u_warp1;
+uniform vec3 u_warp2;
+uniform vec2 u_size;      // composed size in pixels
+uniform float u_shutter;  // smear length in frames of camera motion (0 = off)
+out vec4 o_color;
+const int kTaps = 6;
+void main()
+{
+    vec2 uv = gl_FragCoord.xy / u_size;
+    vec4 cur = texture(u_current, uv);
+    float mask = cur.a; // 1 = world, 0 = screen-space overlay
+    if (u_shutter <= 0.0 || mask <= 0.0)
+    {
+        o_color = vec4(cur.rgb, 1.0);
+        return;
+    }
+    vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uv, 1.0);
+    vec2 prev = q.xy / q.z;
+    vec2 motion = (uv - prev) * u_shutter * mask;
+    vec4 acc = vec4(0.0);
+    for (int i = 0; i < kTaps; ++i)
+    {
+        float t = float(i) / float(kTaps - 1);
+        acc += texture(u_current, clamp(uv - motion * t, vec2(0.0), vec2(1.0)));
+    }
+    o_color = vec4((acc / float(kTaps)).rgb, 1.0);
+}
+)";
+
         // Full-target triangle for load passes (rows limited by the scissor).
         const char *kFullscreenVertexShader = R"(#version 450 core
 void main()
@@ -1092,6 +1139,8 @@ void main()
                                      compileShader(gl, GL_FRAGMENT_SHADER, kMaskFragmentShader)});
         m_maskCopy.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kVertexShader),
                                          compileShader(gl, GL_FRAGMENT_SHADER, kMaskCopyFragmentShader)});
+        m_blur.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
+                                     compileShader(gl, GL_FRAGMENT_SHADER, kBlurShader)});
         // A source target that has no mask yet still has to write something: an
         // explicit zero, so the copy overwrites rather than leaving stale bits.
         if (m_zeroMask == 0)
@@ -2989,6 +3038,12 @@ void main()
     {
         ++m_presentIndex;
         m_frameDrawIndex = 0;
+        // The overlay mask is what keeps the HUD out of the motion blur, so it is
+        // built whenever the blur is on; PS2X_OVERLAY_MASK forces it for testing.
+        {
+            static const bool s_force = std::getenv("PS2X_OVERLAY_MASK") != nullptr;
+            m_maskEnabled = s_force || g_gsModernBlur.load(std::memory_order_relaxed);
+        }
         // PS2X_OVERLAY_MASK_DUMP=<path>: once, write the frame's overlay mask out
         // as a PGM so the 3D/overlay split can be checked by eye. Dumped here, at
         // the end of a frame, so it holds every overlay draw.
@@ -3086,6 +3141,136 @@ void main()
             setScale(requested);
         applyPendingScale(); // between frames
         return frame;
+    }
+
+    // Sizes the compose target for the motion blur. Grow-only, like the present
+    // pair: the display size churns through the logos and the intro, and
+    // recreating this on every change would hitch exactly there.
+    void Renderer::ensureBlurTargets(GL &gl, uint32_t width, uint32_t height)
+    {
+        if (m_composeTexture == 0 || m_composeWidth < width || m_composeHeight < height)
+        {
+            if (m_composeTexture != 0)
+            {
+                gl.glDeleteFramebuffers(1, &m_composeFramebuffer);
+                gl.glDeleteTextures(1, &m_composeTexture);
+            }
+            m_composeWidth = std::max(m_composeWidth, width);
+            m_composeHeight = std::max(m_composeHeight, height);
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_composeTexture);
+            gl.glTextureStorage2D(m_composeTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_composeWidth),
+                                  static_cast<GLsizei>(m_composeHeight));
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            gl.glCreateFramebuffers(1, &m_composeFramebuffer);
+            gl.glNamedFramebufferTexture(m_composeFramebuffer, GL_COLOR_ATTACHMENT0, m_composeTexture, 0);
+            gl.glNamedFramebufferDrawBuffer(m_composeFramebuffer, GL_COLOR_ATTACHMENT0);
+        }
+    }
+
+    void Renderer::destroyBlurTargets()
+    {
+        GL &gl = m_context.gl;
+        if (m_composeTexture != 0)
+        {
+            gl.glDeleteFramebuffers(1, &m_composeFramebuffer);
+            gl.glDeleteTextures(1, &m_composeTexture);
+            m_composeTexture = m_composeFramebuffer = 0;
+        }
+    }
+
+    void Renderer::blurCompose(GL &gl, uint32_t width, uint32_t height, GLuint destinationFramebuffer)
+    {
+        // The present path publishes the camera after the compose, so the value
+        // here is the one this frame was built with. Read it twice around the
+        // generation counter: the game thread writes it, and a torn read would
+        // mix one frame's orientation with another's position.
+        Ps2CameraState cur;
+        static const char *s_fakeCamera = std::getenv("PS2X_BLUR_FAKE_CAMERA");
+        if (s_fakeCamera != nullptr)
+        {
+            // A synthetic camera, for checking the blur without the game running
+            // (a GS capture has no camera of its own): a level camera yawing by
+            // this many degrees per presented frame, which smears the world
+            // horizontally. Test hook only.
+            const float yaw = static_cast<float>(std::atof(s_fakeCamera)) * static_cast<float>(m_presentIndex) *
+                              3.14159265f / 180.0f;
+            cur.front[0] = std::cos(yaw);
+            cur.front[1] = std::sin(yaw);
+            cur.front[2] = 0.0f;
+            cur.up[0] = 0.0f;
+            cur.up[1] = 0.0f;
+            cur.up[2] = 1.0f;
+            cur.pos[0] = 0.0f;
+            cur.pos[1] = 0.0f;
+            cur.pos[2] = 16.0f;
+            cur.viewX = 0.7f;
+            cur.viewY = 0.525f;
+            cur.valid = true;
+        }
+        else
+        {
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                const uint64_t before = g_ps2CameraFrame.load(std::memory_order_relaxed);
+                cur = g_ps2Camera;
+                if (g_ps2CameraFrame.load(std::memory_order_relaxed) == before)
+                    break;
+            }
+        }
+
+        // Depth in world units: 1 unit is about 0.1 m, so 100 is ~10 m, roughly
+        // what fills a chase-camera frame. It only scales the translation part.
+        static const float s_depth = []()
+        {
+            const char *env = std::getenv("PS2X_BLUR_DEPTH");
+            return env ? static_cast<float>(std::atof(env)) : 100.0f;
+        }();
+
+        const Ps2CameraHomography warp = ps2CameraHomography(m_blurPrevCamera, cur, s_depth);
+        m_blurPrevCamera = cur;
+
+        // No usable camera (the intro is a cutscene with none) means no motion to
+        // smear along: shutter 0 passes the frame through.
+        const float shutter = warp.usable ? g_gsModernBlurStrength.load(std::memory_order_relaxed) : 0.0f;
+
+        ensureBlurTargets(gl, width, height);
+        {
+            static bool s_reported = false;
+            if (!s_reported)
+            {
+                s_reported = true;
+                std::cerr << "[gs] motion blur: " << (warp.usable ? "warp" : "no camera") << ", shutter " << shutter
+                          << ", depth " << s_depth << ", " << width << "x" << height << std::endl;
+            }
+        }
+        if (m_blur.id == 0)
+        {
+            // A compile failure: still get the frame out, unblurred.
+            gl.glBlitNamedFramebuffer(m_composeFramebuffer, destinationFramebuffer, 0, 0, static_cast<GLint>(width),
+                                      static_cast<GLint>(height), 0, 0, static_cast<GLint>(width),
+                                      static_cast<GLint>(height), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            return;
+        }
+        Program &p = m_blur;
+        useProgram(p.id);
+        setUniform3f(p, uniform(p, "u_warp0"), warp.m[0], warp.m[1], warp.m[2]);
+        setUniform3f(p, uniform(p, "u_warp1"), warp.m[3], warp.m[4], warp.m[5]);
+        setUniform3f(p, uniform(p, "u_warp2"), warp.m[6], warp.m[7], warp.m[8]);
+        setUniform2f(p, uniform(p, "u_size"), static_cast<float>(width), static_cast<float>(height));
+        setUniform1f(p, uniform(p, "u_shutter"), shutter);
+        gl.glBindTextureUnit(0, m_composeTexture);
+        bindFramebuffer(destinationFramebuffer);
+        setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+        setScissorTest(false);
+        setBlend(false);
+        setDepthTest(false);
+        setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        bindVao(m_emptyVao);
+        gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
     }
 
     void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
@@ -3285,23 +3470,29 @@ void main()
         setUniform2f(p, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, top.target->texture);
         gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
-        // The overlay mask, for the passes that must leave the HUD alone. The mask
-        // is per target, and with two display circuits the compose blends them, so
-        // it is only usable when both name the same target - which is what field
-        // mode does (the two circuits are the two fields of one buffer).
+        // Motion blur ("Modern"): the compose draws into its own target and the
+        // blur pass reads that and writes the display.
+        const bool reproject = g_gsModernBlur.load(std::memory_order_relaxed) && m_blur.id != 0;
+        // The overlay mask, so the blur leaves the HUD alone. The mask is per
+        // target, and with two display circuits the compose blends them, so it is
+        // only usable when both name the same target - which is what field mode
+        // does (the two circuits are the two fields of one buffer).
         {
             static const bool s_overlayDebug = std::getenv("PS2X_OVERLAY_MASK_DEBUG") != nullptr;
             const bool sameTarget = !both || c2.target == top.target;
             const bool overlayValid = m_maskEnabled && sameTarget && top.target->maskTexture != 0;
             gl.glBindTextureUnit(2, overlayValid ? top.target->maskTexture : top.target->texture);
             setUniform1f(p, uniform(p, "u_overlayValid"), overlayValid ? 1.0f : 0.0f);
-            // Nothing consumes the mask yet, and the display texture has to stay
-            // opaque, so the alpha channel is left alone until one does.
-            setUniform1f(p, uniform(p, "u_overlayToAlpha"), 0.0f);
+            // In alpha only when the blur will read it: the display texture itself
+            // has to stay opaque.
+            setUniform1f(p, uniform(p, "u_overlayToAlpha"), (reproject && overlayValid) ? 1.0f : 0.0f);
             setUniform1f(p, uniform(p, "u_overlayDebug"), s_overlayDebug ? 1.0f : 0.0f);
         }
-        bindFramebuffer(
-                             sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer);
+        const GLuint displayFramebuffer =
+            sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer;
+        if (reproject)
+            ensureBlurTargets(gl, width, height);
+        bindFramebuffer(reproject ? m_composeFramebuffer : displayFramebuffer);
         setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
         setScissorTest(false);
         setBlend(false);
@@ -3309,6 +3500,8 @@ void main()
         setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         bindVao(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (reproject)
+            blurCompose(gl, width, height, displayFramebuffer);
         if (sharePresent)
         {
             // Make the write visible to the host's context (it draws this
@@ -3442,6 +3635,7 @@ void main()
         m_zeroMask = 0;
         m_feedbackWidth = m_feedbackHeight = 0;
         m_drawColor = m_drawDepth = nullptr;
+        destroyBlurTargets();
     }
 
     bool Renderer::clearFramebuffer(const GSContext &context, uint32_t rgba)

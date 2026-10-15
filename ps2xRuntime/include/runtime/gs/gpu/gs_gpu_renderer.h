@@ -3,6 +3,7 @@
 #include "runtime/gs/gs_backend.h"
 #include "runtime/gs/gpu/gl_context.h"
 #include "runtime/gs/gs_texture_replacements.h"
+#include "runtime/ps2_camera.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -164,7 +165,7 @@ namespace gsgpu
         void clearUniformCaches()
         {
             for (Program *p : {&m_draw, &m_loadColor, &m_loadDepth, &m_resolve, &m_hostToLocal, &m_localToLocal,
-                               &m_clutLoad, &m_compose, &m_mask, &m_maskCopy})
+                               &m_clutLoad, &m_compose, &m_mask, &m_maskCopy, &m_blur})
                 p->uniforms.clear();
         }
         void flushBatch();
@@ -307,6 +308,20 @@ namespace gsgpu
         uint32_t m_textureSourceWidth = 0, m_textureSourceHeight = 0;
         GLuint m_presentTexture = 0, m_presentFramebuffer = 0; // upscaled display output
         uint32_t m_presentWidth = 0, m_presentHeight = 0;
+        // Motion blur ("Modern"). The compose draws into m_composeFramebuffer, the
+        // blur pass reads that and writes the display target. Grow-only, like the
+        // present pair. No history: the smear is spatial, along the camera's own
+        // motion, so there is nothing to seed and nothing that can accumulate.
+        Program m_blur;
+        GLuint m_composeTexture = 0, m_composeFramebuffer = 0;
+        uint32_t m_composeWidth = 0, m_composeHeight = 0;
+        Ps2CameraState m_blurPrevCamera; // the camera of the last composed frame
+        void ensureBlurTargets(GL &gl, uint32_t width, uint32_t height);
+        // Smears the frame the compose just drew along the camera's motion,
+        // scaling the smear per pixel by the overlay mask in its alpha, and
+        // writes the result into destinationFramebuffer.
+        void blurCompose(GL &gl, uint32_t width, uint32_t height, GLuint destinationFramebuffer);
+        void destroyBlurTargets();
         // PS2X_GS_TRACE_DRAWS=<presentIndex>: the presented-frame counter and a
         // per-frame draw counter, for logging one frame's draws in order.
         uint64_t m_presentIndex = 0;

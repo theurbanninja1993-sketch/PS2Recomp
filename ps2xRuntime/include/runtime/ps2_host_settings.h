@@ -101,14 +101,20 @@ struct PS2HostSettings
     bool flickerFilter = false;  // the game's interlace flicker filter (a vertical blur)
     // The game's motion blur (VCS accumulates previous frames into a pair of
     // 256x256 buffers and blends the result over the display). Off skips the
-    // draws that read those buffers, so the picture stays sharp. Measured from
-    // the GS stream: see the note in the renderer.
+    // draws that read those buffers, so the picture stays sharp. Modern replaces
+    // it with a shutter blur along the camera's own motion, so the smear follows
+    // the camera instead of sitting on the screen as a fixed ghost; screen-space
+    // overlays (the HUD, the minimap) are left alone.
     enum class MotionBlur : int
     {
-        PS2 = 0, // as on the console
-        Off = 1, // skip the game's blur; picture stays sharp
+        PS2 = 0,    // as on the console
+        Off = 1,    // skip the game's blur; picture stays sharp
+        Modern = 2, // blur along the camera's motion
     };
     MotionBlur motionBlur = MotionBlur::PS2;
+    // How far the Modern smear reaches, in frames of camera motion (Modern only).
+    // 0.5 is a half-frame shutter, 1.0 a full one.
+    float motionBlurStrength = 0.5f;
     float drawDistance = 1.0f;  // multiplier on view / detail distances (1 = original)
     float mouseSensitivity = 1.0f;
     bool mouseInvertY = false;
