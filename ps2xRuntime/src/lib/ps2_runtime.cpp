@@ -18,6 +18,51 @@
 #include "Kernel/Stubs/MPEG.h"
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
+
+// Defined in ps2_iop_worker.cpp. The PC sampler runs process-wide (ITIMER_PROF),
+// so it uses this to skip samples taken on the IOP worker's own thread.
+extern thread_local bool t_onIopWorker;
+// Diagnostics: which entry point posts the IOP work. iopPost counts them all;
+// these say which one is hot (the memory-access ones are the suspects).
+std::atomic<uint64_t> g_iopSiteRead{0}, g_iopSiteWrite{0}, g_iopSiteZero{0}, g_iopSiteRange{0};
+std::atomic<uint64_t> g_iopSiteHandleRpc{0}, g_iopSiteSif{0}, g_iopSiteAbi{0}, g_iopSiteBind{0};
+// Bumped whenever the IOP's service set can change (module load/stop, reset).
+// selectIopRpcAbi caches its answer against this.
+std::atomic<uint64_t> g_rpcAbiEpoch{1};
+// Which SIF RPC the game is hammering. The IOP thread costs a round trip per
+// RPC (~75k/s in the intro), so the sid says whether that is normal traffic or
+// the game retrying one call. Diagnostics only; racy by design.
+namespace
+{
+    std::atomic<uint64_t> g_rpcSidCount[64];
+    std::atomic<uint32_t> g_rpcSidValue[64];
+}
+void ps2IopRpcHistogram(char *out, size_t size)
+{
+    uint32_t topSid[4] = {};
+    uint64_t topCount[4] = {};
+    for (size_t i = 0; i < 64; ++i)
+    {
+        const uint64_t count = g_rpcSidCount[i].load(std::memory_order_relaxed);
+        for (size_t slot = 0; slot < 4; ++slot)
+            if (count > topCount[slot])
+            {
+                for (size_t move = 3; move > slot; --move)
+                {
+                    topCount[move] = topCount[move - 1];
+                    topSid[move] = topSid[move - 1];
+                }
+                topCount[slot] = count;
+                topSid[slot] = g_rpcSidValue[i].load(std::memory_order_relaxed);
+                break;
+            }
+    }
+    std::snprintf(out, size, "%08x:%llu,%08x:%llu,%08x:%llu,%08x:%llu", topSid[0],
+                  static_cast<unsigned long long>(topCount[0]), topSid[1],
+                  static_cast<unsigned long long>(topCount[1]), topSid[2],
+                  static_cast<unsigned long long>(topCount[2]), topSid[3],
+                  static_cast<unsigned long long>(topCount[3]));
+}
 #include "ps2_iop_worker.h"
 #include "ps2x/iop/iop_subsystem.h"
 
@@ -30,6 +75,7 @@
 #include <limits>
 #include <chrono>
 #include <atomic>
+#include <cstdio>
 #include <thread>
 #include <unordered_map>
 #include <csignal>
@@ -757,6 +803,7 @@ PS2Runtime::~PS2Runtime()
 // must be set on the thread that is running the IOP.
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModule(std::string_view path, const void *arguments, uint32_t argumentSize)
 {
+    g_rpcAbiEpoch.fetch_add(1u, std::memory_order_release); // the ABI answer may change
     return m_iopWorker->runValue(
         [&]()
         {
@@ -767,6 +814,7 @@ ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModule(std::string_view path, con
 
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
 {
+    g_rpcAbiEpoch.fetch_add(1u, std::memory_order_release); // the ABI answer may change
     return m_iopWorker->runValue(
         [&]()
         {
@@ -777,6 +825,7 @@ ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModuleBuffer(uint32_t guestAddres
 
 bool PS2Runtime::stopIopModule(int32_t moduleId, int32_t *result)
 {
+    g_rpcAbiEpoch.fetch_add(1u, std::memory_order_release); // the ABI answer may change
     return m_iopWorker->runValue(
         [&]()
         {
@@ -787,16 +836,44 @@ bool PS2Runtime::stopIopModule(int32_t moduleId, int32_t *result)
 
 ps2x::iop::RpcAbi PS2Runtime::selectIopRpcAbi(const ps2x::iop::RpcAbiRequest &request) const
 {
-    return m_iopWorker->runValue([&]() { return m_iopSubsystem->selectRpcAbi(request); });
+    // The IOP owns its service table, so this lookup belongs on its thread - but
+    // the game calls it once per SIF RPC (measured ~57k times a second in the
+    // intro, each a lock, a futex wake and a wait for the worker) and the answer
+    // only changes when the set of loaded IOP modules does. Cache it and re-ask
+    // after a module load/stop/reset. No service reads the request today -
+    // RpcAbiRequest is unused across ps2xIOP, so selectRpcAbi is a constant - so
+    // the request is not part of the key; if a service ever starts using it,
+    // this must become a per-request cache.
+    static std::atomic<uint64_t> s_cachedEpoch{0};
+    static std::atomic<uint32_t> s_cachedAbi{static_cast<uint32_t>(ps2x::iop::RpcAbi::RuntimeDefault)};
+    const uint64_t epoch = g_rpcAbiEpoch.load(std::memory_order_acquire);
+    if (s_cachedEpoch.load(std::memory_order_relaxed) == epoch)
+        return static_cast<ps2x::iop::RpcAbi>(s_cachedAbi.load(std::memory_order_relaxed));
+    ++g_iopSiteAbi; // a real round trip (the cached path above returns first)
+    const ps2x::iop::RpcAbi abi = m_iopWorker->runValue([&]() { return m_iopSubsystem->selectRpcAbi(request); });
+    s_cachedAbi.store(static_cast<uint32_t>(abi), std::memory_order_relaxed);
+    s_cachedEpoch.store(epoch, std::memory_order_relaxed);
+    return abi;
 }
 
 bool PS2Runtime::canBindIopRpc(uint32_t sid) const noexcept
 {
+    ++g_iopSiteBind;
     return m_iopWorker->runValue([&]() { return m_iopSubsystem->canBindRpc(sid); });
 }
 
 ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request)
 {
+    ++g_iopSiteHandleRpc;
+    {
+        const size_t bucket = request.sid & 63u;
+        if (g_rpcSidValue[bucket].load(std::memory_order_relaxed) != request.sid)
+        {
+            g_rpcSidValue[bucket].store(request.sid, std::memory_order_relaxed);
+            g_rpcSidCount[bucket].store(0u, std::memory_order_relaxed);
+        }
+        g_rpcSidCount[bucket].fetch_add(1u, std::memory_order_relaxed);
+    }
     return m_iopWorker->runValue(
         [&]()
         {
@@ -808,6 +885,7 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
 
 void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
 {
+    ++g_iopSiteSif;
     m_iopWorker->run(
         [&]()
         {
@@ -898,6 +976,7 @@ void PS2Runtime::advanceIopVBlank() noexcept
 
 void PS2Runtime::resetIop()
 {
+    g_rpcAbiEpoch.fetch_add(1u, std::memory_order_release); // the ABI answer may change
     m_iopWorker->run([&]() { m_iopSubsystem->reset(); });
 }
 
@@ -918,22 +997,26 @@ bool PS2Runtime::freeIopMemory(uint32_t address)
 
 bool PS2Runtime::readIopMemory(uint32_t address, void *destination, size_t size) const
 {
+    ++g_iopSiteRead;
     return m_iopSubsystem &&
            m_iopWorker->runValue([&]() { return m_iopSubsystem->readMemory(address, destination, size); });
 }
 
 bool PS2Runtime::writeIopMemory(uint32_t address, const void *source, size_t size)
 {
+    ++g_iopSiteWrite;
     return m_iopSubsystem && m_iopWorker->runValue([&]() { return m_iopSubsystem->writeMemory(address, source, size); });
 }
 
 bool PS2Runtime::zeroIopMemory(uint32_t address, size_t size)
 {
+    ++g_iopSiteZero;
     return m_iopSubsystem && m_iopWorker->runValue([&]() { return m_iopSubsystem->zeroMemory(address, size); });
 }
 
 bool PS2Runtime::isIopMemoryRange(uint32_t address, size_t size) const
 {
+    ++g_iopSiteRange;
     return m_iopSubsystem && m_iopWorker->runValue([&]() { return m_iopSubsystem->isMemoryRange(address, size); });
 }
 
@@ -1580,6 +1663,13 @@ namespace
             return;
         static const bool s_vif1Only = std::getenv("PS2X_PC_SAMPLE_VIF1") != nullptr;
         if (s_vif1Only && !PS2Memory::onAsyncVif1Worker())
+            return;
+        // ITIMER_PROF is process-wide, so samples land on whichever thread is
+        // running. Without this the IOP worker's own lock/futex traffic is
+        // attributed to the game thread. PS2X_PC_SAMPLE_ALL=1 keeps the old
+        // whole-process behaviour.
+        static const bool s_allThreads = std::getenv("PS2X_PC_SAMPLE_ALL") != nullptr;
+        if (!s_allThreads && t_onIopWorker)
             return;
         const auto *context = static_cast<const ucontext_t *>(contextPtr);
         const uint64_t rip = static_cast<uint64_t>(context->uc_mcontext.gregs[REG_RIP]);

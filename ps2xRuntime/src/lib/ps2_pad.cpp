@@ -444,6 +444,20 @@ static void ps2MapUnrecognisedPads()
 
 int ps2ActiveGamepad()
 {
+    // Called on every pad read (several times a frame) and again from the host
+    // frame loop, and the body below copies a snapshot holding twelve strings
+    // and queries GLFW for up to four pads. The answer only changes when the
+    // player actually touches something, so compute it once per presented frame
+    // and let the rest of that frame's calls be an atomic load. Profiled at
+    // ~4.5% of the game thread before this (mostly malloc/free from the
+    // snapshot copy), which is a lot for a question with a one-frame answer.
+    extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+    static std::atomic<uint64_t> s_cachedFrame{~0ull};
+    static std::atomic<int> s_cachedValue{-1};
+    const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+    if (s_cachedFrame.load(std::memory_order_relaxed) == frame)
+        return s_cachedValue.load(std::memory_order_relaxed);
+
     ps2ApplyGamepadMappings();
     const PadSnapshot snapshot = padSnapshot();
     int active = -1;
@@ -534,6 +548,8 @@ int ps2ActiveGamepad()
         line += " connected:" + all + "\n";
         ps2PadDebugLog(line.c_str());
     }
+    s_cachedValue.store(active, std::memory_order_relaxed);
+    s_cachedFrame.store(frame, std::memory_order_relaxed);
     return active;
 }
 

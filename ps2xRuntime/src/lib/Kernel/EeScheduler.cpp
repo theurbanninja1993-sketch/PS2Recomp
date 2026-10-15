@@ -648,6 +648,49 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
         extern std::atomic<uint64_t> g_eeTimerWraps[4], g_eeTimerOvfIrqs[4];
         std::fprintf(s_file, " t1wraps=%llu t1ovfIrq=%llu", static_cast<unsigned long long>(g_eeTimerWraps[1].exchange(0)),
                      static_cast<unsigned long long>(g_eeTimerOvfIrqs[1].exchange(0)));
+        // Cross-thread IOP round trips this interval. Each post is a lock, a
+        // futex wake and a wait for the worker, so the count is the direct cost
+        // of the IOP thread; iopAllow is the once-a-VBlank allowance top-up.
+        extern std::atomic<uint64_t> g_iopWorkerPosts, g_iopWorkerAllows;
+        static uint64_t s_lastIopPosts = 0, s_lastIopAllows = 0;
+        const uint64_t iopPosts = g_iopWorkerPosts.load(std::memory_order_relaxed);
+        const uint64_t iopAllows = g_iopWorkerAllows.load(std::memory_order_relaxed);
+        std::fprintf(s_file, " iopPost=%llu iopAllow=%llu", static_cast<unsigned long long>(iopPosts - s_lastIopPosts),
+                     static_cast<unsigned long long>(iopAllows - s_lastIopAllows));
+        s_lastIopPosts = iopPosts;
+        s_lastIopAllows = iopAllows;
+        {
+            extern std::atomic<uint64_t> g_iopSiteRead, g_iopSiteWrite, g_iopSiteZero, g_iopSiteRange;
+            extern std::atomic<uint64_t> g_iopSiteHandleRpc, g_iopSiteSif, g_iopSiteAbi, g_iopSiteBind;
+            static uint64_t s_lastSites[8] = {};
+            std::atomic<uint64_t> *sites[8] = {&g_iopSiteRead, &g_iopSiteWrite, &g_iopSiteZero, &g_iopSiteRange,
+                                               &g_iopSiteHandleRpc, &g_iopSiteSif, &g_iopSiteAbi, &g_iopSiteBind};
+            std::fprintf(s_file, " iopSites=");
+            for (size_t i = 0; i < 8; ++i)
+            {
+                const uint64_t now = sites[i]->load(std::memory_order_relaxed);
+                std::fprintf(s_file, "%s%llu", i == 0 ? "" : ",", static_cast<unsigned long long>(now - s_lastSites[i]));
+                s_lastSites[i] = now;
+            }
+        }
+        {
+            extern void ps2IopRpcHistogram(char *out, size_t size);
+            static uint64_t s_lastSidCount[4] = {};
+            char histogram[192];
+            ps2IopRpcHistogram(histogram, sizeof(histogram));
+            // Report deltas so a sample says what this interval called.
+            char delta[192];
+            unsigned sid[4] = {};
+            unsigned long long count[4] = {};
+            std::sscanf(histogram, "%x:%llu,%x:%llu,%x:%llu,%x:%llu", &sid[0], &count[0], &sid[1], &count[1], &sid[2],
+                        &count[2], &sid[3], &count[3]);
+            std::snprintf(delta, sizeof(delta), "%08x:%llu,%08x:%llu,%08x:%llu,%08x:%llu", sid[0],
+                          count[0] - s_lastSidCount[0], sid[1], count[1] - s_lastSidCount[1], sid[2],
+                          count[2] - s_lastSidCount[2], sid[3], count[3] - s_lastSidCount[3]);
+            for (size_t i = 0; i < 4; ++i)
+                s_lastSidCount[i] = count[i];
+            std::fprintf(s_file, " rpcSid=%s", delta);
+        }
     }
     // Per-thread CPU, keyed by thread id (see ps2ThreadCpuTicks). This is the
     // number that says which thread is the bottleneck, and it works on Windows

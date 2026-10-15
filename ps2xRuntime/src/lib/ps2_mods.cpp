@@ -223,6 +223,12 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
     // host frame loop. The statics here and the prompt-art generator below must
     // never run concurrently - a torn comparison makes the set look changed
     // forever, which rebuilds the whole replacement index every frame.
+    //
+    // The thread check comes first: the game thread reaches here several times
+    // a frame, and there is no reason for it to take this lock (or touch this
+    // state) at all when only the host ever does the work below.
+    if (!ps2IsHostThread())
+        return;
     static std::mutex s_mutex;
     std::lock_guard lock(s_mutex);
     // The game thread calls this on every pad read, but regenerating the prompt
@@ -231,8 +237,6 @@ void ps2ModsRefreshButtonPromptsIfNeeded()
     // dropped frame and a gap in the audio, so only the host frame loop does it;
     // the game thread just sets the art context (a cheap atomic store) and
     // leaves. The host runs this every frame, so nothing is missed.
-    if (!ps2IsHostThread())
-        return;
     // Auto follows the active input device: rebuild the replacement index only
     // when the resolved set changes (rare; the rebuild rescan is not cheap).
     // A single stray key or wheel event can flip the automatic set for one

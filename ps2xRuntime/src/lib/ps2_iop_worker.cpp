@@ -3,6 +3,7 @@
 #include "ThreadNaming.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 
 namespace
@@ -27,6 +28,14 @@ namespace
     // work; two VBlanks of slack is what the inline path allowed.
     constexpr uint64_t kMaxLagEeCycles = 2u * kEeCyclesPerVBlank;
 }
+
+// Sampled-thread bookkeeping and call counts for the perf log. The PC sampler
+// is process-wide (ITIMER_PROF), so without the flag this worker's own futex
+// traffic lands in the game thread's profile; the counters say how many
+// cross-thread round trips a session is actually paying for.
+thread_local bool t_onIopWorker = false;
+std::atomic<uint64_t> g_iopWorkerPosts{0};
+std::atomic<uint64_t> g_iopWorkerAllows{0};
 
 IopWorker::IopWorker(ps2x::iop::IopSubsystem &iop)
     : m_iop(iop),
@@ -78,6 +87,7 @@ void IopWorker::run(const std::function<void()> &fn)
         return;
     }
     std::unique_lock lock(m_mutex);
+    g_iopWorkerPosts.fetch_add(1u, std::memory_order_relaxed);
     const uint64_t ticket = ++m_posted;
     m_work.push_back(fn);
     m_wake.notify_one();
@@ -88,6 +98,7 @@ void IopWorker::addAllowedEeCycles(uint64_t eeCycles)
 {
     if (!m_enabled || !m_running)
         return;
+    g_iopWorkerAllows.fetch_add(1u, std::memory_order_relaxed);
     std::lock_guard lock(m_mutex);
     m_allowed += eeCycles;
     m_wake.notify_one();
@@ -96,6 +107,7 @@ void IopWorker::addAllowedEeCycles(uint64_t eeCycles)
 void IopWorker::loop()
 {
     ThreadNaming::SetCurrentThreadName("IopWorker");
+    t_onIopWorker = true;
     std::unique_lock lock(m_mutex);
     // Posted work is the synchronous path - whoever posted it is waiting - so
     // drain it before leaving, even once stopping.
