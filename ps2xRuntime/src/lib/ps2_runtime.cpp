@@ -3418,6 +3418,14 @@ void PS2Runtime::run()
         {
             s_lastCameraTick = cameraTick;
             ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
+            // g_ps2PresentedFrameCounter counts *pictures*, not host frames. It
+            // used to advance with the host loop, which coincided at 60 Hz and
+            // broke everything that gates on it once the host ran faster - most
+            // visibly the vehicle mouse look, whose offset is applied only for a
+            // frame or two after the camera update, so it stopped being applied
+            // and the game's own recentring pulled the view behind the car.
+            static uint64_t s_pictures = 0;
+            g_ps2PresentedFrameCounter.store(++s_pictures, std::memory_order_relaxed);
         }
         // Frame interpolation (PS2X_FRAME_INTERP=1): on a frame the game produced
         // no new picture, draw one synthesized from the last composed frame,
@@ -3567,7 +3575,9 @@ void PS2Runtime::run()
             }();
             static uint64_t s_presentedFrames = 0;
             ++s_presentedFrames;
-            g_ps2PresentedFrameCounter.store(s_presentedFrames, std::memory_order_relaxed);
+            // g_ps2PresentedFrameCounter is *not* this: it counts pictures and is
+            // updated above, where a new one is detected. This one is the host
+            // frame count, which is what the dumps and the exit gates want.
             PS2_IF_AGRESSIVE_LOGS({
                 static const bool s_traceOn = std::getenv("PS2X_GS_TRACE_FRAME") != nullptr;
                 if (s_traceOn)
