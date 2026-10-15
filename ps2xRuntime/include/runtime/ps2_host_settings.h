@@ -91,6 +91,12 @@ struct PS2HostSettings
     int windowHeight = 720;
     Aspect aspect = Aspect::Standard;
     bool smoothFiltering = true; // bilinear scaling of the picture (off: sharp pixels)
+    // Swap interval. On (default) the buffer swap waits for the display, which
+    // is what stops the tearing the port had with only SetTargetFPS(60) - that
+    // is a software cap, not a sync. It also lets a VRR display follow the
+    // frame rate, so it is the only thing VRR needs: the emulation is fixed at
+    // 60 VBlanks/s, so there is nothing above 60 to drive it with yet.
+    bool vsync = true;
     int internalScale = 1;       // GPU renderer resolution multiplier (1 = native 640x448)
     bool flickerFilter = false;  // the game's interlace flicker filter (a vertical blur)
     // The game's motion blur (VCS accumulates previous frames into a pair of
@@ -103,7 +109,6 @@ struct PS2HostSettings
         Off = 1,
     };
     MotionBlur motionBlur = MotionBlur::PS2;
-    float fieldOfView = 70.0f;  // degrees at the game's default view (70 = original)
     float drawDistance = 1.0f;  // multiplier on view / detail distances (1 = original)
     float mouseSensitivity = 1.0f;
     bool mouseInvertY = false;

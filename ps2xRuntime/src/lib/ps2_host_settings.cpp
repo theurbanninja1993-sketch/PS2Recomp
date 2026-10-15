@@ -330,10 +330,12 @@ void ps2HostSettingsLoad()
             s.internalScale = std::clamp(std::atoi(v), 1, 4);
         else if (key == "flicker_filter")
             s.flickerFilter = std::atoi(v) != 0;
+        else if (key == "vsync")
+            s.vsync = std::atoi(v) != 0;
         else if (key == "motion_blur")
             s.motionBlur = static_cast<PS2HostSettings::MotionBlur>(std::atoi(v));
         else if (key == "field_of_view")
-            s.fieldOfView = std::clamp(std::strtof(v, nullptr), 40.0f, 120.0f);
+            (void)v; // field_of_view: removed (the game has its own FOV options)
         else if (key == "draw_distance")
             s.drawDistance = std::clamp(std::strtof(v, nullptr), 0.5f, 4.0f);
         else if (key == "mouse_turns_player")
@@ -471,8 +473,9 @@ void ps2HostSettingsSave()
         << "smooth_filtering=" << (s.smoothFiltering ? 1 : 0) << "\n"
         << "internal_scale=" << s.internalScale << "\n"
         << "flicker_filter=" << (s.flickerFilter ? 1 : 0) << "\n"
+        << "vsync=" << (s.vsync ? 1 : 0) << "\n"
         << "motion_blur=" << static_cast<int>(s.motionBlur) << "\n"
-        << "field_of_view=" << s.fieldOfView << "\n"
+
         << "draw_distance=" << s.drawDistance << "\n"
         << "mouse_sensitivity=" << s.mouseSensitivity << "\n"
         << "mouse_invert_y=" << (s.mouseInvertY ? 1 : 0) << "\n"
@@ -501,6 +504,17 @@ void ps2HostSettingsRequestWindowApply()
 void ps2HostSettingsApplyWindow()
 {
     PS2HostSettings &s = g_settings;
+    // Applied every call (the host calls this each frame) so the toggle takes
+    // effect at once; the static keeps the GL call from being re-issued.
+    static int s_appliedVsync = -1;
+    if (s_appliedVsync != (s.vsync ? 1 : 0))
+    {
+        s_appliedVsync = s.vsync ? 1 : 0;
+        if (s.vsync)
+            SetWindowState(FLAG_VSYNC_HINT);
+        else
+            ClearWindowState(FLAG_VSYNC_HINT);
+    }
     if (!g_windowApplyPending)
     {
         // Remember a window resized by hand.

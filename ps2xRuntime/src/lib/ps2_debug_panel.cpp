@@ -2651,6 +2651,13 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
 
                 changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
 
+                // VSync: the swap waits for the display. Off, the port only
+                // had SetTargetFPS(60) - a software cap, not a sync - which is
+                // what tore. On is also what a VRR display needs; the
+                // emulation is fixed at 60 VBlanks/s, so nothing above 60 can
+                // drive it yet.
+                changed |= ImGui::Checkbox("VSync (tear-free; needed for VRR)", &settings.vsync);
+
                 // The game's motion blur: it accumulates previous frames into a
                 // pair of 256x256 buffers and blends them over the display, so
                 // it smears badly on a modern panel. Off skips those draws
@@ -2667,14 +2674,8 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                                       "Off skips it, which also removes its per-frame cost.");
 
                 ImGui::SeparatorText("View");
-                changed |= ImGui::SliderFloat("Field of view", &settings.fieldOfView, 50.0f, 110.0f, "%.0f deg");
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Reset##fov"))
-                {
-                    settings.fieldOfView = 70.0f;
-                    changed = true;
-                }
-                ImGui::TextDisabled("70 is the original. Zooms scale with it; cutscenes keep their framing.");
+                // No FOV slider: the game has its own swappable FOVs (the
+                // in-game options), and overriding them here only fought them.
                 changed |= ImGui::SliderFloat("Draw distance", &settings.drawDistance, 1.0f, 3.0f, "%.1fx");
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Reset##draw"))

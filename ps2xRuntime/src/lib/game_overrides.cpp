@@ -1830,7 +1830,12 @@ namespace
 
     float vcsFovSetting(const uint8_t *rdram)
     {
-        return vcsCutsceneCamera(rdram) ? 70.0f : std::clamp(ps2HostSettings().fieldOfView, 40.0f, 120.0f);
+        // Always the game's own value now: the port used to scale the view
+        // window to a host FOV slider, but the game has its own swappable FOVs
+        // and overriding them only fought them. Kept as the identity so the
+        // hook below stays inert rather than being ripped out.
+        (void)rdram;
+        return 70.0f;
     }
 
     void vcsSetViewWindow(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
