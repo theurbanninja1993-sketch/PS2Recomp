@@ -1093,17 +1093,25 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     **Step 1 DONE (2026-10-15): the host loop runs at 120.** `SetTargetFPS(120)`
     in `ps2_runtime.cpp`. The emulation is unaffected and that is verified, not
     assumed: the game runs on its own thread (`gameThread` -> `m_eeScheduler->run()`)
-    paced by the VBlank clock, and the host loop is only the *present* loop. On a
-    headless run with VSync forced off the host measured 120 fps (8.33 ms/frame)
-    while every game sample stayed at 59.7-60.0. With VSync on a 60 Hz display the
-    swap blocks and nothing changes at all, which is the right default.
+    paced by the VBlank clock, and the host loop is only the *present* loop.
 
-    On its own this gains nothing visible - each picture is shown twice - but it
-    is the frame structure interpolation hangs on: the repeats are where a
-    synthesized frame goes. There is a `[host] fps= frameMs=` line in
-    `PS2X_PERF_LOG` now, so the host rate can be checked without a window (the
-    perf log's own `fps=` is the *game* rate; do not confuse the two, as this
-    note's author did once).
+    **A false alarm worth recording.** The first attempt was reported as "host and
+    game both 120", which reads as the emulation doubling. It was not: the "game
+    fps" readout counted `g_ps2PresentedFrameCounter`, which advances once per
+    *host* frame - at 60 Hz the two coincided, so it had always looked right. The
+    owner's own eyes were the correct instrument ("the game doesn't appear sped
+    up"), and the perf log's `fps=`, which is derived from VBlank ticks, had been
+    reading 60 all along. The readout now uses the VBlank clock, and the camera
+    publish is gated the same way, once per *picture* rather than per host frame -
+    the reprojection deltas are between pictures, and publishing twice per picture
+    would halve them.
+
+    Verified headless with VSync forced off (a real display would block the swap
+    at its own rate, so this is the only way to reach the cap): host 120 fps
+    (8.33 ms/frame) while the game read 60 by both measures. `PS2X_PERF_LOG` gets
+    `[host] fps= frameMs= gameFps=` every 5 s; its own `fps=` field is the game
+    rate from VBlank ticks, so the two can be cross-checked. Do not confuse them -
+    this note's author did, twice.
 
     **Step 2 (next): synthesize the repeats.** The host keeps the last two
     composed frames (A, the previous, and B, the current) and on the frames the

@@ -1226,13 +1226,12 @@ bool PS2Runtime::initialize(const char *title)
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
-        // The host loop is the *present* loop: the emulation runs on its own
-        // thread, paced by the VBlank clock, so raising this cap does not speed
-        // the game up - it only lets the display be refreshed more often than the
-        // game produces pictures. That is the frame structure interpolation needs
+        // The host loop is the *present* loop, and the game's rate comes from the
+        // VBlank clock, not from here - so this can run faster than the game
+        // without changing it. That is the frame structure interpolation needs
         // (the repeats are where a synthesized frame goes); on its own it shows
-        // each picture twice and looks exactly like 60. With VSync on, a 60 Hz
-        // display simply blocks at the swap and nothing changes.
+        // each picture twice and looks exactly like 60. With VSync on a 60 Hz
+        // display the swap blocks and nothing changes at all.
         SetTargetFPS(120);
         SetExitKey(KEY_NULL); // Esc is the pause button, not "close window"
         if (m_debugUiInitCallback)
@@ -3408,7 +3407,17 @@ void PS2Runtime::run()
         // view-window hook only runs when the game sets the window, so reading the
         // camera there leaves it stale in between; the CCam is updated every
         // frame, so take the sample here, where a frame is actually being shown.
-        ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
+        // Once per *picture*, not per host frame: the reprojection deltas are
+        // between pictures, and publishing twice per picture would halve them.
+        {
+            static uint64_t s_lastCameraTick = ~0ull;
+            const uint64_t cameraTick = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
+            if (cameraTick != s_lastCameraTick)
+            {
+                s_lastCameraTick = cameraTick;
+                ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
+            }
+        }
 
         m_padBackend.updateHostInput();
         if (IsKeyPressed(KEY_F10))
@@ -3457,21 +3466,22 @@ void PS2Runtime::run()
         DrawTexturePro(presentDraw, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         if (hostSettings.showFps)
         {
-            // Two different rates, and the one that matters is the game's: the
-            // host loop runs at the target frame rate whether or not the game is
-            // producing new pictures (repeats are skipped), so GetFPS() alone
-            // reads 60 while the game crawls. The emulated frame counter only
-            // advances when a new picture is actually presented.
-            static uint64_t s_lastFrames = 0;
+            // Two different rates, and the one that matters is the game's. The
+            // host loop presents at the target frame rate whether or not the game
+            // has produced a new picture, so GetFPS() alone reads the host rate.
+            // The game's rate is the VBlank clock, which is what its logic runs
+            // on; counting presented frames instead reads double once the host
+            // loop is faster than the game.
+            static uint64_t s_lastTicks = 0;
             static double s_lastSample = 0.0;
             static int s_gameFps = 0;
-            const uint64_t frames = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+            const uint64_t ticks = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
             const double now = GetTime();
             const double elapsed = now - s_lastSample;
             if (elapsed >= 0.5)
             {
-                s_gameFps = static_cast<int>((frames - s_lastFrames) / elapsed + 0.5);
-                s_lastFrames = frames;
+                s_gameFps = static_cast<int>((ticks - s_lastTicks) / elapsed + 0.5);
+                s_lastTicks = ticks;
                 s_lastSample = now;
             }
             DrawText(TextFormat("game %d fps", s_gameFps), 10, 10, 20, LIME);
@@ -3489,7 +3499,20 @@ void PS2Runtime::run()
                 s_lastHostLog = hostNow;
                 if (FILE *f = std::fopen(perfPath, "a"))
                 {
-                    std::fprintf(f, "[host] fps=%d frameMs=%.2f\n", GetFPS(), GetFrameTime() * 1000.0f);
+                    // The game rate is the VBlank clock, the same source the
+                    // overlay uses - logging it here makes the two checkable
+                    // together without a visible window.
+                    static uint64_t s_lastTickLog = 0;
+                    static double s_lastTickTime = 0.0;
+                    const uint64_t tickNow = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
+                    const int gameFps =
+                        s_lastTickTime > 0.0
+                            ? static_cast<int>((tickNow - s_lastTickLog) / (hostNow - s_lastTickTime) + 0.5)
+                            : 0;
+                    s_lastTickLog = tickNow;
+                    s_lastTickTime = hostNow;
+                    std::fprintf(f, "[host] fps=%d frameMs=%.2f gameFps=%d\n", GetFPS(), GetFrameTime() * 1000.0f,
+                                 gameFps);
                     std::fclose(f);
                 }
             }
