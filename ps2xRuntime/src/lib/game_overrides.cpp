@@ -9,6 +9,8 @@
 #include "Kernel/Stubs/MPEG.h"
 #include "ps2_syscalls.h"
 #include "ps2_log.h"
+#include "runtime/ps2_camera.h"
+#include "runtime/ps2_platform.h"
 #include "runtime/ps2_host_settings.h"
 #include <algorithm>
 #include <cmath>
@@ -1838,6 +1840,48 @@ namespace
         return 70.0f;
     }
 
+    // The camera, as the reprojection pass needs it: orientation (+0x78/+0x7C),
+    // position (+0x20) and the view window (tan(halfFov) wide). Published here
+    // because this hook runs every frame with the camera in hand, after the
+    // game has updated it.
+    void vcsPublishCamera(const uint8_t *rdram, uint32_t camera, float viewX, float viewY)
+    {
+        if (camera < 0x00100000u || camera + 0x240u > PS2_RAM_SIZE)
+            return;
+        Ps2CameraState state;
+        std::memcpy(&state.alpha, rdram + camera + 0x78u, 4);
+        std::memcpy(&state.beta, rdram + camera + 0x7Cu, 4);
+        std::memcpy(state.pos, rdram + camera + 0x20u, 12);
+        state.viewX = viewX;
+        state.viewY = viewY;
+        state.valid = std::isfinite(state.alpha) && std::isfinite(state.beta) && std::isfinite(state.pos[0]) &&
+                      std::isfinite(state.pos[1]) && std::isfinite(state.pos[2]);
+        g_ps2Camera = state;
+        g_ps2CameraFrame.store(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        // PS2X_CAMERA_LOG=1: write the camera each frame to cameralog.txt next to
+        // the executable. A file rather than stderr because the Windows build
+        // has no console, and this is the data the reprojection pass is built
+        // on - worth eyeballing (alpha should swing when the view turns, pos
+        // when the camera moves) before trusting the warp.
+        static const bool s_log = std::getenv("PS2X_CAMERA_LOG") != nullptr;
+        if (s_log)
+        {
+            static FILE *s_file = []()
+            {
+                const std::filesystem::path path = ps2ExecutableDirectory() / "cameralog.txt";
+                return std::fopen(path.string().c_str(), "w");
+            }();
+            static int s_n = 0;
+            if (s_file && (s_n < 30 || (s_n % 30) == 0))
+                std::fprintf(s_file, "n=%d frame=%llu alpha=%.4f beta=%.4f pos=(%.1f,%.1f,%.1f) view=(%.4f,%.4f) valid=%d\n",
+                             s_n, static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), state.alpha, state.beta,
+                             state.pos[0], state.pos[1], state.pos[2], state.viewX, state.viewY, state.valid ? 1 : 0);
+            ++s_n;
+            if (s_file && (s_n % 30) == 0)
+                std::fflush(s_file);
+        }
+    }
+
     void vcsSetViewWindow(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t camera = getRegU32(ctx, 4), viewWindow = getRegU32(ctx, 5);
@@ -1848,6 +1892,7 @@ namespace
             g_vcsFov.camera = camera;
             g_vcsFov.gameX = vw[0];
             g_vcsFov.gameY = vw[1];
+            vcsPublishCamera(rdram, camera, vw[0], vw[1]);
             const float setting = vcsFovSetting(rdram);
             g_vcsFov.appliedFov = setting;
             if (setting != 70.0f && vw[0] > 0.0f && std::isfinite(vw[0]) && std::isfinite(vw[1]))

@@ -3,6 +3,7 @@
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/gs_gpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
+#include "runtime/ps2_camera.h"
 #include "runtime/ps2_host_settings.h" // smoothFiltering: the shared display texture's filter
 
 #include "ThreadNaming.h"
@@ -25,6 +26,8 @@ namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<bool> g_gsMotionBlurOff{false};
+Ps2CameraState g_ps2Camera;
+std::atomic<uint64_t> g_ps2CameraFrame{0};
 // The host window size, published by the main thread each frame (0 = unknown).
 // The upscaled display readback is capped to it: the composed frame is only
 // ever shown at window size, so transferring more than that is pure waste.

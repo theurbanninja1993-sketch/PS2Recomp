@@ -906,6 +906,21 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       `Motion blur: Modern`, and only consider per-object if it proves too
       smeary to be worth having.
 
+    **Progress (2026-10-15):** step 1 done - the camera is published once per
+    frame in `runtime/ps2_camera.h` (`g_ps2Camera`: alpha/beta at camera
+    +0x78/+0x7C, position at +0x20, view window from RwCameraSetViewWindow),
+    written by `vcsPublishCamera` in the `vcsSetViewWindow` hook. Not yet
+    verified against a real camera: the intro is a cutscene and never calls
+    that hook, so it publishes nothing here. **`PS2X_CAMERA_LOG=1`** writes
+    cameralog.txt next to the executable for that check - alpha should swing
+    when the view turns and pos when the camera moves. Verify the offsets
+    before building the warp on them, because a wrong offset makes the warp
+    garbage rather than subtly off.
+    Next: the homography from the alpha/beta delta, a reproject+blend in the
+    compose (the display already renders into a GPU framebuffer in both present
+    paths, so the previous frame is available either way), and a
+    `Motion blur: PS2 / Off / Modern` option.
+
 14. **Frame rates above 60 (owner ask).** The emulation is locked to 60
     VBlanks/s - the game's logic runs per VBlank - so anything above 60 must be
     *interpolated*, not emulated. Three shapes, cheapest first:
