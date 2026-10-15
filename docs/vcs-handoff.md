@@ -1142,10 +1142,33 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     produced none)` - so the whole chain runs. With no env set the renderer is
     byte-identical over 61 frames.
 
-    `linux/play-interp.sh` and `windows/play-interp.cmd` on the stick set
-    `PS2X_FRAME_INTERP=1`. **Not yet seen on a real display**: what to look for is
-    smoother motion rather than doubled, with the HUD still - a wobbling HUD means
-    the mask is wrong, which is the thing to chase.
+    **Frame rate setting (2026-10-15, owner ask).** Display options has
+    **60 (native) / 120 / 180 / 240 (interpolated)**. The rate is the setting that
+    implies the interpolation; `PS2X_FRAME_INTERP=1` still forces it on for
+    testing and `PS2X_FRAME_RATE` sets the rate from a launcher.
+
+    The synthesis takes a phase: the warp is `(1 + t)*p - t*H*p`, so the frame
+    shown is the fraction `t` of the way from the last picture toward the next
+    rather than always the midpoint. The host works out `t` from the host frames
+    since the last picture over `rate/60`, and drives `SetTargetFPS` from the same
+    setting. Verified with VSync forced off: rate 240 gives host 240 fps
+    (4.17 ms/frame) with the game still at 60, and the first synthesized frame
+    logs phase 0.25.
+
+    **A bug this exposed, and it was the 120 cap.** The owner reported the mouse
+    camera pulling behind the vehicle even sitting still, where it should move
+    freely and only recentre once moving. The look offset is applied only while
+    `g_ps2PresentedFrameCounter` is within one of the vehicle-camera update frame -
+    and that counter advanced once per *host* frame, so at 120 the gap was two,
+    the gate failed, the offset stopped being applied, and the game's own
+    recentring won. The counter now counts *pictures*: it advances where a new
+    picture is detected, not in the host present block. Everything that gates on
+    it is picture-based again, which is what they all assumed; the host frame count
+    is kept separately for the dumps and exit gates. Worth remembering as a class
+    of bug: anything keyed on "presented frames" quietly changes meaning when the
+    host loop runs faster than the game.
+
+    `linux/play-interp.sh` and `windows/play-interp.cmd` set the rate.
 
     - **Reprojection (as in item 13).** Generate intermediate display frames by
       warping the previous composed frame along the camera delta. Reuses the
