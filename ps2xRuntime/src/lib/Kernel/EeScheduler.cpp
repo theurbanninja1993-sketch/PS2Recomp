@@ -701,12 +701,13 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
         {
             extern std::atomic<uint64_t> g_gsGpuResolves, g_gsGpuLoads, g_gsGpuReadbacks;
             extern std::atomic<uint64_t> g_gsGpuBarriers, g_gsGpuMemBarriers, g_gsGpuSyncAlias, g_gsGpuSyncTexture;
-            static uint64_t s_lastGs[7] = {};
-            std::atomic<uint64_t> *counters[7] = {&g_gsGpuResolves, &g_gsGpuLoads, &g_gsGpuReadbacks,
+            extern std::atomic<uint64_t> g_gsGpuSyncStale, g_gsGpuTargets;
+            static uint64_t s_lastGs[9] = {};
+            std::atomic<uint64_t> *counters[9] = {&g_gsGpuResolves, &g_gsGpuLoads, &g_gsGpuReadbacks,
                                                   &g_gsGpuBarriers, &g_gsGpuMemBarriers, &g_gsGpuSyncAlias,
-                                                  &g_gsGpuSyncTexture};
-            static const char *names[7] = {"gsRes", "gsLoad", "gsRb", "gsBar", "gsMem", "gsAlias", "gsTex"};
-            for (size_t i = 0; i < 7; ++i)
+                                                  &g_gsGpuSyncTexture, &g_gsGpuSyncStale, &g_gsGpuTargets};
+            static const char *names[9] = {"gsRes", "gsLoad", "gsRb", "gsBar", "gsMem", "gsAlias", "gsTex", "gsStale", "gsTargets"};
+            for (size_t i = 0; i < 9; ++i)
             {
                 const uint64_t now = counters[i]->load(std::memory_order_relaxed);
                 std::fprintf(s_file, " %s=%llu", names[i], static_cast<unsigned long long>(now - s_lastGs[i]));

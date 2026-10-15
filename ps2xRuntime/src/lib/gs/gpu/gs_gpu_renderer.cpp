@@ -40,6 +40,8 @@ std::atomic<uint64_t> g_gsGpuBarriers{0};    // glTextureBarrier (feedback draws
 std::atomic<uint64_t> g_gsGpuMemBarriers{0}; // glMemoryBarrier (target resolves)
 std::atomic<uint64_t> g_gsGpuSyncAlias{0};   // resolves because targets alias
 std::atomic<uint64_t> g_gsGpuSyncTexture{0}; // resolves to feed a texture read
+std::atomic<uint64_t> g_gsGpuSyncStale{0};   // resolves from the stale-row load path
+std::atomic<uint64_t> g_gsGpuTargets{0};     // live targets (views of local memory)
 std::atomic<uint32_t> g_gsGpuPresentWidth{0};
 std::atomic<uint32_t> g_gsGpuPresentHeight{0};
 // Set once the GL path is really running (see the Renderer constructor).
@@ -1127,6 +1129,8 @@ void main()
             g_gsGpuSyncAlias.fetch_add(1u, std::memory_order_relaxed);
         else if (m_syncReason == "texture")
             g_gsGpuSyncTexture.fetch_add(1u, std::memory_order_relaxed);
+        else if (m_syncReason == "stale")
+            g_gsGpuSyncStale.fetch_add(1u, std::memory_order_relaxed);
         GL &gl = m_context.gl;
         g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT); // VRAM readers and the target's draws
@@ -1565,6 +1569,7 @@ void main()
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
         ++m_statDraws;
         g_gsGpuDraws.fetch_add(1u, std::memory_order_relaxed);
+        g_gsGpuTargets.store(static_cast<uint64_t>(m_targets.size()), std::memory_order_relaxed);
 
         // The targets now hold data VRAM lacks in the drawn rows.
         auto markDirty = [&](Target *target)
