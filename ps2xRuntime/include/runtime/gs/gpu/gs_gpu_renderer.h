@@ -416,7 +416,8 @@ namespace gsgpu
         Target *m_drawColor = nullptr;
         Target *m_drawDepth = nullptr;
         int32_t m_drawY0 = 0, m_drawY1 = 0;
-        int32_t m_batchY0 = 0, m_batchY1 = 0; // vertex row bounds of the pending batch
+        int32_t m_batchY0 = 0, m_batchY1 = 0;
+        int32_t m_batchX0 = 0, m_batchX1 = 0; // vertex row bounds of the pending batch
         uint64_t m_drawSeq = 0;
 
         // CLUT: CBP0/CBP1 registers for the CLD compare modes, and a version
@@ -429,6 +430,7 @@ namespace gsgpu
         GSTransferSnapshot m_transferState{};
         bool m_cpuTransfer = false; // local->host: served by m_cpu
 
+        uint64_t m_statBlurSkipped = 0; // motion-blur draws dropped
         uint64_t m_statDraws = 0, m_statResolves = 0, m_statLoads = 0, m_statReadbacks = 0, m_statClutLoads = 0,
                  m_statTransfers = 0;
         const char *m_syncReason = "other";
