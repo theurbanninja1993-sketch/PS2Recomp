@@ -30,6 +30,11 @@ std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 // Draw calls issued to GL. One per state-change flush, so this is the number
 // the GPU driver's own threads have to process each frame.
 std::atomic<uint64_t> g_gsGpuDraws{0};
+// Row volume of the two sync passes vs the real draws: says whether they are
+// pixel-heavy (narrow them) or call-heavy (batch them).
+std::atomic<uint64_t> g_gsGpuResolveRows{0};
+std::atomic<uint64_t> g_gsGpuLoadRows{0};
+std::atomic<uint64_t> g_gsGpuDrawRows{0};
 // What the draw path asks the driver to do beyond the draws themselves. Both
 // barriers are pipeline-synchronising operations, so their counts say whether
 // the driver thread is paying for state churn or for synchronisation.
@@ -1092,6 +1097,7 @@ void main()
             return;
         ++m_statLoads;
         g_gsGpuLoads.fetch_add(1u, std::memory_order_relaxed);
+        g_gsGpuLoadRows.fetch_add(rows, std::memory_order_relaxed);
         GL &gl = m_context.gl;
         Program &program = target.depth ? m_loadDepth : m_loadColor;
         gl.glUseProgram(program.id);
@@ -1133,6 +1139,8 @@ void main()
             return;
         }
         ++m_statResolves;
+        g_gsGpuResolveRows.fetch_add(std::min(target.dirtyY1, target.height - 1u) - target.dirtyY0 + 1u,
+                                     std::memory_order_relaxed);
         ++m_statResolveReasons[m_syncReason];
         g_gsGpuResolves.fetch_add(1u, std::memory_order_relaxed);
         if (m_syncReason == "alias")
@@ -1142,10 +1150,12 @@ void main()
         else if (m_syncReason == "stale")
             g_gsGpuSyncStale.fetch_add(1u, std::memory_order_relaxed);
         GL &gl = m_context.gl;
-        // PS2X_GS_GPU_SKIP_MEMBARRIER: diagnostic only. One glMemoryBarrier per
-        // resolve (~590 a frame in dense scenes) is a pipeline-synchronising
-        // call, so this says whether the barriers or the resolve draws are the
-        // driver's cost. Expect visual artifacts with it on.
+        // PS2X_GS_GPU_SKIP_MEMBARRIER: diagnostic only. Two glMemoryBarrier
+        // calls per resolve (~590 resolves a frame in dense scenes, so ~1180
+        // barriers), each of which can flush caches and serialise the pipeline.
+        // Removing just one leaves the other doing the same work, so this
+        // removes BOTH - which is the only version of the test that says
+        // anything. Expect visual artifacts with it on.
         static const bool s_skipMemBarrier = std::getenv("PS2X_GS_GPU_SKIP_MEMBARRIER") != nullptr;
         if (!s_skipMemBarrier)
         {
@@ -1161,7 +1171,11 @@ void main()
         gl.glProgramUniform1ui(m_resolve.id, uniform(m_resolve, "u_scale"), m_scale);
         gl.glBindTextureUnit(0, target.texture);
         gl.glDispatchCompute((target.width + 63u) / 64u, (rows + 3u) / 4u, 1u);
-        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        // Both barriers honour the skip flag. Gating only the first one (as this
+        // did) proves nothing: the remaining barrier still synchronises, so the
+        // cost stays and the measurement reads zero either way.
+        if (!s_skipMemBarrier)
+            gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
         if (replacementsActive())
         {
             uint32_t begin = 0, end = 0;
@@ -1593,6 +1607,7 @@ void main()
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
         ++m_statDraws;
         g_gsGpuDraws.fetch_add(1u, std::memory_order_relaxed);
+        g_gsGpuDrawRows.fetch_add(static_cast<uint64_t>(std::max(0, m_batchY1 - m_batchY0 + 1)), std::memory_order_relaxed);
         g_gsGpuTargets.store(static_cast<uint64_t>(m_targets.size()), std::memory_order_relaxed);
 
         // The targets now hold data VRAM lacks in the drawn rows.

@@ -205,6 +205,28 @@ int main(int argc, char **argv)
                 std::fclose(out);
             }
         std::printf("pass %d: vramHash=%016llx\n", pass, static_cast<unsigned long long>(hash));
+        // Draw/resolve/load totals: says whether a capture exercises the paths a
+        // renderer change touches, and lets a change be checked against them as
+        // well as the hash. The perf log's equivalents are gsDraws/gsRes/gsLoad/
+        // gsBar/gsMem.
+        {
+            extern std::atomic<uint64_t> g_gsGpuDraws, g_gsGpuResolves, g_gsGpuLoads;
+            extern std::atomic<uint64_t> g_gsGpuBarriers, g_gsGpuMemBarriers;
+            extern std::atomic<uint64_t> g_gsGpuSyncAlias, g_gsGpuSyncTexture, g_gsGpuSyncStale;
+            std::printf("  resolves by reason: alias=%llu texture=%llu stale=%llu\n",
+                        static_cast<unsigned long long>(g_gsGpuSyncAlias.load()),
+                        static_cast<unsigned long long>(g_gsGpuSyncTexture.load()),
+                        static_cast<unsigned long long>(g_gsGpuSyncStale.load()));
+            extern std::atomic<uint64_t> g_gsGpuResolveRows, g_gsGpuLoadRows, g_gsGpuDrawRows;
+            std::printf("  rows: draws=%llu resolves=%llu loads=%llu\n",
+                        static_cast<unsigned long long>(g_gsGpuDrawRows.load()),
+                        static_cast<unsigned long long>(g_gsGpuResolveRows.load()),
+                        static_cast<unsigned long long>(g_gsGpuLoadRows.load()));
+            std::printf("  draws=%llu resolves=%llu loads=%llu texBarriers=%llu memBarriers=%llu\n",
+                        static_cast<unsigned long long>(g_gsGpuDraws.load()), static_cast<unsigned long long>(g_gsGpuResolves.load()),
+                        static_cast<unsigned long long>(g_gsGpuLoads.load()), static_cast<unsigned long long>(g_gsGpuBarriers.load()),
+                        static_cast<unsigned long long>(g_gsGpuMemBarriers.load()));
+        }
     }
     if (profilePath)
     {
