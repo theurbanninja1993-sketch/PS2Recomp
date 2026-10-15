@@ -27,6 +27,14 @@ namespace ps2_game_overrides
     };
 
     void registerDescriptor(const Descriptor &descriptor);
+
+    // Reads the active camera (TheCamera.Cams[0], 0x6F4540) and publishes it for
+    // the reprojection pass. Called from the present path once per presented
+    // frame: the view-window hook only runs when the game sets the window, so a
+    // camera published only from there goes stale in between (the log showed
+    // publishes at frames 1554, 1581, 1582, 1633, ...). The CCam itself is
+    // updated every frame, so reading it here gives one fresh sample per picture.
+    void publishCameraFrame(const uint8_t *rdram);
     void applyMatching(PS2Runtime &runtime, const std::string &elfPath, uint32_t entry, uint32_t crc32, bool crc32Valid);
 
     // Runtime helper for game-specific modules:

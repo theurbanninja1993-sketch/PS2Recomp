@@ -1440,6 +1440,12 @@ namespace
     };
     VcsFov g_vcsFov;
 
+    // The last view window the game asked for, kept for the per-frame camera
+    // publish: the window changes only when the FOV does, so the camera is read
+    // every frame but the window only when it is re-issued.
+    float g_vcsViewWindowX = 0.0f;
+    float g_vcsViewWindowY = 0.0f;
+
     // Applies the look offset to the vehicle camera's result (CCam Front
     // +0x10, Source +0x20 and copy +0x50, Up +0x60), as the game's own look
     // left / right does: TheCamera, the RenderWare camera and everything
@@ -1844,11 +1850,13 @@ namespace
     // position (+0x20) and the view window (tan(halfFov) wide). Published here
     // because this hook runs every frame with the camera in hand, after the
     // game has updated it.
-    void vcsPublishCamera(const uint8_t *rdram, uint32_t camera, float viewX, float viewY)
+    void vcsPublishCamera(const uint8_t *rdram, float viewX, float viewY)
     {
-        (void)camera; // the RwCamera has the view window; the CCam has the rest
         // TheCamera.Cams[0]: Front +0x10, Source +0x20, Up +0x60. Fixed address,
-        // the same camera the vehicle look rotates.
+        // the same camera the vehicle look rotates, so these are offsets the port
+        // already relies on. (The first attempt read +0x78/+0x7C off the
+        // RenderWare camera - a change detector reading 2000, not an angle - and
+        // a +0x20 that was not a world position; the camera log caught both.)
         constexpr uint32_t kActiveCam = 0x006F4540u;
         Ps2CameraState state;
         std::memcpy(state.front, rdram + kActiveCam + 0x10u, 12);
@@ -1856,9 +1864,17 @@ namespace
         std::memcpy(state.up, rdram + kActiveCam + 0x60u, 12);
         state.viewX = viewX;
         state.viewY = viewY;
+        const auto len3 = [](const float v[3])
+        { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
         const auto finite3 = [](const float v[3])
         { return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]); };
-        state.valid = finite3(state.front) && finite3(state.pos) && finite3(state.up);
+        // Before the game builds a camera the CCam is all zeros: a unit -Z front
+        // with a zero position. A real camera has a unit basis, is not at the
+        // world origin, and has been given a view window (the intro is a cutscene
+        // with no main camera at all).
+        const auto unit = [&](const float v[3]) { return std::fabs(len3(v) - 1.0f) < 0.05f; };
+        state.valid = finite3(state.front) && finite3(state.pos) && finite3(state.up) && unit(state.front) &&
+                      unit(state.up) && len3(state.pos) > 0.01f && std::isfinite(viewX) && viewX > 0.0f;
         g_ps2Camera = state;
         g_ps2CameraFrame.store(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), std::memory_order_relaxed);
         // PS2X_CAMERA_LOG=1: write the camera each frame to cameralog.txt next to
@@ -1875,8 +1891,6 @@ namespace
                 return std::fopen(path.string().c_str(), "w");
             }();
             static int s_n = 0;
-            const auto len3 = [](const float v[3])
-            { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
             if (s_file && (s_n < 30 || (s_n % 30) == 0))
             {
                 std::fprintf(s_file,
@@ -1903,7 +1917,9 @@ namespace
             g_vcsFov.camera = camera;
             g_vcsFov.gameX = vw[0];
             g_vcsFov.gameY = vw[1];
-            vcsPublishCamera(rdram, camera, vw[0], vw[1]);
+            g_vcsViewWindowX = vw[0];
+            g_vcsViewWindowY = vw[1];
+            vcsPublishCamera(rdram, vw[0], vw[1]);
             const float setting = vcsFovSetting(rdram);
             g_vcsFov.appliedFov = setting;
             if (setting != 70.0f && vw[0] > 0.0f && std::isfinite(vw[0]) && std::isfinite(vw[1]))
@@ -2079,6 +2095,17 @@ namespace
         ps2_stubs::setMpegAudioThrottle(16u);
 
         vcsInstallCallCounters(runtime);
+    }
+}
+
+namespace ps2_game_overrides
+{
+    // Called from the present path, once per presented frame. The anonymous
+    // namespace above is at file scope, so this needs its own namespace block to
+    // match the declaration the runtime sees.
+    void publishCameraFrame(const uint8_t *rdram)
+    {
+        vcsPublishCamera(rdram, g_vcsViewWindowX, g_vcsViewWindowY);
     }
 }
 

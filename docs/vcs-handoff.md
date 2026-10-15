@@ -906,17 +906,42 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       `Motion blur: Modern`, and only consider per-object if it proves too
       smeary to be worth having.
 
-    **Progress (2026-10-15):** step 1 done - the camera is published once per
-    frame in `runtime/ps2_camera.h` (`g_ps2Camera`: alpha/beta at camera
-    +0x78/+0x7C, position at +0x20, view window from RwCameraSetViewWindow),
-    written by `vcsPublishCamera` in the `vcsSetViewWindow` hook. Not yet
-    verified against a real camera: the intro is a cutscene and never calls
-    that hook, so it publishes nothing here. **`PS2X_CAMERA_LOG=1`** writes
-    cameralog.txt next to the executable for that check - alpha should swing
-    when the view turns and pos when the camera moves. Verify the offsets
-    before building the warp on them, because a wrong offset makes the warp
-    garbage rather than subtly off.
-    Next: the homography from the alpha/beta delta, a reproject+blend in the
+    **Progress (2026-10-15):** the camera offsets are **confirmed against a real
+    camera**, and the first attempt at them was wrong - which is exactly what
+    the log was for. Published state is `g_ps2Camera` in
+    `runtime/ps2_camera.h`: `front`/`up`/`pos` read from **TheCamera.Cams[0]**
+    at the fixed address `0x6F4540` (Front +0x10, Source +0x20, Up +0x60), the
+    same camera the vehicle mouse look rotates. The log showed `front` and `up`
+    unit length and mutually perpendicular, `pos` world-scale (~1700) and moving
+    with the camera, `front` swinging on turns, `up` tilting on look up/down,
+    and the view window tracking the game's own swappable FOVs
+    (tan(35)/tan(22.5)/tan(60) all appear).
+
+    Two things that first attempt got wrong, both caught by the log:
+    - `+0x78/+0x7C` off the *RenderWare* camera are not alpha/beta. They read
+      2000/1000 - a mode/state value - and the look code only uses them as a
+      *change detector*, which is a different job from an orientation.
+    - `+0x20` there is not a world position (|pos| ~ 1).
+
+    The view window comes from `RwCameraSetViewWindow`, but **that hook only
+    runs when the game sets the window**, so a camera published only from there
+    goes stale in between (the log showed publishes at frames 1554, 1581, 1582,
+    1633 - not consecutive). `publishCameraFrame` is therefore called from the
+    present path in `PS2Runtime::run()`, once per presented frame: the CCam is
+    updated every frame, so that gives one fresh sample per picture, and the
+    view window is remembered from the last request. Verified locally: the intro
+    (no camera at all) now logs *consecutive* frames with `valid=0`, so the
+    plumbing is right even where there is nothing to reproject.
+
+    `valid` requires a unit `front`/`up`, a position off the world origin, and a
+    real view window - before the game builds a camera the CCam is all zeros
+    (a unit -Z front, zero position), which is exactly the state the intro
+    presents.
+
+    **`PS2X_CAMERA_LOG=1`** writes cameralog.txt next to the executable (the
+    Linux launcher sets it; `windows/cameralog.cmd` does the same on Windows).
+
+    Next: the homography from the camera delta, a reproject+blend in the
     compose (the display already renders into a GPU framebuffer in both present
     paths, so the previous frame is available either way), and a
     `Motion blur: PS2 / Off / Modern` option.

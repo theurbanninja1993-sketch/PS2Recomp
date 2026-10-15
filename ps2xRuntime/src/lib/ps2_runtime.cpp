@@ -3397,6 +3397,12 @@ void PS2Runtime::run()
         Texture2D presentDraw = frameTex;
         UploadFrame(frameTex, this, presentWidth, presentHeight, presentDraw);
 
+        // The reprojection pass needs a camera sample per presented picture. The
+        // view-window hook only runs when the game sets the window, so reading the
+        // camera there leaves it stale in between; the CCam is updated every
+        // frame, so take the sample here, where a frame is actually being shown.
+        ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
+
         m_padBackend.updateHostInput();
         if (IsKeyPressed(KEY_F10))
             ps2MusicStationNextTrack();
