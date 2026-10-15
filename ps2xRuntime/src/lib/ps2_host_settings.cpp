@@ -335,7 +335,7 @@ void ps2HostSettingsLoad()
         else if (key == "motion_blur")
             s.motionBlur = static_cast<PS2HostSettings::MotionBlur>(std::atoi(v));
         else if (key == "motion_blur_strength")
-            s.motionBlurStrength = std::clamp(std::strtof(v, nullptr), 0.0f, 0.9f);
+            s.motionBlurStrength = std::clamp(std::strtof(v, nullptr), 0.0f, 1.5f);
         else if (key == "field_of_view")
             (void)v; // field_of_view: removed (the game has its own FOV options)
         else if (key == "draw_distance")

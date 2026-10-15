@@ -941,9 +941,18 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     **`PS2X_CAMERA_LOG=1`** writes cameralog.txt next to the executable (the
     Linux launcher sets it; `windows/cameralog.cmd` does the same on Windows).
 
-    **Progress (2026-10-15): "Modern" is implemented.** `Motion blur: PS2 / Off /
-    Modern` with a `Blur amount` slider (0..0.9, default 0.5), plus
+    **Progress (2026-10-15): "Modern" is implemented**, then reworked after the
+    owner's first look at it. `Motion blur: PS2 / Modern / Off` (that order, the
+    owner's ask) with a `Blur length` slider (0..1.5, default 0.5), plus
     `PS2X_MODERN_BLUR=1` and `PS2X_MODERN_BLUR_STRENGTH` to A/B it from a launcher.
+
+    **The first version was wrong and the owner said so**: it blended the
+    previous frame in, which is a *temporal* accumulation. That reads as a sharp
+    double image - ghosting - not a blur, the trail keeps growing, and it smeared
+    the HUD. The current version is a *spatial* shutter blur: the composed frame
+    is smeared along the camera's own per-pixel motion, and there is no history
+    at all. That is stable (no temporal artifacts, nothing to seed, and a still
+    camera is an exact no-op) and it looks like motion blur rather than a ghost.
 
     The homography is `ps2CameraHomography` in `runtime/ps2_camera.h`: the
     previous camera's basis is applied to the current frame's rays, and the
@@ -952,7 +961,8 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     translation is an approximation because the port has no usable depth buffer -
     the GS receives vertices the game already projected, so its Z values cannot
     be inverted without the game's matrices. A wrong depth scales the translation
-    part, it does not corrupt it.
+    part, it does not corrupt it. `uv - warp(uv)` is the screen motion over one
+    frame, and the six taps run from `uv` back along it, scaled by the slider.
 
     Screen convention, worth stating because it is the thing most likely to be
     silently wrong: the draw shader maps GS y straight to GL clip y with no flip,
@@ -961,31 +971,32 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     the sign. Verified by the port's own readback path: `glGetTextureSubImage`
     returns GL row 0 first and the host draws that as the top of the picture.
 
-    The pass: the compose draws into `m_composeTexture`, the warp+blend shader
-    reads it with the history and writes the display target, then the display is
-    copied into the history - so each frame blends against the previous *output*
-    and a turn leaves a decaying trail rather than a single ghost. A sample that
-    falls outside the previous frame keeps the current pixel instead of smearing
-    a clamp in. All textures grow-only, like the present pair.
+    **Overlays (the HUD, the minimap) are kept out of the blur.** They are drawn
+    in screen space, so they do not move with the camera and must not smear. The
+    renderer takes the moment the 3D scene ends - the first draw that stops
+    testing depth after one that did - and copies that target aside
+    (`captureSceneSnapshot`). The compose compares the finished frame against the
+    snapshot and puts the answer in the alpha channel; the blur pass scales the
+    smear by it and restores alpha to 1 on the way out. If a frame never makes
+    that transition there is no snapshot and everything blurs, which is the old
+    behaviour, so this can only reduce smearing, never corrupt the frame.
+    `PS2X_BLUR_MASK_DEBUG=1` tints what is left alone red, so the mask can be
+    checked by eye - **not yet confirmed on real gameplay**, and the transition
+    heuristic is the part to doubt: if the HUD is not red, the signal is wrong.
 
-    Verified locally (no screen available): `tools`-style numeric checks of the
-    homography against hand-computed cases (identity, yaw, forward translation
-    with two depths, pitch - both vertical signs) all pass, and applying it to
-    the owner's real cameralog gives an *exact* identity for all 34 static
-    camera pairs, with the game's FOV ramp showing up as a ~0.0002 scale. The
-    pass also renders byte-identical to the unblurred path on the intro (31/31
-    dumped frames), where there is no camera and it is a pass-through.
+    Verified locally (no screen available): numeric checks of the homography
+    against hand-computed cases (identity, yaw, forward translation at two depths,
+    pitch - both vertical signs) all pass; applying it to the owner's real
+    cameralog gives an *exact* identity for all 34 static camera pairs, with the
+    game's FOV ramp showing up as a ~0.0002 scale; and with Modern on but no
+    camera (the intro) the pass renders byte-identical to the unblurred path
+    (31/31 dumped frames).
 
-    Not verified: the warp's *appearance* on real gameplay - that needs a screen.
-    What to look for: on a turn, the smear should follow the direction the world
-    moves, and it should be strongest near the edges and near geometry (parallax),
-    with the horizon barely moving. A vertical smear where there should be a
-    horizontal one would mean the screen convention above is wrong.
+    Not verified: the smear's *appearance* on real gameplay, and the overlay mask
+    - both need a screen.
 
-    Next: reuse the same pass for frame interpolation above 60 (the history is
-    already the previous frame; interpolation needs the composed frame kept
-    clean rather than accumulated), and per-object motion if camera-only proves
-    too thin.
+    Next: confirm the overlay mask with `PS2X_BLUR_MASK_DEBUG=1`, and reuse the
+    same motion vectors for frame interpolation above 60.
 
 14. **Frame rates above 60 (owner ask).** The emulation is locked to 60
     VBlanks/s - the game's logic runs per VBlank - so anything above 60 must be

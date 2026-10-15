@@ -660,10 +660,12 @@ void main()
         const char *kComposeShader = R"(#version 450 core
 layout(binding = 0) uniform sampler2D u_circuit1;
 layout(binding = 1) uniform sampler2D u_circuit2;
+layout(binding = 2) uniform sampler2D u_scene1; // circuit 1 as it was before the overlays
 uniform ivec4 u_rect1; // read origin and size in target pixels; size 0 = circuit off
 uniform ivec4 u_rect2;
 uniform vec3 u_bg;
 uniform vec2 u_mode;   // MMOD ALP factor (or < 0: circuit 1's alpha), SLBG
+uniform float u_sceneValid; // 0 = no snapshot: blur the whole frame
 out vec4 o_color;
 void main()
 {
@@ -677,36 +679,74 @@ void main()
         float factor = u_mode.x >= 0.0 ? u_mode.x : min(1.0, src.a * 2.0);
         dst = mix(dst, src.rgb, factor);
     }
-    o_color = vec4(dst, 1.0);
+    // Where the finished frame differs from the scene snapshot, something was
+    // drawn after the world was: screen-space overlays, the HUD and the minimap.
+    // Those do not move with the camera, so the motion blur must leave them
+    // alone. The mask rides in the alpha channel; the blur pass reads it and
+    // restores alpha to 1 on the way out.
+    float mask = 1.0;
+    if (u_sceneValid > 0.5 && u_rect1.z > 0 && p.x < u_rect1.z && p.y < u_rect1.w)
+    {
+        vec3 scene = texelFetch(u_scene1, u_rect1.xy + p, 0).rgb;
+        float d = max(max(abs(scene.r - dst.r), abs(scene.g - dst.g)), abs(scene.b - dst.b));
+        mask = d > 0.02 ? 0.0 : 1.0;
+    }
+    o_color = vec4(dst, mask);
 }
 )";
 
-        // Reprojection: warp the previous frame onto the current camera and mix
-        // it in. u_warp maps a current screen coordinate to where that content
-        // was in the previous frame (see ps2CameraHomography). Sampled with
-        // texture() rather than texelFetch: the warp lands between texels, and
-        // the bilinear tap is what keeps it smooth instead of blocky.
+        // Motion blur: smear the composed frame along the camera's own motion.
+        // u_warp maps a current screen coordinate to where that content was in
+        // the previous frame (see ps2CameraHomography), so uv - prev is the
+        // per-pixel screen motion over one frame, and the taps run from uv back
+        // along it. That is a shutter: the picture is integrated over the
+        // interval the frame represents. Deliberately not a blend against the
+        // previous frame - that accumulates, and an accumulated frame reads as a
+        // sharp double image (ghosting) rather than a blur, and the trail keeps
+        // growing. This is spatial and stable: no history, nothing to seed, and
+        // a still camera is a no-op.
+        //
+        // u_mask scales the smear per pixel (0 = leave alone), so screen-space
+        // overlays like the HUD, which do not move with the camera, are not
+        // smeared. It comes from the compose.
         const char *kBlurShader = R"(#version 450 core
 layout(binding = 0) uniform sampler2D u_current;
-layout(binding = 1) uniform sampler2D u_history;
 // Column-major, passed as three columns.
 uniform vec3 u_warp0;
 uniform vec3 u_warp1;
 uniform vec3 u_warp2;
-uniform vec2 u_size;     // composed size in pixels
-uniform float u_strength;
+uniform vec2 u_size;      // composed size in pixels
+uniform float u_shutter;  // smear length in frames of camera motion (0 = off)
+uniform float u_debugMask; // 1 = tint what is kept out of the blur (PS2X_BLUR_MASK_DEBUG)
 out vec4 o_color;
+const int kTaps = 6;
 void main()
 {
     vec2 uv = gl_FragCoord.xy / u_size;
+    vec4 cur = texture(u_current, uv);
+    float mask = cur.a; // 1 = blur, 0 = screen-space overlay
+    if (u_debugMask > 0.5)
+    {
+        // Red marks the pixels the blur is leaving alone: the HUD and the minimap
+        // should be red, the world should not.
+        o_color = vec4(mask > 0.5 ? cur.rgb : vec3(1.0, 0.0, 0.0), 1.0);
+        return;
+    }
+    if (u_shutter <= 0.0 || mask <= 0.0)
+    {
+        o_color = vec4(cur.rgb, 1.0);
+        return;
+    }
     vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uv, 1.0);
     vec2 prev = q.xy / q.z;
-    vec4 cur = texture(u_current, uv);
-    // A sample that falls outside the previous frame is not something to smear
-    // along: keep the current picture there rather than clamping a smear in.
-    float inside = (prev.x >= 0.0 && prev.x <= 1.0 && prev.y >= 0.0 && prev.y <= 1.0) ? 1.0 : 0.0;
-    vec4 hist = texture(u_history, clamp(prev, 0.0, 1.0));
-    o_color = mix(cur, hist, u_strength * inside);
+    vec2 motion = (uv - prev) * u_shutter * mask;
+    vec4 acc = vec4(0.0);
+    for (int i = 0; i < kTaps; ++i)
+    {
+        float t = float(i) / float(kTaps - 1);
+        acc += texture(u_current, clamp(uv - motion * t, vec2(0.0), vec2(1.0)));
+    }
+    o_color = vec4((acc / float(kTaps)).rgb, 1.0);
 }
 )";
 
@@ -1536,6 +1576,33 @@ void main()
 
     // -------------------------------------------------------------------- draws
 
+    // Copies a target's colour texture aside at the moment the 3D scene ends, so
+    // the compose can tell world geometry from screen-space overlays drawn after
+    // it (the HUD, the minimap) and keep the latter out of the motion blur.
+    // Lazily sized like the target; a target that never gets one just blurs whole.
+    void Renderer::captureSceneSnapshot(Target &target)
+    {
+        if (target.depth || target.texture == 0)
+            return;
+        GL &gl = m_context.gl;
+        const uint32_t w = target.width * m_scale, h = target.height * m_scale;
+        if (target.sceneTexture == 0)
+        {
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &target.sceneTexture);
+            gl.glTextureStorage2D(target.sceneTexture, 1, GL_RGBA8, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+            gl.glTextureParameteri(target.sceneTexture, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.glTextureParameteri(target.sceneTexture, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.glTextureParameteri(target.sceneTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.glTextureParameteri(target.sceneTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        // The draws that produced the scene are already submitted; order the copy
+        // after them.
+        gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
+        gl.glCopyImageSubData(target.texture, GL_TEXTURE_2D, 0, 0, 0, 0, target.sceneTexture, GL_TEXTURE_2D, 0, 0, 0, 0,
+                              static_cast<GLsizei>(w), static_cast<GLsizei>(h), 1);
+        target.sceneValid = true;
+    }
+
     void Renderer::applyDrawState(const DrawKey &key, const GSDrawState &state)
     {
         GL &gl = m_context.gl;
@@ -1553,6 +1620,22 @@ void main()
             prepareTargetForDraw(*depth, drawY0, drawY1);
         m_drawColor = &color;
         m_drawDepth = depth;
+
+        // The 3D scene ends at the first draw that stops testing depth after one
+        // that did: what follows is drawn in screen space, which is the HUD and
+        // the minimap. Snapshot the target there so the compose can keep those
+        // pixels out of the motion blur. No transition means no snapshot, and the
+        // blur covers the whole frame as it did before.
+        if (g_gsModernBlur.load(std::memory_order_relaxed))
+        {
+            if (key.zte != 0)
+                m_sawDepthDraw = true;
+            else if (m_sawDepthDraw && !m_sceneSnapshotTaken)
+            {
+                captureSceneSnapshot(color);
+                m_sceneSnapshotTaken = true;
+            }
+        }
 
         // Texture: a colour target holding it is sampled directly (keeps an
         // upscaled image's detail through render-to-texture passes);
@@ -2850,6 +2933,12 @@ void main()
             ScopeTimer timer{m_timePresent};
             upscalePresentation(request, frame);
         }
+        // The overlay snapshot belongs to the frame just presented: the draws
+        // that follow start a new one.
+        m_sawDepthDraw = false;
+        m_sceneSnapshotTaken = false;
+        for (auto &target : m_targets)
+            target->sceneValid = false;
         if (!frame)
         {
             readbackVram();
@@ -2864,9 +2953,9 @@ void main()
         return frame;
     }
 
-    // Sizes the compose/history pair for the reprojection. Grow-only, like the
-    // present pair: the display size churns through the logos and the intro, and
-    // recreating these on every change would hitch exactly there.
+    // Sizes the compose target for the motion blur. Grow-only, like the present
+    // pair: the display size churns through the logos and the intro, and
+    // recreating this on every change would hitch exactly there.
     void Renderer::ensureBlurTargets(GL &gl, uint32_t width, uint32_t height)
     {
         if (m_composeTexture == 0 || m_composeWidth < width || m_composeHeight < height)
@@ -2888,28 +2977,6 @@ void main()
             gl.glCreateFramebuffers(1, &m_composeFramebuffer);
             gl.glNamedFramebufferTexture(m_composeFramebuffer, GL_COLOR_ATTACHMENT0, m_composeTexture, 0);
             gl.glNamedFramebufferDrawBuffer(m_composeFramebuffer, GL_COLOR_ATTACHMENT0);
-            m_blurHistoryValid = false;
-        }
-        if (m_historyTexture == 0 || m_historyWidth < width || m_historyHeight < height)
-        {
-            if (m_historyTexture != 0)
-            {
-                gl.glDeleteFramebuffers(1, &m_historyFramebuffer);
-                gl.glDeleteTextures(1, &m_historyTexture);
-            }
-            m_historyWidth = std::max(m_historyWidth, width);
-            m_historyHeight = std::max(m_historyHeight, height);
-            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_historyTexture);
-            gl.glTextureStorage2D(m_historyTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_historyWidth),
-                                  static_cast<GLsizei>(m_historyHeight));
-            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            gl.glCreateFramebuffers(1, &m_historyFramebuffer);
-            gl.glNamedFramebufferTexture(m_historyFramebuffer, GL_COLOR_ATTACHMENT0, m_historyTexture, 0);
-            gl.glNamedFramebufferDrawBuffer(m_historyFramebuffer, GL_COLOR_ATTACHMENT0);
-            m_blurHistoryValid = false;
         }
     }
 
@@ -2922,20 +2989,10 @@ void main()
             gl.glDeleteTextures(1, &m_composeTexture);
             m_composeTexture = m_composeFramebuffer = 0;
         }
-        if (m_historyTexture != 0)
-        {
-            gl.glDeleteFramebuffers(1, &m_historyFramebuffer);
-            gl.glDeleteTextures(1, &m_historyTexture);
-            m_historyTexture = m_historyFramebuffer = 0;
-        }
-        m_blurHistoryValid = false;
     }
 
-    // Warps the frame the compose just drew (m_composeTexture) onto the previous
-    // camera and mixes it with the history, writing into destinationFramebuffer,
-    // then seeds the history with the result. That last step is what makes it an
-    // accumulation: each frame blends against the previous *output*, so a turn
-    // leaves a decaying trail rather than a single ghost.
+    // Smears the frame the compose just drew (m_composeTexture) along the camera
+    // motion and writes it into destinationFramebuffer.
     void Renderer::reprojectCompose(GL &gl, uint32_t width, uint32_t height, GLuint destinationFramebuffer)
     {
         // The present path publishes the camera after the compose, so the value
@@ -2943,12 +3000,11 @@ void main()
         // generation counter: the game thread writes it, and a torn read would
         // mix one frame's orientation with another's position.
         Ps2CameraState cur;
-        uint64_t generation = 0;
         for (int attempt = 0; attempt < 3; ++attempt)
         {
-            generation = g_ps2CameraFrame.load(std::memory_order_relaxed);
+            const uint64_t before = g_ps2CameraFrame.load(std::memory_order_relaxed);
             cur = g_ps2Camera;
-            if (g_ps2CameraFrame.load(std::memory_order_relaxed) == generation)
+            if (g_ps2CameraFrame.load(std::memory_order_relaxed) == before)
                 break;
         }
 
@@ -2959,23 +3015,16 @@ void main()
             const char *env = std::getenv("PS2X_BLUR_DEPTH");
             return env ? static_cast<float>(std::atof(env)) : 100.0f;
         }();
+        // PS2X_BLUR_MASK_DEBUG=1 tints what the blur leaves alone, so the overlay
+        // mask can be checked by eye: red should be the HUD and the minimap.
+        static const bool s_maskDebug = std::getenv("PS2X_BLUR_MASK_DEBUG") != nullptr;
 
         const Ps2CameraHomography warp = ps2CameraHomography(m_blurPrevCamera, cur, s_depth);
         m_blurPrevCamera = cur;
 
-        if (width != m_blurLastWidth || height != m_blurLastHeight)
-        {
-            m_blurLastWidth = width;
-            m_blurLastHeight = height;
-            m_blurHistoryValid = false; // the history is stored at the old size
-        }
-
-        // Nothing valid to blend with on the first frame after enabling,
-        // resizing or a camera that has not been built: pass the frame through
-        // and let the history copy seed it.
-        float strength = g_gsModernBlurStrength.load(std::memory_order_relaxed);
-        if (!warp.usable || !m_blurHistoryValid)
-            strength = 0.0f;
+        // No usable camera (the intro is a cutscene with none) means no motion to
+        // smear along: shutter 0 passes the frame through.
+        const float shutter = warp.usable ? g_gsModernBlurStrength.load(std::memory_order_relaxed) : 0.0f;
 
         ensureBlurTargets(gl, width, height);
         {
@@ -2986,7 +3035,7 @@ void main()
             if (!s_reported)
             {
                 s_reported = true;
-                std::cerr << "[gs] reprojection: " << (warp.usable ? "warp" : "no camera") << ", strength " << strength
+                std::cerr << "[gs] motion blur: " << (warp.usable ? "warp" : "no camera") << ", shutter " << shutter
                           << ", depth " << s_depth << ", " << width << "x" << height << std::endl;
             }
         }
@@ -2998,9 +3047,10 @@ void main()
             setUniform3f(p, uniform(p, "u_warp1"), warp.m[3], warp.m[4], warp.m[5]);
             setUniform3f(p, uniform(p, "u_warp2"), warp.m[6], warp.m[7], warp.m[8]);
             setUniform2f(p, uniform(p, "u_size"), static_cast<float>(width), static_cast<float>(height));
-            setUniform1f(p, uniform(p, "u_strength"), strength);
+            setUniform1f(p, uniform(p, "u_shutter"), shutter);
+            setUniform1f(p, uniform(p, "u_debugMask"),
+                         s_maskDebug ? 1.0f : 0.0f);
             gl.glBindTextureUnit(0, m_composeTexture);
-            gl.glBindTextureUnit(1, m_historyTexture);
             bindFramebuffer(destinationFramebuffer);
             setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
             setScissorTest(false);
@@ -3017,11 +3067,6 @@ void main()
                                       static_cast<GLint>(height), 0, 0, static_cast<GLint>(width),
                                       static_cast<GLint>(height), GL_COLOR_BUFFER_BIT, GL_NEAREST);
         }
-        // Seed the history with what was just shown.
-        gl.glBlitNamedFramebuffer(destinationFramebuffer, m_historyFramebuffer, 0, 0, static_cast<GLint>(width),
-                                  static_cast<GLint>(height), 0, 0, static_cast<GLint>(width), static_cast<GLint>(height),
-                                  GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        m_blurHistoryValid = true;
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
     }
 
@@ -3222,6 +3267,15 @@ void main()
         setUniform2f(p, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, top.target->texture);
         gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
+        // Overlay separation for the motion blur. Only meaningful for a single
+        // circuit: then the composed frame *is* that target, so the finished
+        // pixels can be compared against the snapshot taken where the 3D scene
+        // ended. With two circuits the blend makes that comparison meaningless,
+        // so the whole frame is blurred (which is what it did before).
+        const bool sceneValid = m_blur.id != 0 && g_gsModernBlur.load(std::memory_order_relaxed) && !both &&
+                                top.target->sceneValid && top.target->sceneTexture != 0;
+        gl.glBindTextureUnit(2, sceneValid ? top.target->sceneTexture : top.target->texture);
+        setUniform1f(p, uniform(p, "u_sceneValid"), sceneValid ? 1.0f : 0.0f);
         const GLuint displayFramebuffer =
             sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer;
         // "Motion blur: Modern" needs the composed frame as a texture to warp, so
@@ -3230,8 +3284,6 @@ void main()
         const bool reproject = g_gsModernBlur.load(std::memory_order_relaxed) && m_blur.id != 0;
         if (reproject)
             ensureBlurTargets(gl, width, height);
-        else
-            m_blurHistoryValid = false; // a stale history must never be blended later
         bindFramebuffer(reproject ? m_composeFramebuffer : displayFramebuffer);
         setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
         setScissorTest(false);
@@ -3360,6 +3412,8 @@ void main()
         {
             gl.glDeleteFramebuffers(1, &target->loadFramebuffer);
             gl.glDeleteTextures(1, &target->texture);
+            if (target->sceneTexture != 0)
+                gl.glDeleteTextures(1, &target->sceneTexture);
         }
         m_targets.clear();
         if (m_feedbackTexture != 0)
