@@ -45,6 +45,7 @@ namespace ps2x::iop
 
 class PS2IopHostAdapter;
 class PS2IopTransport;
+class IopWorker;
 class EeScheduler;
 struct EeEvent;
 
@@ -521,6 +522,12 @@ private:
     GS m_gs;
     std::unique_ptr<PS2IopHostAdapter> m_iopHost;
     std::unique_ptr<ps2x::iop::IopSubsystem> m_iopSubsystem;
+    // Runs the IOP on its own thread (PS2X_IOP_THREAD=1). Declared after the
+    // subsystem so it is destroyed - and its thread joined - first.
+    std::unique_ptr<IopWorker> m_iopWorker;
+    // Once the first VBlank has been seen the IOP is clocked by real time
+    // rather than by the EE's cycles; see advanceIopVBlank.
+    bool m_iopClockFromRealTime = false;
     // IOP time follows the VBlank clock (real time), not the EE cycle count
     // (recompiled code over-counts busy stretches): see advanceIopEeCycles.
     uint64_t m_iopEeAllowed = 0; // EE cycles of IOP time real time allows so far

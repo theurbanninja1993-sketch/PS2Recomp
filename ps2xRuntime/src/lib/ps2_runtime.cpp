@@ -18,6 +18,7 @@
 #include "Kernel/Stubs/MPEG.h"
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
+#include "ps2_iop_worker.h"
 #include "ps2x/iop/iop_subsystem.h"
 
 #include <iostream>
@@ -664,6 +665,8 @@ PS2Runtime::PS2Runtime()
 {
     m_iopHost = std::make_unique<PS2IopHostAdapter>(*this);
     m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
+    m_iopWorker = std::make_unique<IopWorker>(*m_iopSubsystem);
+    m_iopWorker->start();
 
     m_eeScheduler = std::make_unique<EeScheduler>(*this);
 
@@ -712,6 +715,7 @@ PS2Runtime::~PS2Runtime()
     try
     {
         requestStop();
+        m_iopWorker.reset(); // joins the thread before the IOP it owns goes away
         m_iopSubsystem.reset();
         m_iopHost.reset();
 #if defined(PLATFORM_VITA)
@@ -747,45 +751,69 @@ PS2Runtime::~PS2Runtime()
     }
 }
 
+// Every one of these runs on the IOP thread (when it is enabled), so the IOP's
+// state stays owned by that one thread. The call scope travels with them: it
+// records the guest context the IOP callbacks run under (m_activeRdram), which
+// must be set on the thread that is running the IOP.
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModule(std::string_view path, const void *arguments, uint32_t argumentSize)
 {
-    auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
-    return m_iopSubsystem->loadModule(path, arguments, argumentSize);
+    return m_iopWorker->runValue(
+        [&]()
+        {
+            auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
+            return m_iopSubsystem->loadModule(path, arguments, argumentSize);
+        });
 }
 
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
 {
-    auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
-    return m_iopSubsystem->loadModuleBuffer(guestAddress, arguments, argumentSize);
+    return m_iopWorker->runValue(
+        [&]()
+        {
+            auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
+            return m_iopSubsystem->loadModuleBuffer(guestAddress, arguments, argumentSize);
+        });
 }
 
 bool PS2Runtime::stopIopModule(int32_t moduleId, int32_t *result)
 {
-    auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
-    return m_iopSubsystem->stopModule(moduleId, result);
+    return m_iopWorker->runValue(
+        [&]()
+        {
+            auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
+            return m_iopSubsystem->stopModule(moduleId, result);
+        });
 }
 
 ps2x::iop::RpcAbi PS2Runtime::selectIopRpcAbi(const ps2x::iop::RpcAbiRequest &request) const
 {
-    return m_iopSubsystem->selectRpcAbi(request);
+    return m_iopWorker->runValue([&]() { return m_iopSubsystem->selectRpcAbi(request); });
 }
 
 bool PS2Runtime::canBindIopRpc(uint32_t sid) const noexcept
 {
-    return m_iopSubsystem->canBindRpc(sid);
+    return m_iopWorker->runValue([&]() { return m_iopSubsystem->canBindRpc(sid); });
 }
 
 ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request)
 {
-    auto scope = m_iopHost->enterCall(ctx, rdram);
-    request.callToken = scope.token();
-    return m_iopSubsystem->handleRpc(request);
+    return m_iopWorker->runValue(
+        [&]()
+        {
+            auto scope = m_iopHost->enterCall(ctx, rdram);
+            request.callToken = scope.token();
+            return m_iopSubsystem->handleRpc(request);
+        });
 }
 
 void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
 {
-    auto scope = m_iopHost->enterCall(nullptr, rdram);
-    m_iopSubsystem->onSifTransfer(transfer);
+    m_iopWorker->run(
+        [&]()
+        {
+            auto scope = m_iopHost->enterCall(nullptr, rdram);
+            m_iopSubsystem->onSifTransfer(transfer);
+        });
 }
 
 namespace
@@ -802,6 +830,15 @@ namespace
 // first VBlank it runs freely (boot). PS2X_IOP_FREE_RUN=1: old behaviour.
 void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
+    if (m_iopWorker && m_iopWorker->enabled())
+    {
+        // The worker runs the IOP. Before the first VBlank it follows the EE's
+        // cycles (boot); afterwards it is clocked by real time, as the hardware
+        // is - see advanceIopVBlank.
+        if (!m_iopClockFromRealTime)
+            m_iopWorker->addAllowedEeCycles(eeCycles);
+        return;
+    }
     if (g_iopFreeRun || m_iopEeAllowed == 0u)
     {
         m_iopSubsystem->runEeCycles(eeCycles);
@@ -820,6 +857,21 @@ void PS2Runtime::advanceIopVBlank() noexcept
 {
     if (g_iopFreeRun)
         return;
+    if (m_iopWorker && m_iopWorker->enabled())
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (!m_iopClockFromRealTime)
+        {
+            // First VBlank: from here the IOP follows real time, not the EE.
+            m_iopClockFromRealTime = true;
+            m_iopLastReal = now;
+        }
+        const double elapsed = std::chrono::duration<double>(now - m_iopLastReal).count();
+        m_iopLastReal = now;
+        m_iopWorker->addAllowedEeCycles(std::min<uint64_t>(
+            static_cast<uint64_t>(elapsed * static_cast<double>(kEeClockHz)), 2u * kEeCyclesPerVBlank));
+        return;
+    }
     const auto now = std::chrono::steady_clock::now();
     const uint64_t iopEe = m_iopSubsystem->cycles() * 8u;
     if (m_iopEeAllowed == 0u)
@@ -846,42 +898,43 @@ void PS2Runtime::advanceIopVBlank() noexcept
 
 void PS2Runtime::resetIop()
 {
-    m_iopSubsystem->reset();
+    m_iopWorker->run([&]() { m_iopSubsystem->reset(); });
 }
 
 ps2x::iop::DebugSnapshot PS2Runtime::iopDebugSnapshot() const
 {
-    return m_iopSubsystem->debugSnapshot();
+    return m_iopWorker->runValue([&]() { return m_iopSubsystem->debugSnapshot(); });
 }
 
 uint32_t PS2Runtime::allocateIopMemory(uint32_t size, uint32_t alignment)
 {
-    return m_iopSubsystem ? m_iopSubsystem->allocateMemory(size, alignment) : 0u;
+    return m_iopSubsystem ? m_iopWorker->runValue([&]() { return m_iopSubsystem->allocateMemory(size, alignment); }) : 0u;
 }
 
 bool PS2Runtime::freeIopMemory(uint32_t address)
 {
-    return m_iopSubsystem && m_iopSubsystem->freeMemory(address);
+    return m_iopSubsystem && m_iopWorker->runValue([&]() { return m_iopSubsystem->freeMemory(address); });
 }
 
 bool PS2Runtime::readIopMemory(uint32_t address, void *destination, size_t size) const
 {
-    return m_iopSubsystem && m_iopSubsystem->readMemory(address, destination, size);
+    return m_iopSubsystem &&
+           m_iopWorker->runValue([&]() { return m_iopSubsystem->readMemory(address, destination, size); });
 }
 
 bool PS2Runtime::writeIopMemory(uint32_t address, const void *source, size_t size)
 {
-    return m_iopSubsystem && m_iopSubsystem->writeMemory(address, source, size);
+    return m_iopSubsystem && m_iopWorker->runValue([&]() { return m_iopSubsystem->writeMemory(address, source, size); });
 }
 
 bool PS2Runtime::zeroIopMemory(uint32_t address, size_t size)
 {
-    return m_iopSubsystem && m_iopSubsystem->zeroMemory(address, size);
+    return m_iopSubsystem && m_iopWorker->runValue([&]() { return m_iopSubsystem->zeroMemory(address, size); });
 }
 
 bool PS2Runtime::isIopMemoryRange(uint32_t address, size_t size) const
 {
-    return m_iopSubsystem && m_iopSubsystem->isMemoryRange(address, size);
+    return m_iopSubsystem && m_iopWorker->runValue([&]() { return m_iopSubsystem->isMemoryRange(address, size); });
 }
 
 bool PS2Runtime::syncCoreSubsystems()
