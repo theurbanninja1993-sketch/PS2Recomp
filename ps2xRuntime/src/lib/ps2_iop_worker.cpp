@@ -9,10 +9,13 @@ namespace
     // ps2_runtime.cpp: the allowance is counted in EE cycles.
     constexpr uint64_t kEeCyclesPerVBlank = 4'920'120u;
 
-    // How much IOP work to run between checks for posted requests. Smaller
-    // slices give finer-grained audio and a shorter wait for a request, at the
-    // cost of more wakeups; a quarter VBlank is about 4 ms.
-    constexpr uint64_t kSliceEeCycles = kEeCyclesPerVBlank / 4u;
+    // How much IOP work to run between checks for posted requests. This is the
+    // worst case a game-thread call waits: it posts, then blocks until the
+    // worker reaches the queue, so a slice is a potential frame-time spike. A
+    // quarter VBlank (~4 ms) is 24% of a frame at 60 fps - enough to be felt as
+    // stutter even when the average rate is right - so keep it well under a
+    // frame; a sixteenth is about 0.3 ms.
+    constexpr uint64_t kSliceEeCycles = kEeCyclesPerVBlank / 16u;
 
     // How far the IOP may fall behind before its backlog is dropped. A long
     // stall (a load, a disc read) must not come back as a burst of catch-up
