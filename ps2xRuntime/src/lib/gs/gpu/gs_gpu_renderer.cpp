@@ -2039,7 +2039,12 @@ void main()
                                         static_cast<GLsizei>(h), 1, GL_RGBA, GL_UNSIGNED_BYTE,
                                         static_cast<GLsizei>(before.size()), before.data());
                 uint32_t sw = 0, sh = 0;
-                const GLuint synth = synthesizeHostFrame(0.5f, sw, sh);
+                static const float s_testPhase = []()
+                {
+                    const char *env = std::getenv("PS2X_FRAME_INTERP_PHASE");
+                    return env ? static_cast<float>(std::atof(env)) : 0.5f;
+                }();
+                const GLuint synth = synthesizeHostFrame(s_testPhase, sw, sh);
                 if (synth != 0)
                 {
                     std::vector<uint8_t> after(static_cast<size_t>(sw) * sh * 4u, 0u);
@@ -3462,26 +3467,37 @@ void main()
 
         GL &gl = m_context.gl;
         const uint32_t w = m_lastComposedWidth, hgt = m_lastComposedHeight;
-        if (m_synthTexture == 0 || m_synthWidth < w || m_synthHeight < hgt)
+        if (m_synthTexture[0] == 0 || m_synthWidth < w || m_synthHeight < hgt)
         {
-            if (m_synthTexture != 0)
+            for (int i = 0; i < 2; ++i)
             {
-                gl.glDeleteFramebuffers(1, &m_synthFramebuffer);
-                gl.glDeleteTextures(1, &m_synthTexture);
+                if (m_synthTexture[i] != 0)
+                {
+                    gl.glDeleteFramebuffers(1, &m_synthFramebuffer[i]);
+                    gl.glDeleteTextures(1, &m_synthTexture[i]);
+                    m_synthTexture[i] = m_synthFramebuffer[i] = 0;
+                }
             }
             m_synthWidth = std::max(m_synthWidth, w);
             m_synthHeight = std::max(m_synthHeight, hgt);
-            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_synthTexture);
-            gl.glTextureStorage2D(m_synthTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_synthWidth),
-                                  static_cast<GLsizei>(m_synthHeight));
-            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            gl.glTextureParameteri(m_synthTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            gl.glCreateFramebuffers(1, &m_synthFramebuffer);
-            gl.glNamedFramebufferTexture(m_synthFramebuffer, GL_COLOR_ATTACHMENT0, m_synthTexture, 0);
-            gl.glNamedFramebufferDrawBuffer(m_synthFramebuffer, GL_COLOR_ATTACHMENT0);
+            for (int i = 0; i < 2; ++i)
+            {
+                gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_synthTexture[i]);
+                gl.glTextureStorage2D(m_synthTexture[i], 1, GL_RGBA8, static_cast<GLsizei>(m_synthWidth),
+                                      static_cast<GLsizei>(m_synthHeight));
+                gl.glTextureParameteri(m_synthTexture[i], GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                gl.glTextureParameteri(m_synthTexture[i], GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                gl.glTextureParameteri(m_synthTexture[i], GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                gl.glTextureParameteri(m_synthTexture[i], GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                gl.glCreateFramebuffers(1, &m_synthFramebuffer[i]);
+                gl.glNamedFramebufferTexture(m_synthFramebuffer[i], GL_COLOR_ATTACHMENT0, m_synthTexture[i], 0);
+                gl.glNamedFramebufferDrawBuffer(m_synthFramebuffer[i], GL_COLOR_ATTACHMENT0);
+            }
+            m_synthIndex = 0;
         }
+        // Write into the *other* one: the display may still be showing the last
+        // synthesized frame, so it must not be overwritten in place.
+        m_synthIndex ^= 1;
 
         const Target *maskTarget = m_overlayTarget;
         const bool maskValid = maskTarget != nullptr && maskTarget->maskTexture != 0;
@@ -3493,8 +3509,8 @@ void main()
         setUniform2f(p, uniform(p, "u_size"), static_cast<float>(w), static_cast<float>(hgt));
         setUniform1f(p, uniform(p, "u_maskValid"), maskValid ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, m_lastComposedTexture);
-        gl.glBindTextureUnit(1, maskValid ? maskTarget->maskTexture : m_synthTexture);
-        bindFramebuffer(m_synthFramebuffer);
+        gl.glBindTextureUnit(1, maskValid ? maskTarget->maskTexture : m_synthTexture[m_synthIndex]);
+        bindFramebuffer(m_synthFramebuffer[m_synthIndex]);
         setViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(hgt));
         setScissorTest(false);
         setBlend(false);
@@ -3505,7 +3521,7 @@ void main()
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
         outWidth = w;
         outHeight = hgt;
-        return m_synthTexture;
+        return m_synthTexture[m_synthIndex];
     }
 
     void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
@@ -3882,11 +3898,14 @@ void main()
         m_feedbackWidth = m_feedbackHeight = 0;
         m_drawColor = m_drawDepth = nullptr;
         destroyBlurTargets();
-        if (m_synthTexture != 0)
+        for (int i = 0; i < 2; ++i)
         {
-            gl.glDeleteFramebuffers(1, &m_synthFramebuffer);
-            gl.glDeleteTextures(1, &m_synthTexture);
-            m_synthTexture = m_synthFramebuffer = 0;
+            if (m_synthTexture[i] != 0)
+            {
+                gl.glDeleteFramebuffers(1, &m_synthFramebuffer[i]);
+                gl.glDeleteTextures(1, &m_synthTexture[i]);
+                m_synthTexture[i] = m_synthFramebuffer[i] = 0;
+            }
         }
     }
 

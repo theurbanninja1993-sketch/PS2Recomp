@@ -338,8 +338,12 @@ namespace gsgpu
         GLuint m_lastComposedTexture = 0;
         uint32_t m_lastComposedWidth = 0, m_lastComposedHeight = 0;
         Program m_synth;
-        GLuint m_synthTexture = 0, m_synthFramebuffer = 0;
+        // Double-buffered, like the shared present pair: the display may still be
+        // scanning out the last synthesized frame when the next one is written, and
+        // overwriting it in place is what a flash on every other frame is.
+        GLuint m_synthTexture[2] = {0u, 0u}, m_synthFramebuffer[2] = {0u, 0u};
         uint32_t m_synthWidth = 0, m_synthHeight = 0;
+        int m_synthIndex = 0;
         // Reads the published camera into m_interpCamera, tracking the previous
         // one. Called once per compose, whatever else is enabled.
         void trackCamera();
