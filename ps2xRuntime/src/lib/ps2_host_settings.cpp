@@ -333,9 +333,9 @@ void ps2HostSettingsLoad()
         else if (key == "vsync")
             s.vsync = std::atoi(v) != 0;
         else if (key == "motion_blur")
-            s.motionBlur = static_cast<PS2HostSettings::MotionBlur>(std::atoi(v));
-        else if (key == "motion_blur_strength")
-            s.motionBlurStrength = std::clamp(std::strtof(v, nullptr), 0.0f, 1.5f);
+            // Anything but Off is PS2: a settings file from when Modern existed
+            // could still say 2, and that must not become an out-of-range value.
+            s.motionBlur = std::atoi(v) == 1 ? PS2HostSettings::MotionBlur::Off : PS2HostSettings::MotionBlur::PS2;
         else if (key == "field_of_view")
             (void)v; // field_of_view: removed (the game has its own FOV options)
         else if (key == "draw_distance")
@@ -425,20 +425,7 @@ void ps2HostSettingsApplyRenderer()
         g_gsGpuScaleRequest.store(static_cast<uint32_t>(g_settings.internalScale), std::memory_order_relaxed);
     s_first = false;
     g_gsFlickerFilter.store(g_settings.flickerFilter, std::memory_order_relaxed);
-    // Both Off and Modern drop the game's own blur accumulation: Off leaves the
-    // picture sharp, Modern replaces the smear with a reprojection. Keeping the
-    // game's blur as well would blend two different ghosts.
-    // PS2X_MODERN_BLUR=1 forces the reprojection on and PS2X_MODERN_BLUR_STRENGTH
-    // sets the amount, so it can be A/B'd from a launcher without the settings UI.
-    static const char *s_envModern = std::getenv("PS2X_MODERN_BLUR");
-    static const char *s_envStrength = std::getenv("PS2X_MODERN_BLUR_STRENGTH");
-    const bool modern = (s_envModern != nullptr && std::atoi(s_envModern) != 0) ||
-                        g_settings.motionBlur == PS2HostSettings::MotionBlur::Modern;
-    const float strength = s_envStrength != nullptr ? std::strtof(s_envStrength, nullptr) : g_settings.motionBlurStrength;
-    g_gsMotionBlurOff.store(modern || g_settings.motionBlur == PS2HostSettings::MotionBlur::Off,
-                            std::memory_order_relaxed);
-    g_gsModernBlur.store(modern, std::memory_order_relaxed);
-    g_gsModernBlurStrength.store(modern ? strength : 0.0f, std::memory_order_relaxed);
+    g_gsMotionBlurOff.store(g_settings.motionBlur == PS2HostSettings::MotionBlur::Off, std::memory_order_relaxed);
 }
 
 bool ps2HostSettingsFirstLaunch()
@@ -490,7 +477,6 @@ void ps2HostSettingsSave()
         << "flicker_filter=" << (s.flickerFilter ? 1 : 0) << "\n"
         << "vsync=" << (s.vsync ? 1 : 0) << "\n"
         << "motion_blur=" << static_cast<int>(s.motionBlur) << "\n"
-        << "motion_blur_strength=" << s.motionBlurStrength << "\n"
 
         << "draw_distance=" << s.drawDistance << "\n"
         << "mouse_sensitivity=" << s.mouseSensitivity << "\n"

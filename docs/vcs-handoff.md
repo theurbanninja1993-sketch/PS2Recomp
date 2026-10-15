@@ -941,62 +941,66 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     **`PS2X_CAMERA_LOG=1`** writes cameralog.txt next to the executable (the
     Linux launcher sets it; `windows/cameralog.cmd` does the same on Windows).
 
-    **Progress (2026-10-15): "Modern" is implemented**, then reworked after the
-    owner's first look at it. `Motion blur: PS2 / Modern / Off` (that order, the
-    owner's ask) with a `Blur length` slider (0..1.5, default 0.5), plus
-    `PS2X_MODERN_BLUR=1` and `PS2X_MODERN_BLUR_STRENGTH` to A/B it from a launcher.
+    **Progress (2026-10-15): a "Modern" mode was built and then withdrawn.** It
+    is not in the menu; the commits are `f491ff4` (first version) and `2bba4be`
+    (rework), and the camera work it was built on is still in the tree. The
+    reasoning is worth keeping, because most of it applies to item 14 as well.
 
-    **The first version was wrong and the owner said so**: it blended the
-    previous frame in, which is a *temporal* accumulation. That reads as a sharp
-    double image - ghosting - not a blur, the trail keeps growing, and it smeared
-    the HUD. The current version is a *spatial* shutter blur: the composed frame
-    is smeared along the camera's own per-pixel motion, and there is no history
-    at all. That is stable (no temporal artifacts, nothing to seed, and a still
-    camera is an exact no-op) and it looks like motion blur rather than a ghost.
+    **What the owner said, and what was actually wrong.** The first version
+    blended the previous frame into the current one - a *temporal* accumulation.
+    That reads as a sharp double image (ghosting), not a blur, and the trail
+    compounds frame over frame. The rework made it *spatial* instead: the
+    composed frame is smeared along the camera's own per-pixel motion, six taps
+    from `uv` back along `uv - warp(uv)`, no history at all. That is stable and
+    is what motion blur actually is. The owner's verdict on the rework: "the blur
+    itself looks better, it still doesn't look great" - and the HUD and minimap
+    were still being smeared.
 
-    The homography is `ps2CameraHomography` in `runtime/ps2_camera.h`: the
-    previous camera's basis is applied to the current frame's rays, and the
-    camera translation is reprojected against a single depth plane (default 100
-    world units, ~10 m; `PS2X_BLUR_DEPTH` overrides). Rotation is exact;
-    translation is an approximation because the port has no usable depth buffer -
-    the GS receives vertices the game already projected, so its Z values cannot
-    be inverted without the game's matrices. A wrong depth scales the translation
-    part, it does not corrupt it. `uv - warp(uv)` is the screen motion over one
-    frame, and the six taps run from `uv` back along it, scaled by the slider.
+    **The blocker is the 3D/overlay split, not the blur.** The HUD and minimap
+    are drawn in screen space, so they do not move with the camera and must not
+    be warped. The attempt here was a heuristic: the first draw that stops
+    testing depth after one that did marks the end of the 3D scene, and the
+    target is copied aside there; the compose compares the finished frame against
+    that snapshot and puts the answer in the alpha channel. It never fired on the
+    intro (nothing to find there) and **was never confirmed on real gameplay**,
+    which is exactly the weakness - `PS2X_BLUR_MASK_DEBUG=1` existed to check it
+    by eye, and the owner's report says it was still wrong.
 
-    Screen convention, worth stating because it is the thing most likely to be
-    silently wrong: the draw shader maps GS y straight to GL clip y with no flip,
-    so the target texture's row 0 is GS y 0 and `gl_FragCoord.y` increases *down*
-    the picture - the opposite of the camera's y-up basis, so the intrinsics carry
-    the sign. Verified by the port's own readback path: `glGetTextureSubImage`
-    returns GL row 0 first and the host draws that as the top of the picture.
+    The honest read: a heuristic on the GS draw stream is the wrong tool. The
+    right signal is on the game side - a hook on the HUD's own draw, or on the
+    function where the 3D render ends. That needs a *capture* to find, not a
+    guess: `F9` in gameplay writes a GS capture, and the HUD's draws can be read
+    out of it (the port already skips the game's blur buffers by TBP, so
+    identifying draws by their state has precedent).
 
-    **Overlays (the HUD, the minimap) are kept out of the blur.** They are drawn
-    in screen space, so they do not move with the camera and must not smear. The
-    renderer takes the moment the 3D scene ends - the first draw that stops
-    testing depth after one that did - and copies that target aside
-    (`captureSceneSnapshot`). The compose compares the finished frame against the
-    snapshot and puts the answer in the alpha channel; the blur pass scales the
-    smear by it and restores alpha to 1 on the way out. If a frame never makes
-    that transition there is no snapshot and everything blurs, which is the old
-    behaviour, so this can only reduce smearing, never corrupt the frame.
-    `PS2X_BLUR_MASK_DEBUG=1` tints what is left alone red, so the mask can be
-    checked by eye - **not yet confirmed on real gameplay**, and the transition
-    heuristic is the part to doubt: if the HUD is not red, the signal is wrong.
+    **What is still good and still in the tree:**
+    - `runtime/ps2_camera.h` + `src/lib/ps2_camera.cpp`: the camera published
+      once per presented frame, from `TheCamera.Cams[0]` at `0x6F4540`
+      (`Front +0x10`, `Source +0x20`, `Up +0x60`). The offsets were **confirmed
+      against a real camera** with `PS2X_CAMERA_LOG=1`: unit `front`/`up`,
+      mutually perpendicular, world-scale `pos` (~1700), swinging on turns.
+      (The first attempt read `+0x78/+0x7C` off the RenderWare camera, which is a
+      change detector reading 2000, not an angle; the log caught it.)
+    - `ps2CameraHomography`: the camera-to-camera homography, checked numerically
+      against hand-computed cases (identity, yaw, forward translation at two
+      depths, pitch for both vertical signs). Applying it to the owner's real
+      cameralog gives an *exact* identity for all 34 static camera pairs, with
+      the game's FOV ramp showing up as a ~0.0002 scale.
+    - The screen convention, which is the thing most likely to be silently
+      wrong: the draw shader maps GS y straight to GL clip y with no flip, so
+      `gl_FragCoord.y` increases *down* the picture - the opposite of the
+      camera's y-up basis, so the intrinsics carry the sign. Confirmed against
+      the port's own readback path.
 
-    Verified locally (no screen available): numeric checks of the homography
-    against hand-computed cases (identity, yaw, forward translation at two depths,
-    pitch - both vertical signs) all pass; applying it to the owner's real
-    cameralog gives an *exact* identity for all 34 static camera pairs, with the
-    game's FOV ramp showing up as a ~0.0002 scale; and with Modern on but no
-    camera (the intro) the pass renders byte-identical to the unblurred path
-    (31/31 dumped frames).
+    **Two limits that are inherent, not bugs**, and that item 14 inherits:
+    only camera motion is known, so objects moving through a still camera do not
+    smear (and would not interpolate); and the GS receives vertices the game
+    already projected, so there is no usable depth buffer - translation is
+    reprojected against a single depth plane (`PS2X_BLUR_DEPTH`, default 100
+    world units ~ 10 m), which only scales the translation part.
 
-    Not verified: the smear's *appearance* on real gameplay, and the overlay mask
-    - both need a screen.
-
-    Next: confirm the overlay mask with `PS2X_BLUR_MASK_DEBUG=1`, and reuse the
-    same motion vectors for frame interpolation above 60.
+    Next: the same motion vectors are what item 14 needs, so the overlay split
+    has to be solved once, properly, before either is worth shipping.
 
 14. **Frame rates above 60 (owner ask).** The emulation is locked to 60
     VBlanks/s - the game's logic runs per VBlank - so anything above 60 must be

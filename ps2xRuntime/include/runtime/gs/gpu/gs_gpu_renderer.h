@@ -3,7 +3,6 @@
 #include "runtime/gs/gs_backend.h"
 #include "runtime/gs/gpu/gl_context.h"
 #include "runtime/gs/gs_texture_replacements.h"
-#include "runtime/ps2_camera.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -82,12 +81,6 @@ namespace gsgpu
             uint32_t beginByte = 0, endByte = 0;
             GLuint texture = 0;
             GLuint loadFramebuffer = 0; // the texture alone, for load passes
-            // The target as it was when the 3D scene ended (see
-            // captureSceneSnapshot). The compose compares the finished frame
-            // against it to tell screen-space overlays - the HUD, the minimap -
-            // from world geometry, so only the world gets motion blurred.
-            GLuint sceneTexture = 0;
-            bool sceneValid = false; // a snapshot was taken for this frame
             // Rows the GPU drew that VRAM lacks, and rows whose texture
             // contents are stale (VRAM changed). A target never has both.
             uint32_t dirtyY0 = ~0u, dirtyY1 = 0;
@@ -164,7 +157,7 @@ namespace gsgpu
         void clearUniformCaches()
         {
             for (Program *p : {&m_draw, &m_loadColor, &m_loadDepth, &m_resolve, &m_hostToLocal, &m_localToLocal,
-                               &m_clutLoad, &m_compose, &m_blur})
+                               &m_clutLoad, &m_compose})
                 p->uniforms.clear();
         }
         void flushBatch();
@@ -281,26 +274,6 @@ namespace gsgpu
         Program m_draw, m_loadColor, m_loadDepth, m_resolve, m_hostToLocal, m_localToLocal, m_clutLoad, m_compose;
         GLuint m_presentTexture = 0, m_presentFramebuffer = 0; // upscaled display output
         uint32_t m_presentWidth = 0, m_presentHeight = 0;
-        // Motion blur ("Modern"). The compose draws into m_composeFramebuffer, the
-        // blur pass reads that and writes the display target. Grow-only, like the
-        // present pair. No history: the smear is spatial, along the camera's own
-        // motion, so there is nothing to seed and nothing that can accumulate.
-        Program m_blur;
-        GLuint m_composeTexture = 0, m_composeFramebuffer = 0;
-        uint32_t m_composeWidth = 0, m_composeHeight = 0;
-        Ps2CameraState m_blurPrevCamera; // the camera of the last composed frame
-        // Overlay separation for the blur: the first draw that does not test
-        // depth, after one that did, marks where the 3D scene ends.
-        bool m_sawDepthDraw = false;
-        bool m_sceneSnapshotTaken = false;
-        void captureSceneSnapshot(Target &target);
-        // Sizes the compose/history pair if needed, and drops the history when
-        // it no longer matches (a resize makes the old one unusable).
-        void ensureBlurTargets(GL &gl, uint32_t width, uint32_t height);
-        // Warps the frame in m_composeTexture onto the previous camera and mixes
-        // it with the history, writing into destinationFramebuffer.
-        void reprojectCompose(GL &gl, uint32_t width, uint32_t height, GLuint destinationFramebuffer);
-        void destroyBlurTargets();
         // Downscale target for the presentation readback (see upscalePresentation).
         GLuint m_readbackTexture = 0, m_readbackFramebuffer = 0;
         uint32_t m_readbackWidth = 0, m_readbackHeight = 0;

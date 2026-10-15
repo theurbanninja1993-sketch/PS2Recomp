@@ -416,6 +416,7 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_iop_worker.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_host_settings.cpp
+    src/lib/ps2_camera.cpp
     src/lib/ps2_mods.cpp
     src/lib/ps2_pad.cpp
     src/lib/ps2_prompt_art.cpp
