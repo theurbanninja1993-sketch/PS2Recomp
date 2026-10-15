@@ -30,6 +30,10 @@ std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 // Draw calls issued to GL. One per state-change flush, so this is the number
 // the GPU driver's own threads have to process each frame.
 std::atomic<uint64_t> g_gsGpuDraws{0};
+// GL state calls the cache skipped. Driver-independent: fewer calls is fewer
+// calls, so this is the number to measure locally - the fps effect is only
+// visible on the owner's driver.
+std::atomic<uint64_t> g_gsGpuStateSkips{0};
 // Row volume of the two sync passes vs the real draws: says whether they are
 // pixel-heavy (narrow them) or call-heavy (batch them).
 std::atomic<uint64_t> g_gsGpuResolveRows{0};
@@ -1102,27 +1106,27 @@ void main()
         g_gsGpuLoadRows.fetch_add(rows, std::memory_order_relaxed);
         GL &gl = m_context.gl;
         Program &program = target.depth ? m_loadDepth : m_loadColor;
-        gl.glUseProgram(program.id);
+        useProgram(program.id);
         gl.glProgramUniform3ui(program.id, uniform(program, "u_buffer"), target.block, target.bw, target.psm);
         gl.glProgramUniform1ui(program.id, uniform(program, "u_scale"), m_scale);
-        gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target.loadFramebuffer);
-        gl.glViewport(0, 0, static_cast<GLsizei>(target.width * m_scale), static_cast<GLsizei>(target.height * m_scale));
-        gl.glEnable(GL_SCISSOR_TEST);
-        gl.glScissor(0, static_cast<GLint>(y0 * m_scale), static_cast<GLsizei>(target.width * m_scale),
+        bindFramebuffer(target.loadFramebuffer);
+        setViewport(0, 0, static_cast<GLsizei>(target.width * m_scale), static_cast<GLsizei>(target.height * m_scale));
+        setScissorTest(true);
+        setScissor(0, static_cast<GLint>(y0 * m_scale), static_cast<GLsizei>(target.width * m_scale),
                      static_cast<GLsizei>(rows * m_scale));
-        gl.glDisable(GL_BLEND);
+        setBlend(false);
         if (target.depth)
         {
-            gl.glEnable(GL_DEPTH_TEST);
-            gl.glDepthFunc(GL_ALWAYS);
-            gl.glDepthMask(GL_TRUE);
+            setDepthTest(true);
+            setDepthFunc(GL_ALWAYS);
+            setDepthMask(GL_TRUE);
         }
         else
         {
-            gl.glDisable(GL_DEPTH_TEST);
-            gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            setDepthTest(false);
+            setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         }
-        gl.glBindVertexArray(m_emptyVao);
+        bindVao(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
         m_framebufferWriteSinceBarrier = true;
     }
@@ -1218,7 +1222,7 @@ void main()
         resolveBarrierBegin();
         const uint32_t y0 = target.dirtyY0;
         const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
-        gl.glUseProgram(m_resolve.id);
+        useProgram(m_resolve.id);
         gl.glProgramUniform4ui(m_resolve.id, uniform(m_resolve, "u_buffer"), target.block, target.bw, target.psm,
                                target.depth ? 1u : 0u);
         gl.glProgramUniform3ui(m_resolve.id, uniform(m_resolve, "u_rows"), y0, rows, target.width);
@@ -1503,34 +1507,34 @@ void main()
         }
 
         Program &p = m_draw;
-        gl.glUseProgram(p.id);
-        gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebufferFor(color, depth));
+        useProgram(p.id);
+        bindFramebuffer(framebufferFor(color, depth));
         const int scale = static_cast<int>(m_scale);
-        gl.glViewport(0, 0, static_cast<GLsizei>(color.width * m_scale), static_cast<GLsizei>(color.height * m_scale));
-        gl.glEnable(GL_SCISSOR_TEST);
+        setViewport(0, 0, static_cast<GLsizei>(color.width * m_scale), static_cast<GLsizei>(color.height * m_scale));
+        setScissorTest(true);
         const int x0 = std::max(0, key.scissor[0]), y0 = std::max(0, key.scissor[1]);
         const int x1 = std::min<int>(key.scissor[2], static_cast<int>(color.width) - 1);
         const int y1 = std::min<int>(key.scissor[3], static_cast<int>(color.height) - 1);
-        gl.glScissor(x0 * scale, y0 * scale, std::max(0, x1 - x0 + 1) * scale, std::max(0, y1 - y0 + 1) * scale);
+        setScissor(x0 * scale, y0 * scale, std::max(0, x1 - x0 + 1) * scale, std::max(0, y1 - y0 + 1) * scale);
         m_drawY0 = std::max(y0, drawY0);
         m_drawY1 = std::min(y1, drawY1);
 
         // Depth: GS Z grows towards the viewer.
         if (depth)
         {
-            gl.glEnable(GL_DEPTH_TEST);
+            setDepthTest(true);
             static const GLenum funcs[4] = {GL_NEVER, GL_ALWAYS, GL_GEQUAL, GL_GREATER};
-            gl.glDepthFunc(funcs[ztst]);
-            gl.glDepthMask(ctx.zbuf.zmask ? GL_FALSE : GL_TRUE);
+            setDepthFunc(funcs[ztst]);
+            setDepthMask(ctx.zbuf.zmask ? GL_FALSE : GL_TRUE);
         }
         else
         {
-            gl.glDisable(GL_DEPTH_TEST);
+            setDepthTest(false);
         }
 
         // Frame write mask (whole channels only for now).
         const uint32_t fbmsk = ctx.frame.fbmsk;
-        gl.glColorMask((fbmsk & 0xFFu) != 0xFFu, (fbmsk & 0xFF00u) != 0xFF00u, (fbmsk & 0xFF0000u) != 0xFF0000u,
+        setColorMask((fbmsk & 0xFFu) != 0xFFu, (fbmsk & 0xFF00u) != 0xFF00u, (fbmsk & 0xFF0000u) != 0xFF0000u,
                        (fbmsk & 0xFF000000u) != 0xFF000000u && ctx.frame.psm != PSM_CT24);
 
         // Blend: Cv = (A - B) * C / 128 + D, A/B/D in {Cs, Cd, 0}, C in {As, Ad, FIX}.
@@ -1542,7 +1546,7 @@ void main()
         const float dk = float(a == 1u) - float(b == 1u), dc = float(d == 1u);
         if (state.prim.abe)
         {
-            gl.glEnable(GL_BLEND);
+            setBlend(true);
             GLenum equation = GL_FUNC_ADD;
             if (dk < 0.0f && dc == 0.0f)
                 equation = GL_FUNC_SUBTRACT; // Cs*as - Cd*|ad|
@@ -1553,7 +1557,7 @@ void main()
         }
         else
         {
-            gl.glDisable(GL_BLEND);
+            setBlend(false);
         }
         gl.glProgramUniform4f(p.id, uniform(p, "u_blend"), sk, sc, dk, dc);
         set1("u_abe", state.prim.abe ? 1 : 0);
@@ -1616,7 +1620,7 @@ void main()
             gl.glTextureParameteri(replacement, GL_TEXTURE_WRAP_T, ((ctx.clamp >> 2) & 3u) == 1u ? GL_CLAMP_TO_EDGE : GL_REPEAT);
             gl.glBindTextureUnit(4, replacement);
         }
-        gl.glBindVertexArray(m_vao);
+        bindVao(m_vao);
     }
 
     void Renderer::flushBatch()
@@ -1865,6 +1869,8 @@ void main()
 
     void Renderer::initialize(uint8_t *vram, uint32_t vramSize)
     {
+        invalidateGlState(); // a fresh context has no state cached
+
         m_vram = vram;
         m_cpu->Initialize(vram, vramSize);
         if (m_gpu && m_vram)
@@ -1873,6 +1879,8 @@ void main()
 
     void Renderer::reset()
     {
+        invalidateGlState(); // a fresh context has no state cached
+
         flushBatch();
         m_cpu->Reset();
         m_clutCbp[0] = m_clutCbp[1] = 0u;
@@ -1945,7 +1953,7 @@ void main()
         // Draws already submitted still read the old CLUT/VRAM: without this
         // the compute write can overtake their fragment shaders (write after read).
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-        gl.glUseProgram(m_clutLoad.id);
+        useProgram(m_clutLoad.id);
         gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut"), tex0.cpsm, tex0.cbp, tex0.csm, tex0.csa);
         gl.glProgramUniform4ui(m_clutLoad.id, uniform(m_clutLoad, "u_clut2"), texclut.cbw, texclut.cou, texclut.cov,
                                fourBit ? 1u : 0u);
@@ -1979,7 +1987,7 @@ void main()
         }
         const auto &buf = m_transfer.bitbltbuf;
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); // earlier draws finish reading VRAM first
-        gl.glUseProgram(m_hostToLocal.id);
+        useProgram(m_hostToLocal.id);
         gl.glProgramUniform4ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_dest"), buf.dbp,
                                std::max<uint32_t>(buf.dbw, 1u), buf.dpsm, m_transfer.trxreg.rrw);
         gl.glProgramUniform4ui(m_hostToLocal.id, uniform(m_hostToLocal, "u_pos"), m_transfer.trxpos.dsax,
@@ -2001,7 +2009,7 @@ void main()
         const bool overlap = srcBegin < dstEnd && dstBegin < srcEnd;
         GL &gl = m_context.gl;
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); // earlier draws finish reading VRAM first
-        gl.glUseProgram(m_localToLocal.id);
+        useProgram(m_localToLocal.id);
         gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_source"), buf.sbp,
                                std::max<uint32_t>(buf.sbw, 1u), buf.spsm, command.trxpos.ssax);
         gl.glProgramUniform4ui(m_localToLocal.id, uniform(m_localToLocal, "u_dest"), buf.dbp,
@@ -2717,6 +2725,12 @@ void main()
 
     void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
     {
+        // The host draws the composed frame with raylib between our frames, and
+        // if its context shares state with ours those calls change bindings
+        // behind the cache's back. Dropping the cache here costs a handful of
+        // re-applied calls per frame and removes that whole class of bug.
+        invalidateGlState();
+
         // When every enabled circuit reads a buffer the GPU drew, compose
         // the display from the targets at full resolution (the CPU path's
         // merge); anything else is left to the CPU composition.
@@ -2891,7 +2905,7 @@ void main()
         const bool both = crt1 && crt2;
         const Circuit &top = crt1 ? c1 : c2; // a lone circuit is drawn as "circuit 1" at full weight
         Program &p = m_compose;
-        gl.glUseProgram(p.id);
+        useProgram(p.id);
         gl.glProgramUniform4i(p.id, uniform(p, "u_rect1"), static_cast<GLint>(top.x * s), static_cast<GLint>(top.y * s),
                               static_cast<GLint>(top.width * s), static_cast<GLint>(top.height * s));
         if (both)
@@ -2906,14 +2920,14 @@ void main()
         gl.glProgramUniform2f(p.id, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, top.target->texture);
         gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
-        gl.glBindFramebuffer(GL_DRAW_FRAMEBUFFER,
+        bindFramebuffer(
                              sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer);
-        gl.glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
-        gl.glDisable(GL_SCISSOR_TEST);
-        gl.glDisable(GL_BLEND);
-        gl.glDisable(GL_DEPTH_TEST);
-        gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        gl.glBindVertexArray(m_emptyVao);
+        setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+        setScissorTest(false);
+        setBlend(false);
+        setDepthTest(false);
+        setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        bindVao(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
         if (sharePresent)
         {

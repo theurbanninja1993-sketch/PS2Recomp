@@ -222,6 +222,8 @@ int main(int argc, char **argv)
                         static_cast<unsigned long long>(g_gsGpuDrawRows.load()),
                         static_cast<unsigned long long>(g_gsGpuResolveRows.load()),
                         static_cast<unsigned long long>(g_gsGpuLoadRows.load()));
+            extern std::atomic<uint64_t> g_gsGpuStateSkips;
+            std::printf("  stateSkips=%llu\n", static_cast<unsigned long long>(g_gsGpuStateSkips.load()));
             std::printf("  draws=%llu resolves=%llu loads=%llu texBarriers=%llu memBarriers=%llu\n",
                         static_cast<unsigned long long>(g_gsGpuDraws.load()), static_cast<unsigned long long>(g_gsGpuResolves.load()),
                         static_cast<unsigned long long>(g_gsGpuLoads.load()), static_cast<unsigned long long>(g_gsGpuBarriers.load()),

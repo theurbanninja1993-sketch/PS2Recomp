@@ -18,6 +18,9 @@
 
 class GSCpuBackend;
 
+// GL state calls the state cache skipped (defined in gs_gpu_renderer.cpp).
+extern std::atomic<uint64_t> g_gsGpuStateSkips;
+
 namespace gsgpu
 {
     // GS rendering state that lives on the GPU backend's render thread.
@@ -261,6 +264,108 @@ namespace gsgpu
         // this is what actually removes barriers - a draw followed by several
         // resolves costs one barrier, not one each.
         bool m_framebufferWriteSinceBarrier = true;
+
+        // GL state cache for the four calls every pass re-issues whether or not
+        // they changed. Consecutive passes overwhelmingly use the same program,
+        // framebuffer, viewport and VAO (all 8,349 resolves share one program;
+        // consecutive draws share a target), so this skips the redundant ones.
+        // Driver-independent by construction: fewer calls is fewer calls, which
+        // is why the skip count is the number to measure locally.
+        //
+        // Sentinels rather than a valid flag: no GL name is 0xFFFFFFFF and no
+        // viewport component is INT32_MIN, so the first call always applies.
+        struct GlStateCache
+        {
+            uint32_t program = ~0u, framebuffer = ~0u, vao = ~0u;
+            int32_t viewport[4] = {INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN};
+            int32_t scissor[4] = {INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN};
+            int32_t scissorTest = -1, depthTest = -1, blend = -1;
+            int32_t depthFunc = -1, depthMask = -1;
+            int32_t colorMask[4] = {-1, -1, -1, -1};
+        };
+        GlStateCache m_glState;
+        uint64_t m_glStateSkips = 0; // GL state calls the cache avoided
+        void invalidateGlState() { m_glState = GlStateCache{}; }
+        void useProgram(GLuint program)
+        {
+            if (m_glState.program == program) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.program = program;
+            m_context.gl.glUseProgram(program);
+        }
+        void bindFramebuffer(GLuint framebuffer)
+        {
+            if (m_glState.framebuffer == framebuffer) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.framebuffer = framebuffer;
+            m_context.gl.glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        }
+        void bindVao(GLuint vao)
+        {
+            if (m_glState.vao == vao) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.vao = vao;
+            m_context.gl.glBindVertexArray(vao);
+        }
+        void setScissorTest(bool on)
+        {
+            const int32_t v = on ? 1 : 0;
+            if (m_glState.scissorTest == v) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.scissorTest = v;
+            if (on) m_context.gl.glEnable(GL_SCISSOR_TEST); else m_context.gl.glDisable(GL_SCISSOR_TEST);
+        }
+        void setScissor(int32_t x, int32_t y, int32_t w, int32_t h)
+        {
+            if (m_glState.scissor[0] == x && m_glState.scissor[1] == y && m_glState.scissor[2] == w &&
+                m_glState.scissor[3] == h)
+            { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.scissor[0] = x; m_glState.scissor[1] = y; m_glState.scissor[2] = w; m_glState.scissor[3] = h;
+            m_context.gl.glScissor(x, y, w, h);
+        }
+        void setDepthTest(bool on)
+        {
+            const int32_t v = on ? 1 : 0;
+            if (m_glState.depthTest == v) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.depthTest = v;
+            if (on) m_context.gl.glEnable(GL_DEPTH_TEST); else m_context.gl.glDisable(GL_DEPTH_TEST);
+        }
+        void setBlend(bool on)
+        {
+            const int32_t v = on ? 1 : 0;
+            if (m_glState.blend == v) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.blend = v;
+            if (on) m_context.gl.glEnable(GL_BLEND); else m_context.gl.glDisable(GL_BLEND);
+        }
+        void setDepthFunc(int32_t func)
+        {
+            if (m_glState.depthFunc == func) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.depthFunc = func;
+            m_context.gl.glDepthFunc(static_cast<GLenum>(func));
+        }
+        void setDepthMask(int32_t mask)
+        {
+            if (m_glState.depthMask == mask) { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.depthMask = mask;
+            m_context.gl.glDepthMask(static_cast<GLboolean>(mask));
+        }
+        void setColorMask(int32_t r, int32_t g, int32_t b, int32_t a)
+        {
+            if (m_glState.colorMask[0] == r && m_glState.colorMask[1] == g && m_glState.colorMask[2] == b &&
+                m_glState.colorMask[3] == a)
+            { ++m_glStateSkips; ++g_gsGpuStateSkips; return; }
+            m_glState.colorMask[0] = r; m_glState.colorMask[1] = g; m_glState.colorMask[2] = b; m_glState.colorMask[3] = a;
+            m_context.gl.glColorMask(static_cast<GLboolean>(r), static_cast<GLboolean>(g), static_cast<GLboolean>(b),
+                                     static_cast<GLboolean>(a));
+        }
+        void setViewport(int32_t x, int32_t y, int32_t w, int32_t h)
+        {
+            if (m_glState.viewport[0] == x && m_glState.viewport[1] == y && m_glState.viewport[2] == w &&
+                m_glState.viewport[3] == h)
+            {
+                ++m_glStateSkips;
+                ++g_gsGpuStateSkips;
+                return;
+            }
+            m_glState.viewport[0] = x; m_glState.viewport[1] = y; m_glState.viewport[2] = w; m_glState.viewport[3] = h;
+            m_context.gl.glViewport(x, y, w, h);
+        }
         // A resolve's VRAM write only needs ordering before the next VRAM read.
         // Every reader funnels through loadRows() and readbackVram(), so the
         // barrier is issued there - one per read instead of one per resolve.
