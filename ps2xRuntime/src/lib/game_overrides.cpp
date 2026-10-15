@@ -1917,9 +1917,12 @@ namespace
             g_vcsFov.camera = camera;
             g_vcsFov.gameX = vw[0];
             g_vcsFov.gameY = vw[1];
+            // Remember the window; the camera itself is published once per
+            // presented frame from the present path (publishCameraFrame), so
+            // publishing here too would just duplicate samples and race the
+            // present thread.
             g_vcsViewWindowX = vw[0];
             g_vcsViewWindowY = vw[1];
-            vcsPublishCamera(rdram, vw[0], vw[1]);
             const float setting = vcsFovSetting(rdram);
             g_vcsFov.appliedFov = setting;
             if (setting != 70.0f && vw[0] > 0.0f && std::isfinite(vw[0]) && std::isfinite(vw[1]))
