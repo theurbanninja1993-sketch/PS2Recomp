@@ -249,6 +249,25 @@ namespace gsgpu
         std::vector<Vertex> m_vertices;
         bool m_haveKey = false;
         bool m_inFlush = false; // applyDrawState may resolve memory mid-flush
+        // resolveTarget issues the two glMemoryBarrier calls a resolve needs,
+        // but only once per *group*: consecutive resolves in one call site are
+        // ordered by a single pair. Two barriers per resolve cost ~6 driver
+        // points at 250-350 draws/frame (owner-measured, dropping both gains
+        // 2.1 fps), and the spec only needs one pair around the writes.
+        bool m_resolveGroupOpen = false;
+        // A resolve's read of a target texture only needs ordering if something
+        // drew into that framebuffer since the last barrier. Every resolve site
+        // resolves ~1 target, so per-site grouping coalesces nothing (measured);
+        // this is what actually removes barriers - a draw followed by several
+        // resolves costs one barrier, not one each.
+        bool m_framebufferWriteSinceBarrier = true;
+        // A resolve's VRAM write only needs ordering before the next VRAM read.
+        // Every reader funnels through loadRows() and readbackVram(), so the
+        // barrier is issued there - one per read instead of one per resolve.
+        bool m_vramWriteSinceBarrier = false;
+        void vramBarrierBeforeRead();
+        void resolveBarrierBegin();
+        void resolveGroupEnd();
         DrawKey m_key{};
         GSDrawState m_keyState{};
         Target *m_drawColor = nullptr;

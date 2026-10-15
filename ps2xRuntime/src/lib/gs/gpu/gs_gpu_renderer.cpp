@@ -1020,6 +1020,7 @@ void main()
                     // Same layout class, different format (e.g. CT32 <-> CT24):
                     // the texture's interpretation changes.
                     resolveTarget(*target);
+                    resolveGroupEnd();
                     target->psm = psm;
                     if (target->usedRows != 0u)
                     {
@@ -1095,6 +1096,7 @@ void main()
     {
         if (rows == 0u)
             return;
+        vramBarrierBeforeRead(); // this reads VRAM
         ++m_statLoads;
         g_gsGpuLoads.fetch_add(1u, std::memory_order_relaxed);
         g_gsGpuLoadRows.fetch_add(rows, std::memory_order_relaxed);
@@ -1122,6 +1124,50 @@ void main()
         }
         gl.glBindVertexArray(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        m_framebufferWriteSinceBarrier = true;
+    }
+
+    // PS2X_GS_GPU_SKIP_MEMBARRIER: diagnostic only. Drops BOTH resolve barriers
+    // (gating just one leaves the other synchronising, so that test reads zero
+    // either way). Expect visual artifacts with it on.
+    void Renderer::resolveBarrierBegin()
+    {
+        m_resolveGroupOpen = true;
+        // Only a draw into a framebuffer since the last barrier can make this
+        // resolve's texture read stale, so that is the condition, not the
+        // resolve count.
+        if (!m_framebufferWriteSinceBarrier)
+            return;
+        m_framebufferWriteSinceBarrier = false;
+        static const bool s_skip = std::getenv("PS2X_GS_GPU_SKIP_MEMBARRIER") != nullptr;
+        if (!s_skip)
+        {
+            g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
+            // Prior draws are read by this resolve's compute stage.
+            m_context.gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT);
+        }
+    }
+
+    void Renderer::resolveGroupEnd()
+    {
+        m_resolveGroupOpen = false;
+        // Not a barrier here: the write is only ordered when something reads
+        // VRAM, which is vramBarrierBeforeRead(). Resolves outnumber reads, so
+        // this is where the count comes down.
+        m_vramWriteSinceBarrier = true;
+    }
+
+    void Renderer::vramBarrierBeforeRead()
+    {
+        if (!m_vramWriteSinceBarrier)
+            return;
+        m_vramWriteSinceBarrier = false;
+        static const bool s_skip = std::getenv("PS2X_GS_GPU_SKIP_MEMBARRIER") != nullptr;
+        if (!s_skip)
+        {
+            g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
+            m_context.gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        }
     }
 
     void Renderer::resolveTarget(Target &target)
@@ -1150,18 +1196,7 @@ void main()
         else if (m_syncReason == "stale")
             g_gsGpuSyncStale.fetch_add(1u, std::memory_order_relaxed);
         GL &gl = m_context.gl;
-        // PS2X_GS_GPU_SKIP_MEMBARRIER: diagnostic only. Two glMemoryBarrier
-        // calls per resolve (~590 resolves a frame in dense scenes, so ~1180
-        // barriers), each of which can flush caches and serialise the pipeline.
-        // Removing just one leaves the other doing the same work, so this
-        // removes BOTH - which is the only version of the test that says
-        // anything. Expect visual artifacts with it on.
-        static const bool s_skipMemBarrier = std::getenv("PS2X_GS_GPU_SKIP_MEMBARRIER") != nullptr;
-        if (!s_skipMemBarrier)
-        {
-            g_gsGpuMemBarriers.fetch_add(1u, std::memory_order_relaxed);
-            gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT); // VRAM readers and the target's draws
-        }
+        resolveBarrierBegin();
         const uint32_t y0 = target.dirtyY0;
         const uint32_t rows = std::min(target.dirtyY1, target.height - 1u) - y0 + 1u;
         gl.glUseProgram(m_resolve.id);
@@ -1171,11 +1206,8 @@ void main()
         gl.glProgramUniform1ui(m_resolve.id, uniform(m_resolve, "u_scale"), m_scale);
         gl.glBindTextureUnit(0, target.texture);
         gl.glDispatchCompute((target.width + 63u) / 64u, (rows + 3u) / 4u, 1u);
-        // Both barriers honour the skip flag. Gating only the first one (as this
-        // did) proves nothing: the remaining barrier still synchronises, so the
-        // cost stays and the measurement reads zero either way.
-        if (!s_skipMemBarrier)
-            gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        // The matching barrier is issued by resolveGroupEnd() at the end of the
+        // call site's group, not here.
         if (replacementsActive())
         {
             uint32_t begin = 0, end = 0;
@@ -1231,6 +1263,7 @@ void main()
             if (begin < endByte && beginByte < end)
                 resolveTarget(*target);
         }
+        resolveGroupEnd();
     }
 
     void Renderer::markStaleRows(Target &target, uint32_t beginByte, uint32_t endByte)
@@ -1245,6 +1278,7 @@ void main()
             // whatever operation ran before them.
             m_syncReason = "stale";
             resolveTarget(target); // keep its drawn rows; VRAM there is current
+            resolveGroupEnd();
         }
         target.staleY0 = std::min(target.staleY0, y0);
         target.staleY1 = std::max(target.staleY1, y1);
@@ -1370,6 +1404,7 @@ void main()
                 m_syncReason = "alias";
                 for (Target *t : pending)
                     resolveTarget(*t);
+                resolveGroupEnd();
                 for (const auto &range : ranges)
                     markStaleRows(target, range.first, range.second);
             }
@@ -1605,6 +1640,7 @@ void main()
         gl.glNamedBufferSubData(m_vbo, 0, static_cast<GLsizeiptr>(bytes), m_vertices.data());
         gl.glVertexArrayVertexBuffer(m_vao, 0, m_vbo, 0, sizeof(Vertex));
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
+        m_framebufferWriteSinceBarrier = true;
         ++m_statDraws;
         g_gsGpuDraws.fetch_add(1u, std::memory_order_relaxed);
         g_gsGpuDrawRows.fetch_add(static_cast<uint64_t>(std::max(0, m_batchY1 - m_batchY0 + 1)), std::memory_order_relaxed);
@@ -1783,6 +1819,7 @@ void main()
 
     void Renderer::readbackVram()
     {
+        vramBarrierBeforeRead(); // this reads VRAM
         if (!m_gpu || !m_vram)
             return;
         flushBatch();
