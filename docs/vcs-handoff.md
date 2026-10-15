@@ -1127,15 +1127,25 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     writes the source and the synthesized frame out as PPMs for that check. With
     no env set the renderer is byte-identical over 61 frames, so it is inert.
 
-    **What is left is the host wiring**, and it is the fiddly part: the renderer
-    lives on the render thread, so the host cannot call `synthesizeHostFrame`
-    directly. It needs a path through the GS frontend and backend (the same queue
-    `Present` uses), and the host then draws the returned texture on the frames
-    the game produced no new picture - which the camera-publish gate already
-    identifies, since it keys off the VBlank tick. The texture is a plain GL id,
-    so it can be wrapped as a raylib Texture2D the way the shared present texture
-    already is. Until that exists the synthesis is only reachable from the test
-    hook.
+    **Step 2 DONE (2026-10-15): the host wiring is in.** `SynthesizeFrame` is a
+    virtual on `GSRasterBackend` (default: no-op, so the CPU backend is
+    unaffected); `GSGpuBackend` implements it as a *blocking* round trip to the
+    render thread - the same `std::promise` shape `ReadVram` uses, because unlike
+    `Present` the caller has to have the texture before it draws. `GS::synthesizeFrame`
+    exposes it, and `ps2_runtime.cpp` calls it on the frames the game produced no
+    new picture (the camera-publish gate already knows, since it keys off the
+    VBlank tick), wrapping the returned GL id as a raylib Texture2D exactly as the
+    shared present texture is.
+
+    Verified: with the synthetic camera and VSync forced off, a live run logs
+    `[gs] frame interp: first synthesized frame 2560x960 (host frame, game
+    produced none)` - so the whole chain runs. With no env set the renderer is
+    byte-identical over 61 frames.
+
+    `linux/play-interp.sh` and `windows/play-interp.cmd` on the stick set
+    `PS2X_FRAME_INTERP=1`. **Not yet seen on a real display**: what to look for is
+    smoother motion rather than doubled, with the HUD still - a wobbling HUD means
+    the mask is wrong, which is the thing to chase.
 
     - **Reprojection (as in item 13).** Generate intermediate display frames by
       warping the previous composed frame along the camera delta. Reuses the

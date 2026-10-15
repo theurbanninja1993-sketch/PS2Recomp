@@ -146,6 +146,13 @@ public:
     // and stays valid until it is reused a couple of frames later.
     uint32_t latchedHostPresentationGlTexture(uint32_t &outWidth, uint32_t &outHeight) const;
 
+    // Frame interpolation: ask the renderer for a frame synthesized from the last
+    // composed one, warped forward by half the last camera motion, and hand back
+    // its GL texture (0 when it cannot make one). Blocking - the caller draws it
+    // immediately - and only meaningful when the renderer shares the host's
+    // context, since the texture is a plain GL id.
+    uint32_t synthesizeFrame(uint32_t &outWidth, uint32_t &outHeight);
+
     // Hands the latched frame to the caller (no copy when it is already packed
     // at its width, which the upscaled GPU path always is), so this is not
     // const: it takes the frame.

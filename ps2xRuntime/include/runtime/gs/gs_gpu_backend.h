@@ -73,6 +73,9 @@ public:
     void Sync(GSSyncReason reason) override;
     PresentationFrame Present(const GSPresentationRequest &request) override;
 
+    // Blocking round trip to the render thread (see GSRasterBackend).
+    uint32_t SynthesizeFrame(uint32_t &width, uint32_t &height) override;
+
     bool ClearFramebuffer(const GSContext &context, uint32_t rgba) override;
     uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) override;
 

@@ -761,6 +761,16 @@ uint32_t GS::latchedHostPresentationGlTexture(uint32_t &outWidth, uint32_t &outH
     return m_hostPresentationGlTexture;
 }
 
+uint32_t GS::synthesizeFrame(uint32_t &outWidth, uint32_t &outHeight)
+{
+    outWidth = 0;
+    outHeight = 0;
+    if (!m_backend)
+        return 0u;
+    return m_backend->SynthesizeFrame(outWidth, outHeight);
+}
+
+
 bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                           uint32_t &outWidth,
                                           uint32_t &outHeight,

@@ -3409,13 +3409,47 @@ void PS2Runtime::run()
         // frame, so take the sample here, where a frame is actually being shown.
         // Once per *picture*, not per host frame: the reprojection deltas are
         // between pictures, and publishing twice per picture would halve them.
+        // The same test tells the host when the game produced nothing, which is
+        // where a synthesized frame goes.
+        static uint64_t s_lastCameraTick = ~0ull;
+        const uint64_t cameraTick = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
+        const bool newPicture = cameraTick != s_lastCameraTick;
+        if (newPicture)
         {
-            static uint64_t s_lastCameraTick = ~0ull;
-            const uint64_t cameraTick = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
-            if (cameraTick != s_lastCameraTick)
+            s_lastCameraTick = cameraTick;
+            ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
+        }
+        // Frame interpolation (PS2X_FRAME_INTERP=1): on a frame the game produced
+        // no new picture, draw one synthesized from the last composed frame,
+        // warped forward by half the last camera motion, instead of repeating it.
+        static const bool s_interp = std::getenv("PS2X_FRAME_INTERP") != nullptr;
+        if (s_interp && !newPicture)
+        {
+            uint32_t synthWidth = 0, synthHeight = 0;
+            const uint32_t synthTexture = m_gs.synthesizeFrame(synthWidth, synthHeight);
+            if (synthTexture != 0u && synthWidth != 0u && synthHeight != 0u)
             {
-                s_lastCameraTick = cameraTick;
-                ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
+                {
+                    static bool s_reported = false;
+                    if (!s_reported)
+                    {
+                        s_reported = true;
+                        std::cerr << "[gs] frame interp: first synthesized frame " << synthWidth << "x" << synthHeight
+                                  << " (host frame, game produced none)" << std::endl;
+                    }
+                }
+                // A plain GL texture, drawn directly: the renderer shares the
+                // window's context, which is also why the shared present path
+                // works. The id stays valid until the renderer reuses it.
+                static Texture2D s_synth{};
+                s_synth.id = synthTexture;
+                s_synth.width = static_cast<int>(synthWidth);
+                s_synth.height = static_cast<int>(synthHeight);
+                s_synth.mipmaps = 1;
+                s_synth.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+                presentDraw = s_synth;
+                presentWidth = synthWidth;
+                presentHeight = synthHeight;
             }
         }
 

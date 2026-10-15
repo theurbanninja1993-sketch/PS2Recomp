@@ -24,6 +24,18 @@ public:
     virtual void Sync(GSSyncReason reason) = 0;
     virtual PresentationFrame Present(const GSPresentationRequest &request) = 0;
 
+    // Frame interpolation: warp the last composed frame forward by half the last
+    // camera motion and return the texture to draw (0 if it cannot make one),
+    // with its size. This is a *blocking* round trip where Present is not: the
+    // caller has to have the texture before it draws. Backends that cannot do it
+    // leave it alone.
+    virtual uint32_t SynthesizeFrame(uint32_t &width, uint32_t &height)
+    {
+        (void)width;
+        (void)height;
+        return 0;
+    }
+
     virtual bool ClearFramebuffer(const GSContext &context, uint32_t rgba) = 0;
     virtual uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) = 0;
 

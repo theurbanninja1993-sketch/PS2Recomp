@@ -335,6 +335,27 @@ PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
     return frame;
 }
 
+uint32_t GSGpuBackend::SynthesizeFrame(uint32_t &width, uint32_t &height)
+{
+    // Blocking, unlike Present: the caller needs the texture before it draws.
+    // Same shape as ReadVram - enqueue an urgent command and wait for the render
+    // thread to run it. The locals are captured by reference and the wait
+    // guarantees they outlive the lambda.
+    uint32_t texture = 0, w = 0, h = 0;
+    std::promise<void> done;
+    Command command = Command::make(CommandType::Call);
+    command.payload->call = [&]()
+    {
+        texture = m_renderer ? m_renderer->synthesizeHostFrame(w, h) : 0u;
+        done.set_value();
+    };
+    enqueue(std::move(command), true);
+    done.get_future().wait();
+    width = w;
+    height = h;
+    return texture;
+}
+
 bool GSGpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 {
     bool cleared = false;

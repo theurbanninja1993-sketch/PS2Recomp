@@ -53,6 +53,11 @@ namespace gsgpu
         // Brings CPU local memory up to date with the GPU.
         void syncLocalMemory();
         PresentationFrame present(const GSPresentationRequest &request);
+        // Frame interpolation: warp the last composed frame forward by half the
+        // last camera motion and write it into its own texture, leaving the
+        // overlays alone. Returns the texture (0 if it cannot make one). Called
+        // from the render thread, through the backend.
+        GLuint synthesizeHostFrame(uint32_t &outWidth, uint32_t &outHeight);
         bool clearFramebuffer(const GSContext &context, uint32_t rgba);
         uint32_t consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes);
 
@@ -338,11 +343,6 @@ namespace gsgpu
         // Reads the published camera into m_interpCamera, tracking the previous
         // one. Called once per compose, whatever else is enabled.
         void trackCamera();
-        // Warps the last composed frame forward by half the last camera motion and
-        // writes it into m_synthTexture, leaving the overlays alone. Returns the
-        // texture (0 if it could not make one). Called by the host on the frames
-        // the game produced no new picture.
-        GLuint synthesizeHostFrame(uint32_t &outWidth, uint32_t &outHeight);
         void ensureBlurTargets(GL &gl, uint32_t width, uint32_t height);
         // Smears the frame the compose just drew along the camera's motion,
         // scaling the smear per pixel by the overlay mask in its alpha, and
