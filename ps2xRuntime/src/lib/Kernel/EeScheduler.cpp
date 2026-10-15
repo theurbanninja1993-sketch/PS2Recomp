@@ -578,14 +578,26 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
         return;
     static uint64_t s_count = 0, s_late = 0;
     static double s_lostMs = 0.0;
-    static std::map<std::string, uint64_t> s_lastTicks;
+    static std::map<uint64_t, uint64_t> s_lastTicks;
     static uint64_t s_lastCompiled = 0, s_lastInterpreted = 0;
     static auto s_lastTime = std::chrono::steady_clock::now();
     ++s_count;
+    // Buckets of lateness, kept in memory and reported with each sample. A line
+    // per late VBlank is I/O on the emulation's own thread - and the log may be
+    // on slow media, where 4000 of them over a session is not free.
+    constexpr size_t kLateBins = 8;
+    static uint64_t s_lateHist[kLateBins] = {};
     if (lateMs > 4.0)
     {
         ++s_late;
         s_lostMs += lateMs;
+        static constexpr double kBinEdge[kLateBins] = {2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 1e18};
+        for (size_t bin = 0; bin < kLateBins; ++bin)
+            if (lateMs < kBinEdge[bin])
+            {
+                ++s_lateHist[bin];
+                break;
+            }
         static const bool s_each = std::getenv("PS2X_PERF_LOG_EACH") != nullptr;
         if (s_each)
             std::fprintf(s_file, "late f=%llu %.1f ms\n", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), lateMs);
@@ -597,6 +609,16 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
     s_lastTime = now;
     std::fprintf(s_file, "frame=%llu late=%llu/600 lostMs=%d rss=%zuMB", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()),
                  static_cast<unsigned long long>(s_late), static_cast<int>(s_lostMs), ps2ProcessResidentMb());
+    {
+        // The lateness distribution: how many late VBlanks fell in each bucket
+        // (<2, <5, <10, <20, <40, <80, <160, more ms). The aggregate hides
+        // whether the stutter is a few big spikes or many small ones.
+        std::fprintf(s_file, " lateHist=");
+        for (size_t bin = 0; bin < kLateBins; ++bin)
+            std::fprintf(s_file, "%s%llu", bin == 0 ? "" : ",", static_cast<unsigned long long>(s_lateHist[bin]));
+        for (size_t bin = 0; bin < kLateBins; ++bin)
+            s_lateHist[bin] = 0;
+    }
     {
         // Audio frames produced / dropped (host ring full) this period: real
         // time is ~480480 per 600 VBlanks.
@@ -627,42 +649,18 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
         std::fprintf(s_file, " t1wraps=%llu t1ovfIrq=%llu", static_cast<unsigned long long>(g_eeTimerWraps[1].exchange(0)),
                      static_cast<unsigned long long>(g_eeTimerOvfIrqs[1].exchange(0)));
     }
-    // Thread CPU from /proc (ticks are 1/100 s), summed per thread name.
-    std::map<std::string, uint64_t> ticks;
-    if (DIR *dir = opendir("/proc/self/task"))
+    // Per-thread CPU, keyed by thread id (see ps2ThreadCpuTicks). This is the
+    // number that says which thread is the bottleneck, and it works on Windows
+    // too - the previous version read /proc and summed by name, so the main
+    // thread and the IOP worker reported as one number.
+    std::map<uint64_t, uint64_t> ticks;
+    for (const Ps2ThreadCpu &thread : ps2ThreadCpuTicks())
     {
-        while (dirent *entry = readdir(dir))
-        {
-            if (entry->d_name[0] == '.')
-                continue;
-            const std::string base = std::string("/proc/self/task/") + entry->d_name;
-            char name[64] = {};
-            if (FILE *f = std::fopen((base + "/comm").c_str(), "r"))
-            {
-                if (std::fgets(name, sizeof(name), f))
-                    name[std::strcspn(name, "\n")] = 0;
-                std::fclose(f);
-            }
-            if (FILE *f = std::fopen((base + "/stat").c_str(), "r"))
-            {
-                char buffer[1024] = {};
-                const size_t n = std::fread(buffer, 1, sizeof(buffer) - 1, f);
-                std::fclose(f);
-                buffer[n] = 0;
-                const char *p = std::strrchr(buffer, ')');
-                unsigned long long utime = 0, stime = 0;
-                if (p && std::sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime, &stime) == 2)
-                    ticks[name] += utime + stime;
-            }
-        }
-        closedir(dir);
-    }
-    for (const auto &[name, total] : ticks)
-    {
-        const uint64_t delta = total - std::min(total, s_lastTicks[name]);
+        const uint64_t delta = thread.ticks - std::min(thread.ticks, s_lastTicks[thread.id]);
         const int percent = static_cast<int>(static_cast<double>(delta) / std::max(seconds, 0.001));
         if (percent >= 3)
-            std::fprintf(s_file, " %s=%d%%", name.c_str(), percent);
+            std::fprintf(s_file, " %s=%d%%", thread.label.c_str(), percent);
+        ticks[thread.id] = thread.ticks;
     }
     s_lastTicks = ticks;
     const uint64_t compiled = g_ps2Vu1CompiledCalls.load(), interpreted = g_ps2Vu1InterpretedCalls.load();

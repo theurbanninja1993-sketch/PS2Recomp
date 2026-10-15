@@ -1,5 +1,7 @@
 #include "ps2_iop_worker.h"
 
+#include "ThreadNaming.h"
+
 #include <algorithm>
 #include <cstdlib>
 
@@ -11,11 +13,14 @@ namespace
 
     // How much IOP work to run between checks for posted requests. This is the
     // worst case a game-thread call waits: it posts, then blocks until the
-    // worker reaches the queue, so a slice is a potential frame-time spike. A
-    // quarter VBlank (~4 ms) is 24% of a frame at 60 fps - enough to be felt as
-    // stutter even when the average rate is right - so keep it well under a
-    // frame; a sixteenth is about 0.3 ms.
-    constexpr uint64_t kSliceEeCycles = kEeCyclesPerVBlank / 16u;
+    // worker reaches the queue, so a small slice bounds that wait - but every
+    // slice also takes the queue lock, and a sixteenth VBlank meant 3000 of
+    // those a second. On Windows that cost more than it bought: the worker fell
+    // behind, the EE stalled waiting on the IOP through the SIF, and the whole
+    // emulation degraded over a session (lostMs climbing 4s -> 6.7s per 10s,
+    // underrun back up to 237k). A quarter VBlank is the value that measured
+    // good on the owner's machines.
+    constexpr uint64_t kSliceEeCycles = kEeCyclesPerVBlank / 4u;
 
     // How far the IOP may fall behind before its backlog is dropped. A long
     // stall (a load, a disc read) must not come back as a burst of catch-up
@@ -90,6 +95,7 @@ void IopWorker::addAllowedEeCycles(uint64_t eeCycles)
 
 void IopWorker::loop()
 {
+    ThreadNaming::SetCurrentThreadName("IopWorker");
     std::unique_lock lock(m_mutex);
     // Posted work is the synchronous path - whoever posted it is waiting - so
     // drain it before leaving, even once stopping.

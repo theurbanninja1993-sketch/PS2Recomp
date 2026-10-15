@@ -6,16 +6,19 @@
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #endif
 
 #include "runtime/ps2_platform.h"
 
 #include <thread>
 #if !defined(_WIN32)
+#include <dirent.h>
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
 #include <cstdio>
+#include <cstring>
 #include "ThreadNaming.h"
 
 #include <cstdlib>
@@ -53,6 +56,99 @@ void ps2SetHostThread()
 bool ps2IsHostThread()
 {
     return g_hostThread == std::this_thread::get_id();
+}
+
+std::vector<Ps2ThreadCpu> ps2ThreadCpuTicks()
+{
+    std::vector<Ps2ThreadCpu> out;
+#if defined(_WIN32)
+    const DWORD pid = GetCurrentProcessId();
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return out;
+    // GetThreadDescription is Windows 10 1607+; resolve it at run time so older
+    // systems simply report ids.
+    using GetThreadDescriptionFn = HRESULT(WINAPI *)(HANDLE, PWSTR *);
+    static const auto s_getDescription = []() -> GetThreadDescriptionFn
+    {
+        HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+        return kernel32 != nullptr
+                   ? reinterpret_cast<GetThreadDescriptionFn>(GetProcAddress(kernel32, "GetThreadDescription"))
+                   : nullptr;
+    }();
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    if (Thread32First(snapshot, &entry))
+    {
+        do
+        {
+            if (entry.th32OwnerProcessID != pid)
+                continue;
+            HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
+            if (thread == nullptr)
+                continue;
+            FILETIME creation{}, exitTime{}, kernel{}, user{};
+            if (GetThreadTimes(thread, &creation, &exitTime, &kernel, &user))
+            {
+                const auto ticksOf = [](const FILETIME &t)
+                { return ((static_cast<uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime) / 100000ull; };
+                Ps2ThreadCpu cpu;
+                cpu.id = entry.th32ThreadID;
+                cpu.ticks = ticksOf(kernel) + ticksOf(user);
+                if (s_getDescription != nullptr)
+                {
+                    PWSTR description = nullptr;
+                    if (SUCCEEDED(s_getDescription(thread, &description)) && description != nullptr)
+                    {
+                        std::wstring wide(description);
+                        LocalFree(description);
+                        cpu.label.assign(wide.begin(), wide.end());
+                    }
+                }
+                if (cpu.label.empty())
+                    cpu.label = "thread" + std::to_string(cpu.id);
+                out.push_back(std::move(cpu));
+            }
+            CloseHandle(thread);
+        } while (Thread32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+#else
+    DIR *dir = opendir("/proc/self/task");
+    if (dir == nullptr)
+        return out;
+    while (dirent *entry = readdir(dir))
+    {
+        if (entry->d_name[0] == '.')
+            continue;
+        const std::string base = std::string("/proc/self/task/") + entry->d_name;
+        Ps2ThreadCpu cpu;
+        cpu.id = std::strtoull(entry->d_name, nullptr, 10);
+        char name[64] = {};
+        if (FILE *f = std::fopen((base + "/comm").c_str(), "r"))
+        {
+            if (std::fgets(name, sizeof(name), f))
+                name[std::strcspn(name, "\n")] = 0;
+            std::fclose(f);
+        }
+        cpu.label = name;
+        if (FILE *f = std::fopen((base + "/stat").c_str(), "r"))
+        {
+            char buffer[1024] = {};
+            const size_t n = std::fread(buffer, 1, sizeof(buffer) - 1, f);
+            std::fclose(f);
+            buffer[n] = 0;
+            const char *p = std::strrchr(buffer, ')');
+            unsigned long long utime = 0, stime = 0;
+            if (p != nullptr &&
+                std::sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime, &stime) == 2)
+                cpu.ticks = utime + stime;
+        }
+        out.push_back(std::move(cpu));
+    }
+    closedir(dir);
+#endif
+    return out;
 }
 
 void ps2RaiseCurrentThreadPriority()

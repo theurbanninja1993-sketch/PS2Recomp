@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 // Small OS-specific helpers (ps2_platform.cpp keeps <windows.h> out of the
 // files that use raylib).
@@ -23,6 +24,18 @@ std::filesystem::path ps2ConfigDirectory();
 // frame and a gap in the audio - so it is deferred to the host thread.
 void ps2SetHostThread();
 bool ps2IsHostThread();
+
+// Per-thread CPU time of this process: thread id, a label (the thread's name,
+// or its id when unnamed) and ticks of 1/100 s. Keyed per *thread*, not per
+// name - the main thread and the IOP worker both used to report as
+// "ps2EntryRunner" and their sum hid which one was actually busy.
+struct Ps2ThreadCpu
+{
+    uint64_t id = 0;
+    std::string label;
+    uint64_t ticks = 0;
+};
+std::vector<Ps2ThreadCpu> ps2ThreadCpuTicks();
 
 // Ask the OS to schedule this thread favourably. The emulated game thread both
 // runs the game and feeds the audio ring, and when it is scheduled in lumps the
