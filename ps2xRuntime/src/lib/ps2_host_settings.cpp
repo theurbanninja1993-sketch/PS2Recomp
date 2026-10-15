@@ -332,6 +332,14 @@ void ps2HostSettingsLoad()
             s.flickerFilter = std::atoi(v) != 0;
         else if (key == "vsync")
             s.vsync = std::atoi(v) != 0;
+        else if (key == "frame_rate")
+        {
+            const int hz = std::atoi(v);
+            s.frameRate = hz >= 240 ? PS2HostSettings::FrameRate::Hz240
+                                    : (hz >= 180 ? PS2HostSettings::FrameRate::Hz180
+                                                 : (hz >= 120 ? PS2HostSettings::FrameRate::Hz120
+                                                              : PS2HostSettings::FrameRate::Native));
+        }
         else if (key == "motion_blur")
             // Off, or PS2 for anything else: Modern is parked (env-only), and a
             // settings file from when it was in the menu could say 2, which must
@@ -428,6 +436,12 @@ void ps2HostSettingsApplyRenderer()
         g_gsGpuScaleRequest.store(static_cast<uint32_t>(g_settings.internalScale), std::memory_order_relaxed);
     s_first = false;
     g_gsFlickerFilter.store(g_settings.flickerFilter, std::memory_order_relaxed);
+    // PS2X_FRAME_RATE overrides it from the environment, like the other settings
+    // that are worth A/B-ing from a launcher.
+    static const char *s_envRate = std::getenv("PS2X_FRAME_RATE");
+    const uint32_t rate = s_envRate != nullptr ? static_cast<uint32_t>(std::max(60, std::atoi(s_envRate)))
+                                               : static_cast<uint32_t>(g_settings.frameRate);
+    g_gsFrameRate.store(rate, std::memory_order_relaxed);
     // Both Off and Modern drop the game's own blur accumulation: Off leaves the
     // picture sharp, Modern replaces the smear with its own. Keeping the game's
     // blur as well would blend two different ghosts.
@@ -495,6 +509,7 @@ void ps2HostSettingsSave()
         << "internal_scale=" << s.internalScale << "\n"
         << "flicker_filter=" << (s.flickerFilter ? 1 : 0) << "\n"
         << "vsync=" << (s.vsync ? 1 : 0) << "\n"
+        << "frame_rate=" << static_cast<int>(s.frameRate) << "\n"
         << "motion_blur=" << static_cast<int>(s.motionBlur) << "\n"
         << "motion_blur_strength=" << s.motionBlurStrength << "\n"
 

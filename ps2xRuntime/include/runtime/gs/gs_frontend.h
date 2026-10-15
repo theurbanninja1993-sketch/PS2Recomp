@@ -151,7 +151,7 @@ public:
     // its GL texture (0 when it cannot make one). Blocking - the caller draws it
     // immediately - and only meaningful when the renderer shares the host's
     // context, since the texture is a plain GL id.
-    uint32_t synthesizeFrame(uint32_t &outWidth, uint32_t &outHeight);
+    uint32_t synthesizeFrame(float phase, uint32_t &outWidth, uint32_t &outHeight);
 
     // Hands the latched frame to the caller (no copy when it is already packed
     // at its width, which the upscaled GPU path always is), so this is not

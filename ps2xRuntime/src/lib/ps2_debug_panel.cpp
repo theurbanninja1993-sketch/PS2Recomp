@@ -2658,6 +2658,32 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 // drive it yet.
                 changed |= ImGui::Checkbox("VSync (tear-free; needed for VRR)", &settings.vsync);
 
+                // The game runs at a fixed 60 VBlanks/s, so anything above 60 is
+                // interpolated: the display is refreshed faster than the game
+                // produces pictures and the frames in between are synthesized by
+                // warping the last one forward by a fraction of the last camera
+                // motion. The HUD is left alone.
+                static const char *kFrameRate[] = {"60 (native)", "120 (interpolated)", "180 (interpolated)",
+                                                   "240 (interpolated)"};
+                static const PS2HostSettings::FrameRate kFrameRateValue[] = {
+                    PS2HostSettings::FrameRate::Native, PS2HostSettings::FrameRate::Hz120,
+                    PS2HostSettings::FrameRate::Hz180, PS2HostSettings::FrameRate::Hz240};
+                int frameRate = 0;
+                for (int i = 0; i < IM_ARRAYSIZE(kFrameRateValue); ++i)
+                    if (kFrameRateValue[i] == settings.frameRate)
+                        frameRate = i;
+                if (ImGui::Combo("Frame rate", &frameRate, kFrameRate, IM_ARRAYSIZE(kFrameRate)))
+                {
+                    settings.frameRate = kFrameRateValue[frameRate];
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("The game itself runs at a fixed 60. Above that the frames in\n"
+                                      "between are synthesized from the camera's motion, so the picture\n"
+                                      "is smoother rather than doubled. The HUD stays still.\n"
+                                      "A display that cannot refresh that fast simply blocks at the\n"
+                                      "swap with VSync on, so setting this high is safe.");
+
                 // The game's motion blur: it accumulates previous frames into a
                 // pair of 256x256 buffers and blends them over the display, so
                 // it smears badly on a modern panel. Off skips those draws

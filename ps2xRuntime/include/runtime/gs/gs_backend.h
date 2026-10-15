@@ -29,8 +29,9 @@ public:
     // with its size. This is a *blocking* round trip where Present is not: the
     // caller has to have the texture before it draws. Backends that cannot do it
     // leave it alone.
-    virtual uint32_t SynthesizeFrame(uint32_t &width, uint32_t &height)
+    virtual uint32_t SynthesizeFrame(float phase, uint32_t &width, uint32_t &height)
     {
+        (void)phase;
         (void)width;
         (void)height;
         return 0;

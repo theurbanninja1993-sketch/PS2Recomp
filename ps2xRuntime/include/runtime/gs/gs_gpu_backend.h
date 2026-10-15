@@ -26,6 +26,9 @@ extern std::atomic<uint32_t> g_gsGpuScaleRequest;
 // that read the game's blur accumulation buffers, so the picture stays sharp.
 // Both "Off" and "Modern" set it: Modern replaces the game's smear with its own.
 extern std::atomic<bool> g_gsMotionBlurOff;
+// Settings > Display > Frame rate. 60 shows only the game's own frames; above
+// that the host presents faster and the frames in between are synthesized.
+extern std::atomic<uint32_t> g_gsFrameRate;
 // "Modern": blur the composed frame along the camera's motion, leaving the
 // screen-space overlays (the HUD, the minimap) sharp. Strength is how far the
 // smear reaches, in frames of camera motion.
@@ -74,7 +77,7 @@ public:
     PresentationFrame Present(const GSPresentationRequest &request) override;
 
     // Blocking round trip to the render thread (see GSRasterBackend).
-    uint32_t SynthesizeFrame(uint32_t &width, uint32_t &height) override;
+    uint32_t SynthesizeFrame(float phase, uint32_t &width, uint32_t &height) override;
 
     bool ClearFramebuffer(const GSContext &context, uint32_t rgba) override;
     uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) override;

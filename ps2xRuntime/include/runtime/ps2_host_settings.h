@@ -97,6 +97,20 @@ struct PS2HostSettings
     // frame rate, so it is the only thing VRR needs: the emulation is fixed at
     // 60 VBlanks/s, so there is nothing above 60 to drive it with yet.
     bool vsync = true;
+    // Display refresh rate. The emulation is fixed at 60 VBlanks/s, so anything
+    // above 60 is *interpolated*: the host presents faster than the game produces
+    // pictures and the frames in between are synthesized by warping the last one
+    // forward by a fraction of the last camera motion. 60 shows only the game's
+    // own frames. A display that cannot refresh that fast simply blocks at the
+    // swap (with VSync on), so this is safe to set high.
+    enum class FrameRate : int
+    {
+        Native = 60,
+        Hz120 = 120,
+        Hz180 = 180,
+        Hz240 = 240,
+    };
+    FrameRate frameRate = FrameRate::Native;
     int internalScale = 1;       // GPU renderer resolution multiplier (1 = native 640x448)
     bool flickerFilter = false;  // the game's interlace flicker filter (a vertical blur)
     // The game's motion blur (VCS accumulates previous frames into a pair of

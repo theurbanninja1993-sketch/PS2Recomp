@@ -3412,11 +3412,13 @@ void PS2Runtime::run()
         // The same test tells the host when the game produced nothing, which is
         // where a synthesized frame goes.
         static uint64_t s_lastCameraTick = ~0ull;
+        static uint32_t s_hostFramesSincePicture = 0;
         const uint64_t cameraTick = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
         const bool newPicture = cameraTick != s_lastCameraTick;
         if (newPicture)
         {
             s_lastCameraTick = cameraTick;
+            s_hostFramesSincePicture = 0;
             ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
             // g_ps2PresentedFrameCounter counts *pictures*, not host frames. It
             // used to advance with the host loop, which coincided at 60 Hz and
@@ -3427,14 +3429,39 @@ void PS2Runtime::run()
             static uint64_t s_pictures = 0;
             g_ps2PresentedFrameCounter.store(++s_pictures, std::memory_order_relaxed);
         }
+        else
+        {
+            ++s_hostFramesSincePicture;
+        }
+        // The display rate drives the host cap. Above 60 the host presents faster
+        // than the game produces pictures, and the frames in between are the ones
+        // the interpolation fills in.
+        {
+            static uint32_t s_appliedRate = 0;
+            const uint32_t wanted = std::max<uint32_t>(60u, g_gsFrameRate.load(std::memory_order_relaxed));
+            if (wanted != s_appliedRate)
+            {
+                s_appliedRate = wanted;
+                SetTargetFPS(static_cast<int>(wanted));
+            }
+        }
         // Frame interpolation (PS2X_FRAME_INTERP=1): on a frame the game produced
         // no new picture, draw one synthesized from the last composed frame,
         // warped forward by half the last camera motion, instead of repeating it.
-        static const bool s_interp = std::getenv("PS2X_FRAME_INTERP") != nullptr;
-        if (s_interp && !newPicture)
+        // Above 60 the setting itself is the request: the host presents faster
+        // than the game produces pictures, and the frames in between have to be
+        // synthesized. PS2X_FRAME_INTERP=1 forces it on regardless, for testing.
+        static const bool s_forceInterp = std::getenv("PS2X_FRAME_INTERP") != nullptr;
+        const bool interp = s_forceInterp || g_gsFrameRate.load(std::memory_order_relaxed) > 60u;
+        if (interp && !newPicture)
         {
+            // Where this host frame sits between the two pictures it is between:
+            // one picture every rate/60 host frames.
+            const uint32_t perPicture =
+                std::max<uint32_t>(1u, g_gsFrameRate.load(std::memory_order_relaxed) / 60u);
+            const float phase = static_cast<float>(s_hostFramesSincePicture) / static_cast<float>(perPicture);
             uint32_t synthWidth = 0, synthHeight = 0;
-            const uint32_t synthTexture = m_gs.synthesizeFrame(synthWidth, synthHeight);
+            const uint32_t synthTexture = m_gs.synthesizeFrame(phase, synthWidth, synthHeight);
             if (synthTexture != 0u && synthWidth != 0u && synthHeight != 0u)
             {
                 {
@@ -3443,7 +3470,7 @@ void PS2Runtime::run()
                     {
                         s_reported = true;
                         std::cerr << "[gs] frame interp: first synthesized frame " << synthWidth << "x" << synthHeight
-                                  << " (host frame, game produced none)" << std::endl;
+                                  << " at phase " << phase << std::endl;
                     }
                 }
                 // A plain GL texture, drawn directly: the renderer shares the

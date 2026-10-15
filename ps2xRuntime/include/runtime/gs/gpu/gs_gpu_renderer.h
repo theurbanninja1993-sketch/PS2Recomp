@@ -57,7 +57,7 @@ namespace gsgpu
         // last camera motion and write it into its own texture, leaving the
         // overlays alone. Returns the texture (0 if it cannot make one). Called
         // from the render thread, through the backend.
-        GLuint synthesizeHostFrame(uint32_t &outWidth, uint32_t &outHeight);
+        GLuint synthesizeHostFrame(float phase, uint32_t &outWidth, uint32_t &outHeight);
         bool clearFramebuffer(const GSContext &context, uint32_t rgba);
         uint32_t consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes);
 

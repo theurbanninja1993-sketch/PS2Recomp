@@ -335,7 +335,7 @@ PresentationFrame GSGpuBackend::Present(const GSPresentationRequest &request)
     return frame;
 }
 
-uint32_t GSGpuBackend::SynthesizeFrame(uint32_t &width, uint32_t &height)
+uint32_t GSGpuBackend::SynthesizeFrame(float phase, uint32_t &width, uint32_t &height)
 {
     // Blocking, unlike Present: the caller needs the texture before it draws.
     // Same shape as ReadVram - enqueue an urgent command and wait for the render
@@ -346,7 +346,7 @@ uint32_t GSGpuBackend::SynthesizeFrame(uint32_t &width, uint32_t &height)
     Command command = Command::make(CommandType::Call);
     command.payload->call = [&]()
     {
-        texture = m_renderer ? m_renderer->synthesizeHostFrame(w, h) : 0u;
+        texture = m_renderer ? m_renderer->synthesizeHostFrame(phase, w, h) : 0u;
         done.set_value();
     };
     enqueue(std::move(command), true);

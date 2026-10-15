@@ -26,6 +26,7 @@ namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<bool> g_gsMotionBlurOff{false};
+std::atomic<uint32_t> g_gsFrameRate{60};
 std::atomic<bool> g_gsModernBlur{false};
 std::atomic<float> g_gsModernBlurStrength{0.0f};
 // The host window size, published by the main thread each frame (0 = unknown).
@@ -2038,7 +2039,7 @@ void main()
                                         static_cast<GLsizei>(h), 1, GL_RGBA, GL_UNSIGNED_BYTE,
                                         static_cast<GLsizei>(before.size()), before.data());
                 uint32_t sw = 0, sh = 0;
-                const GLuint synth = synthesizeHostFrame(sw, sh);
+                const GLuint synth = synthesizeHostFrame(0.5f, sw, sh);
                 if (synth != 0)
                 {
                     std::vector<uint8_t> after(static_cast<size_t>(sw) * sh * 4u, 0u);
@@ -3431,7 +3432,7 @@ void main()
     // writes it into m_synthTexture. Overlays are copied, not warped: the HUD is
     // identical in the two pictures it sits between, so moving it would be wrong.
     // Returns the texture, or 0 if it cannot make one.
-    GLuint Renderer::synthesizeHostFrame(uint32_t &outWidth, uint32_t &outHeight)
+    GLuint Renderer::synthesizeHostFrame(float phase, uint32_t &outWidth, uint32_t &outHeight)
     {
         if (m_synth.id == 0 || m_lastComposedTexture == 0 || !m_interpHavePrev || !m_interpPrevCamera.valid ||
             !m_interpCamera.valid || m_lastComposedWidth == 0 || m_lastComposedHeight == 0)
@@ -3447,16 +3448,17 @@ void main()
             return 0;
 
         // The extrapolation: a point moves from its previous position toward its
-        // current one, so half a step past the current frame is 1.5*p - 0.5*H*p.
-        // h.m is column-major, and H is only defined up to scale, so normalise by
-        // its bottom-right entry before blending.
+        // current one, so a fraction of a step past the current frame is
+        // (1 + phase)*p - phase*H*p. h.m is column-major, and H is only defined
+        // up to scale, so normalise by its bottom-right entry before blending.
+        const float t = std::clamp(phase, 0.0f, 1.0f);
         const float inv = h.m[8] != 0.0f ? 1.0f / h.m[8] : 1.0f;
         float ext[9];
         for (int i = 0; i < 9; ++i)
-            ext[i] = -0.5f * h.m[i] * inv;
-        ext[0] += 1.5f;
-        ext[4] += 1.5f;
-        ext[8] += 1.5f;
+            ext[i] = -t * h.m[i] * inv;
+        ext[0] += 1.0f + t;
+        ext[4] += 1.0f + t;
+        ext[8] += 1.0f + t;
 
         GL &gl = m_context.gl;
         const uint32_t w = m_lastComposedWidth, hgt = m_lastComposedHeight;
