@@ -43,6 +43,9 @@ namespace
     struct Record
     {
         uint32_t startPC = 0, top = 0, itop = 0;
+        bool vu0 = false; // 'CVU0' record: 4 KB code/data and the VU0 unit
+        uint32_t codeSize = PS2_VU1_CODE_SIZE;
+        uint32_t dataSize = PS2_VU1_DATA_SIZE;
         VU1State before{};
         std::vector<uint8_t> code, dataBefore, dataAfter;
         VU1State after{};
@@ -75,18 +78,30 @@ int main(int argc, char **argv)
             uint32_t header[4];
             if (std::fread(header, sizeof(header), 1, f) != 1)
                 break;
-            if (header[0] != 0x31555643u)
+            Record r;
+            if (header[0] == 0x30555643u) // 'CVU0'
+            {
+                r.vu0 = true;
+                r.codeSize = PS2_VU0_CODE_SIZE;
+                r.dataSize = PS2_VU0_DATA_SIZE;
+            }
+            else if (header[0] == 0x31555643u) // 'CVU1'
+            {
+                r.vu0 = false;
+                r.codeSize = PS2_VU1_CODE_SIZE;
+                r.dataSize = PS2_VU1_DATA_SIZE;
+            }
+            else
             {
                 std::fprintf(stderr, "bad record magic\n");
                 return 1;
             }
-            Record r;
             r.startPC = header[1];
             r.top = header[2];
             r.itop = header[3];
-            r.code.resize(PS2_VU1_CODE_SIZE);
-            r.dataBefore.resize(PS2_VU1_DATA_SIZE);
-            r.dataAfter.resize(PS2_VU1_DATA_SIZE);
+            r.code.resize(r.codeSize);
+            r.dataBefore.resize(r.dataSize);
+            r.dataAfter.resize(r.dataSize);
             if (std::fread(&r.before, sizeof(VU1State), 1, f) != 1 ||
                 std::fread(r.code.data(), 1, r.code.size(), f) != r.code.size() ||
                 std::fread(r.dataBefore.data(), 1, r.dataBefore.size(), f) != r.dataBefore.size() ||
@@ -111,6 +126,7 @@ int main(int argc, char **argv)
                                     for (uint32_t i = 0; i < size; ++i)
                                         gifHash = (gifHash ^ data[i]) * 1099511628211ull; });
     VU1Interpreter vu1(VU1Interpreter::Unit::VU1);
+    VU1Interpreter vu0(VU1Interpreter::Unit::VU0);
 
     const char *profilePath = std::getenv("VU1_PROFILE");
     if (profilePath)
@@ -131,22 +147,27 @@ int main(int argc, char **argv)
         for (size_t index = 0; index < records.size(); ++index)
         {
             const Record &r = records[index];
-            if (std::memcmp(memory.getVU1Code(), r.code.data(), PS2_VU1_CODE_SIZE) != 0)
+            uint8_t *const code = r.vu0 ? memory.getVU0Code() : memory.getVU1Code();
+            uint8_t *const data = r.vu0 ? memory.getVU0Data() : memory.getVU1Data();
+            if (std::memcmp(code, r.code.data(), r.codeSize) != 0)
             {
-                std::memcpy(memory.getVU1Code(), r.code.data(), PS2_VU1_CODE_SIZE);
-                memory.markVU1CodeModified();
+                std::memcpy(code, r.code.data(), r.codeSize);
+                if (r.vu0)
+                    memory.markVU0CodeModified();
+                else
+                    memory.markVU1CodeModified();
             }
-            std::memcpy(memory.getVU1Data(), r.dataBefore.data(), PS2_VU1_DATA_SIZE);
-            vu1.state() = r.before;
-            vu1.clearRanFlagless();
+            std::memcpy(data, r.dataBefore.data(), r.dataSize);
+            VU1Interpreter &vu = r.vu0 ? vu0 : vu1;
+            vu.state() = r.before;
+            vu.clearRanFlagless();
 
             const auto t0 = std::chrono::steady_clock::now();
-            vu1.execute(memory.getVU1Code(), PS2_VU1_CODE_SIZE, memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                        gs, &memory, r.startPC, r.top, r.itop, 65536);
+            vu.execute(code, r.codeSize, data, r.dataSize, gs, &memory, r.startPC, r.top, r.itop, 65536);
             seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-            if (pass == 0 && (!sameState(vu1.state(), r.after, vu1.ranFlaglessProgram()) ||
-                              std::memcmp(memory.getVU1Data(), r.dataAfter.data(), PS2_VU1_DATA_SIZE) != 0))
+            if (pass == 0 && (!sameState(vu.state(), r.after, vu.ranFlaglessProgram()) ||
+                              std::memcmp(data, r.dataAfter.data(), r.dataSize) != 0))
             {
                 if (mismatches < 10)
                     std::printf("mismatch: record %zu pc=0x%x\n", index, r.startPC);

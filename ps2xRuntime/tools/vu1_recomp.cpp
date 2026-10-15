@@ -37,13 +37,14 @@ class VU1Recompiler
 public:
     using Decoded = VU1Interpreter::DecodedInstructionPair;
 
-    VU1Recompiler(const uint8_t *code, uint32_t startPC, const std::vector<uint32_t> &roots)
-        : m_code(code), m_start(startPC), m_roots(roots) {}
+    VU1Recompiler(const uint8_t *code, uint32_t startPC, const std::vector<uint32_t> &roots,
+                  uint32_t codeSize = PS2_VU1_CODE_SIZE)
+        : m_code(code), m_start(startPC), m_roots(roots), m_codeSize(codeSize) {}
 
     // Returns false (with a reason) when the program can't be compiled.
     bool generate(uint64_t key, std::string &out, std::string &reason)
     {
-        ps2Vu1ProgramPairs(m_code, kCodeSize, m_start, m_normal, m_delay, m_roots.data(),
+        ps2Vu1ProgramPairs(m_code, m_codeSize, m_start, m_normal, m_delay, m_roots.data(),
                            static_cast<uint32_t>(m_roots.size()));
         m_normalSet.insert(m_normal.begin(), m_normal.end());
         std::set<uint32_t> delaySet(m_delay.begin(), m_delay.end());
@@ -183,7 +184,7 @@ public:
     }
 
 private:
-    static constexpr uint32_t kCodeSize = 0x4000u;
+    uint32_t m_codeSize = PS2_VU1_CODE_SIZE;
 
     enum class Context
     {
@@ -430,7 +431,7 @@ private:
         return op == 0x20u || op == 0x21u || op == 0x24u || op == 0x25u || op == 0x28u || op == 0x29u ||
                (op >= 0x2Cu && op <= 0x2Fu);
     }
-    static uint32_t nextPc(uint32_t pc) { return pc + 8u >= kCodeSize ? 0u : pc + 8u; }
+    uint32_t nextPc(uint32_t pc) const { return pc + 8u >= m_codeSize ? 0u : pc + 8u; }
 
     // --------------------------------------------------------------- pairs
 
@@ -1242,6 +1243,7 @@ namespace
     struct Program
     {
         uint32_t startPC = 0;
+        uint32_t codeSize = PS2_VU1_CODE_SIZE;
         std::vector<uint8_t> code;
         std::set<uint32_t> jumps;
     };
@@ -1262,6 +1264,7 @@ int main(int argc, char **argv)
     GS gs;
     memory.setGifPacketCallback([](const uint8_t *, uint32_t) {});
     VU1Interpreter vu1(VU1Interpreter::Unit::VU1);
+    VU1Interpreter vu0(VU1Interpreter::Unit::VU0);
     g_ps2Vu1JumpTraceHook = recordJump;
 
     // One group per (program, whole code image): the code at a program's
@@ -1277,35 +1280,63 @@ int main(int argc, char **argv)
             return 1;
         }
         size_t records = 0;
+        // A capture file holds one unit: 'CVU1' (16 KB code/data) or 'CVU0'
+        // (4 KB). VU0 programs wrap at 4 KB, so the recompiler needs the size.
+        bool vu0File = false;
+        uint32_t codeSize = PS2_VU1_CODE_SIZE;
+        uint32_t dataSize = PS2_VU1_DATA_SIZE;
         for (;;)
         {
             uint32_t header[4];
             VU1State before{}, after{};
-            if (std::fread(header, sizeof(header), 1, f) != 1 || header[0] != 0x31555643u)
+            if (std::fread(header, sizeof(header), 1, f) != 1)
                 break;
+            if (header[0] == 0x30555643u) // 'CVU0'
+            {
+                vu0File = true;
+                codeSize = PS2_VU0_CODE_SIZE;
+                dataSize = PS2_VU0_DATA_SIZE;
+            }
+            else if (header[0] == 0x31555643u) // 'CVU1'
+            {
+                vu0File = false;
+                codeSize = PS2_VU1_CODE_SIZE;
+                dataSize = PS2_VU1_DATA_SIZE;
+            }
+            else
+            {
+                std::fprintf(stderr, "bad record magic\n");
+                return 1;
+            }
+            uint8_t *code = vu0File ? memory.getVU0Code() : memory.getVU1Code();
+            uint8_t *data = vu0File ? memory.getVU0Data() : memory.getVU1Data();
             if (std::fread(&before, sizeof(before), 1, f) != 1 ||
-                std::fread(memory.getVU1Code(), 1, PS2_VU1_CODE_SIZE, f) != PS2_VU1_CODE_SIZE ||
-                std::fread(memory.getVU1Data(), 1, PS2_VU1_DATA_SIZE, f) != PS2_VU1_DATA_SIZE ||
+                std::fread(code, 1, codeSize, f) != codeSize ||
+                std::fread(data, 1, dataSize, f) != dataSize ||
                 std::fread(&after, sizeof(after), 1, f) != 1 ||
-                std::fread(dataAfter.data(), 1, dataAfter.size(), f) != dataAfter.size())
+                std::fread(dataAfter.data(), 1, dataSize, f) != dataSize)
                 break;
             ++records;
-            memory.markVU1CodeModified();
-            const uint32_t startPC = header[1] & 0x3FF8u;
-            const uint64_t key = ps2Vu1ProgramKey(memory.getVU1Code(), PS2_VU1_CODE_SIZE, startPC);
+            if (vu0File)
+                memory.markVU0CodeModified();
+            else
+                memory.markVU1CodeModified();
+            const uint32_t startPC = header[1] & (vu0File ? 0xFF8u : 0x3FF8u);
+            const uint64_t key = ps2Vu1ProgramKey(code, codeSize, startPC);
             uint64_t imageHash = 1469598103934665603ull;
-            for (uint32_t i = 0; i < PS2_VU1_CODE_SIZE; ++i)
-                imageHash = (imageHash ^ memory.getVU1Code()[i]) * 1099511628211ull;
+            for (uint32_t i = 0; i < codeSize; ++i)
+                imageHash = (imageHash ^ code[i]) * 1099511628211ull;
             Program &program = programs[{key, imageHash}];
             if (program.code.empty())
             {
                 program.startPC = startPC;
-                program.code.assign(memory.getVU1Code(), memory.getVU1Code() + PS2_VU1_CODE_SIZE);
+                program.codeSize = codeSize;
+                program.code.assign(code, code + codeSize);
             }
             g_jumpTargets = &program.jumps;
-            vu1.state() = before;
-            vu1.execute(memory.getVU1Code(), PS2_VU1_CODE_SIZE, memory.getVU1Data(), PS2_VU1_DATA_SIZE, gs, &memory,
-                        header[1], header[2], header[3], 65536);
+            VU1Interpreter &vu = vu0File ? vu0 : vu1;
+            vu.state() = before;
+            vu.execute(code, codeSize, data, dataSize, gs, &memory, header[1], header[2], header[3], 65536);
             g_jumpTargets = nullptr;
         }
         std::fclose(f);
@@ -1325,7 +1356,7 @@ int main(int argc, char **argv)
     {
         const uint64_t baseKey = ids.first;
         std::vector<uint32_t> roots(program.jumps.begin(), program.jumps.end());
-        const uint64_t fullKey = ps2Vu1ProgramKey(program.code.data(), PS2_VU1_CODE_SIZE, program.startPC, roots.data(),
+        const uint64_t fullKey = ps2Vu1ProgramKey(program.code.data(), program.codeSize, program.startPC, roots.data(),
                                                   static_cast<uint32_t>(roots.size()));
         if (std::getenv("VU1_RECOMP_VERBOSE"))
         {
@@ -1337,7 +1368,7 @@ int main(int argc, char **argv)
         }
         if (generated.count(fullKey))
             continue;
-        VU1Recompiler recompiler(program.code.data(), program.startPC, roots);
+        VU1Recompiler recompiler(program.code.data(), program.startPC, roots, program.codeSize);
         std::string text, reason;
         if (!recompiler.generate(fullKey, text, reason))
         {
