@@ -1,5 +1,6 @@
 #include <iostream>
 #include <atomic>
+#include <chrono>
 #include <sstream>
 #include "runtime/ps2_vu1.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
@@ -1683,10 +1684,31 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
 // Defined here, read by the perf log.
 std::atomic<uint64_t> g_ps2Vu1ExitEnded{0}, g_ps2Vu1ExitBudget{0}, g_ps2Vu1ExitContinue{0};
 
+// Host CPU time spent inside run(), split by unit. VU0 and VU1 share this
+// interpreter class but only VU1 has a compiled path (lookupCompiled requires
+// Unit::VU1), so a gameplay profile full of VU1Interpreter::* could be either.
+// This says which, in host time - the profile cannot, because the hot methods
+// are the same code for both.
+std::atomic<uint64_t> g_vuRunMicros[2];
+std::atomic<uint64_t> g_vuRunCalls[2];
+
 void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                          uint8_t *vuData, uint32_t dataSize,
                          GS &gs, PS2Memory *memory, uint32_t maxCycles)
 {
+    const auto vuRunStart = std::chrono::steady_clock::now();
+    struct VuRunScope
+    {
+        std::chrono::steady_clock::time_point start;
+        uint32_t index;
+        ~VuRunScope()
+        {
+            const uint64_t micros = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+            g_vuRunMicros[index].fetch_add(micros, std::memory_order_relaxed);
+            g_vuRunCalls[index].fetch_add(1u, std::memory_order_relaxed);
+        }
+    } vuRunScope{vuRunStart, static_cast<uint32_t>(m_unit == Unit::VU0 ? 0u : 1u)};
     m_activeVuData = vuData;
     m_activeVuDataSize = dataSize;
     m_activeGs = &gs;

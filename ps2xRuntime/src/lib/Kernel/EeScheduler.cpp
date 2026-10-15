@@ -760,6 +760,20 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
     static uint64_t s_lastRevalidations = 0, s_lastRecomputes = 0;
     const uint64_t revalidations = g_ps2Vu1LookupRevalidations.load(), recomputes = g_ps2Vu1LookupRecomputes.load();
     {
+        // Host CPU ms inside the VU interpreter's run(), per unit, plus calls.
+        extern std::atomic<uint64_t> g_vuRunMicros[2], g_vuRunCalls[2];
+        static uint64_t s_lastVuMicros[2] = {}, s_lastVuCalls[2] = {};
+        for (int unit = 0; unit < 2; ++unit)
+        {
+            const uint64_t micros = g_vuRunMicros[unit].load(std::memory_order_relaxed);
+            const uint64_t calls = g_vuRunCalls[unit].load(std::memory_order_relaxed);
+            std::fprintf(s_file, " vu%dMs=%llu vu%dCalls=%llu", unit, static_cast<unsigned long long>((micros - s_lastVuMicros[unit]) / 1000u),
+                         unit, static_cast<unsigned long long>(calls - s_lastVuCalls[unit]));
+            s_lastVuMicros[unit] = micros;
+            s_lastVuCalls[unit] = calls;
+        }
+    }
+    {
         extern std::atomic<uint64_t> g_ps2Vu1ExitEnded, g_ps2Vu1ExitBudget, g_ps2Vu1ExitContinue;
         static uint64_t s_lastVu1Exit[3] = {};
         std::atomic<uint64_t> *exits[3] = {&g_ps2Vu1ExitEnded, &g_ps2Vu1ExitBudget, &g_ps2Vu1ExitContinue};
