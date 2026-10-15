@@ -607,8 +607,15 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
     const auto now = std::chrono::steady_clock::now();
     const double seconds = std::chrono::duration<double>(now - s_lastTime).count();
     s_lastTime = now;
-    std::fprintf(s_file, "frame=%llu late=%llu/600 lostMs=%d rss=%zuMB", static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()),
-                 static_cast<unsigned long long>(s_late), static_cast<int>(s_lostMs), ps2ProcessResidentMb());
+    // wallMs is how long these 600 VBlanks took in real time. 600 VBlanks are
+    // 10.0 s of emulated time, so wallMs says directly whether the emulation is
+    // running at real speed (10000 = 60.0 fps) or behind (12000 = 50 fps). The
+    // late/lostMs figures say the same thing indirectly, and this is the number
+    // to trust: fps = 600000 / wallMs.
+    std::fprintf(s_file, "frame=%llu wallMs=%d fps=%.1f late=%llu/600 lostMs=%d rss=%zuMB",
+                 static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), static_cast<int>(seconds * 1000.0),
+                 seconds > 0.0 ? 600.0 / seconds : 0.0, static_cast<unsigned long long>(s_late), static_cast<int>(s_lostMs),
+                 ps2ProcessResidentMb());
     {
         // The lateness distribution: how many late VBlanks fell in each bucket
         // (<2, <5, <10, <20, <40, <80, <160, more ms). The aggregate hides
@@ -722,11 +729,19 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
     // number that says which thread is the bottleneck, and it works on Windows
     // too - the previous version read /proc and summed by name, so the main
     // thread and the IOP worker reported as one number.
+    // Per-thread CPU as a share of the *emulated* frame budget, not of wall
+    // time. 600 VBlanks is 10.0 s of emulated time and ticks are 1/100 s, so
+    // delta/10 is the percentage of a core the thread needs to keep up: 100%
+    // means it is the limit. Reporting the share of wall time instead divides
+    // by a denominator that grows as the emulation falls behind, so a thread
+    // that is actually saturated reads lower the slower the emulation runs -
+    // which is exactly how the game thread at 98% read as 82% and sent this
+    // search after the GPU driver for several rounds.
     std::map<uint64_t, uint64_t> ticks;
     for (const Ps2ThreadCpu &thread : ps2ThreadCpuTicks())
     {
         const uint64_t delta = thread.ticks - std::min(thread.ticks, s_lastTicks[thread.id]);
-        const int percent = static_cast<int>(static_cast<double>(delta) / std::max(seconds, 0.001));
+        const int percent = static_cast<int>(static_cast<double>(delta) / 10.0);
         if (percent >= 3)
             std::fprintf(s_file, " %s=%d%%", thread.label.c_str(), percent);
         ticks[thread.id] = thread.ticks;
