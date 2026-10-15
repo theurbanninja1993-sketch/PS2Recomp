@@ -13,9 +13,16 @@
 // frame old; for a blur that is invisible and not worth a lock.
 struct Ps2CameraState
 {
-    float alpha = 0.0f, beta = 0.0f; // yaw, pitch
-    float pos[3] = {};
-    float viewX = 0.0f, viewY = 0.0f;
+    // The camera's orientation basis and position, from TheCamera.Cams[0]
+    // (a fixed address, 0x6F4540) - the same vectors the port rotates for
+    // vehicle mouse look, so they are the ones it can vouch for. The first
+    // attempt read +0x78/+0x7C off the RenderWare camera, which turned out to
+    // be a change detector (values like 2000) rather than alpha/beta, and a
+    // +0x20 that is not a world position; the camera log caught both.
+    float front[3] = {}; // look direction, unit length
+    float up[3] = {};    // up vector, unit length
+    float pos[3] = {};   // world position (CCam Source)
+    float viewX = 0.0f, viewY = 0.0f; // tan(halfFov) wide, aspect-scaled tall
     bool valid = false;
 };
 

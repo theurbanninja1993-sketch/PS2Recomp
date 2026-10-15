@@ -1846,16 +1846,19 @@ namespace
     // game has updated it.
     void vcsPublishCamera(const uint8_t *rdram, uint32_t camera, float viewX, float viewY)
     {
-        if (camera < 0x00100000u || camera + 0x240u > PS2_RAM_SIZE)
-            return;
+        (void)camera; // the RwCamera has the view window; the CCam has the rest
+        // TheCamera.Cams[0]: Front +0x10, Source +0x20, Up +0x60. Fixed address,
+        // the same camera the vehicle look rotates.
+        constexpr uint32_t kActiveCam = 0x006F4540u;
         Ps2CameraState state;
-        std::memcpy(&state.alpha, rdram + camera + 0x78u, 4);
-        std::memcpy(&state.beta, rdram + camera + 0x7Cu, 4);
-        std::memcpy(state.pos, rdram + camera + 0x20u, 12);
+        std::memcpy(state.front, rdram + kActiveCam + 0x10u, 12);
+        std::memcpy(state.pos, rdram + kActiveCam + 0x20u, 12);
+        std::memcpy(state.up, rdram + kActiveCam + 0x60u, 12);
         state.viewX = viewX;
         state.viewY = viewY;
-        state.valid = std::isfinite(state.alpha) && std::isfinite(state.beta) && std::isfinite(state.pos[0]) &&
-                      std::isfinite(state.pos[1]) && std::isfinite(state.pos[2]);
+        const auto finite3 = [](const float v[3])
+        { return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]); };
+        state.valid = finite3(state.front) && finite3(state.pos) && finite3(state.up);
         g_ps2Camera = state;
         g_ps2CameraFrame.store(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), std::memory_order_relaxed);
         // PS2X_CAMERA_LOG=1: write the camera each frame to cameralog.txt next to
@@ -1872,10 +1875,18 @@ namespace
                 return std::fopen(path.string().c_str(), "w");
             }();
             static int s_n = 0;
+            const auto len3 = [](const float v[3])
+            { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
             if (s_file && (s_n < 30 || (s_n % 30) == 0))
-                std::fprintf(s_file, "n=%d frame=%llu alpha=%.4f beta=%.4f pos=(%.1f,%.1f,%.1f) view=(%.4f,%.4f) valid=%d\n",
-                             s_n, static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), state.alpha, state.beta,
-                             state.pos[0], state.pos[1], state.pos[2], state.viewX, state.viewY, state.valid ? 1 : 0);
+            {
+                std::fprintf(s_file,
+                             "n=%d frame=%llu front=(%.4f,%.4f,%.4f)|%.3f up=(%.4f,%.4f,%.4f)|%.3f "
+                             "pos=(%.1f,%.1f,%.1f)|%.0f view=(%.4f,%.4f) valid=%d\n",
+                             s_n, static_cast<unsigned long long>(g_ps2PresentedFrameCounter.load()), state.front[0],
+                             state.front[1], state.front[2], len3(state.front), state.up[0], state.up[1], state.up[2],
+                             len3(state.up), state.pos[0], state.pos[1], state.pos[2], len3(state.pos), state.viewX, state.viewY,
+                             state.valid ? 1 : 0);
+            }
             ++s_n;
             if (s_file && (s_n % 30) == 0)
                 std::fflush(s_file);
