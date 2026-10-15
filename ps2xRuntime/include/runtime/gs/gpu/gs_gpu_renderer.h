@@ -164,13 +164,19 @@ namespace gsgpu
         void clearUniformCaches()
         {
             for (Program *p : {&m_draw, &m_loadColor, &m_loadDepth, &m_resolve, &m_hostToLocal, &m_localToLocal,
-                               &m_clutLoad, &m_compose, &m_mask})
+                               &m_clutLoad, &m_compose, &m_mask, &m_maskCopy})
                 p->uniforms.clear();
         }
         void flushBatch();
-        // Draws the pending batch into the target's overlay mask, creating it on
-        // first use. Called from flushBatch for primitives with no perspective.
+        // Creates the target's overlay mask if needed and clears it once per
+        // frame; returns its framebuffer (0 if the target cannot have one).
+        GLuint ensureTargetMask(GL &gl, Target &target);
+        // Draws the pending batch into the target's overlay mask.
         void drawOverlayMask(GL &gl, Target &target);
+        // Draws the pending batch into the destination's overlay mask, sampling
+        // the source's mask: a screen-space copy of one target into another
+        // carries the overlays with it.
+        void drawMaskCopy(GL &gl, Target &dst, Target &src);
         void applyDrawState(const DrawKey &key, const GSDrawState &state);
         GLint uniform(Program &program, const char *name);
 
@@ -286,7 +292,19 @@ namespace gsgpu
         // drawOverlayMask); reuses the draw vertex shader so the geometry lands
         // in the same place.
         Program m_mask;
+        // Carries a target's overlay mask along when a screen-space pass copies
+        // that target into another (the game's copies of the finished frame), so
+        // the mask reaches the display the compose reads.
+        Program m_maskCopy;
+        GLuint m_zeroMask = 0; // 1x1 R8 zero, for a source that has no mask yet
         bool m_maskEnabled = false;
+        // The target a draw samples as its texture, if it is one (set by
+        // applyDrawState): a draw that reads a target is a copy of the frame.
+        Target *m_textureSourceTarget = nullptr;
+        // The size the game declares for that texture. It is not the target's
+        // dimensions: the port's target texture can be taller (it is clamped to
+        // what local memory allows), while the game's view of it is this.
+        uint32_t m_textureSourceWidth = 0, m_textureSourceHeight = 0;
         GLuint m_presentTexture = 0, m_presentFramebuffer = 0; // upscaled display output
         uint32_t m_presentWidth = 0, m_presentHeight = 0;
         // PS2X_GS_TRACE_DRAWS=<presentIndex>: the presented-frame counter and a

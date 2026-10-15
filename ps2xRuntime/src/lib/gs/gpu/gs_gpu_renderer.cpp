@@ -704,6 +704,26 @@ void main()
 }
 )";
 
+        // The same, for a pass that copies one target into another: the mask
+        // follows the image, sampled the same way the draw shader samples the
+        // source - the ST is normalized, so it becomes texels via the source's
+        // size, then the render-target scale maps into the target's texels.
+        const char *kMaskCopyFragmentShader = R"(#version 450 core
+noperspective in vec3 v_stq;
+uniform sampler2D u_srcMask;
+uniform vec2 u_srcSize;   // the source target's size in GS texels
+uniform float u_srcScale; // its render-target scale
+out float o_mask;
+void main()
+{
+    vec2 uv = v_stq.xy * (1.0 / v_stq.z) * u_srcSize;
+    vec2 s = (uv - 0.5) * u_srcScale;
+    ivec2 texel = ivec2(floor(s.x + 0.5), floor(s.y + 0.5));
+    texel = clamp(texel, ivec2(0), ivec2(u_srcSize * u_srcScale) - 1);
+    o_mask = texelFetch(u_srcMask, texel, 0).r;
+}
+)";
+
         // Full-target triangle for load passes (rows limited by the scissor).
         const char *kFullscreenVertexShader = R"(#version 450 core
 void main()
@@ -1070,6 +1090,19 @@ void main()
                                         compileShader(gl, GL_FRAGMENT_SHADER, kComposeShader)});
         m_mask.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kVertexShader),
                                      compileShader(gl, GL_FRAGMENT_SHADER, kMaskFragmentShader)});
+        m_maskCopy.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kVertexShader),
+                                         compileShader(gl, GL_FRAGMENT_SHADER, kMaskCopyFragmentShader)});
+        // A source target that has no mask yet still has to write something: an
+        // explicit zero, so the copy overwrites rather than leaving stale bits.
+        if (m_zeroMask == 0)
+        {
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_zeroMask);
+            gl.glTextureStorage2D(m_zeroMask, 1, GL_R8, 1, 1);
+            gl.glTextureParameteri(m_zeroMask, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.glTextureParameteri(m_zeroMask, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            const uint8_t zero = 0u;
+            gl.glTextureSubImage2D(m_zeroMask, 0, 0, 0, 1, 1, GL_RED, GL_UNSIGNED_BYTE, &zero);
+        }
         // PS2X_OVERLAY_MASK=1: build the screen-space overlay mask. It is what
         // the motion blur and frame interpolation need to leave the HUD alone;
         // opt-in until one of them owns it.
@@ -1557,6 +1590,8 @@ void main()
         // otherwise it is read from VRAM, where targets drawn over it go first.
         GLuint textureSource = 0;
         GLuint replacement = 0;
+        m_textureSourceTarget = nullptr;
+        m_textureSourceWidth = m_textureSourceHeight = 0;
         if (state.prim.tme)
         {
             if (replacementsActive())
@@ -1566,6 +1601,9 @@ void main()
                                             : textureSourceTarget(key.tbp0, key.tbw, key.tpsm, state.textureHeight);
             if (source)
             {
+                m_textureSourceTarget = source;
+                m_textureSourceWidth = state.textureWidth;
+                m_textureSourceHeight = state.textureHeight;
                 textureSource = source == &color ? feedbackCopy(color) : source->texture;
             }
             else if (replacementsActive() && (replacement = replacementTexture(state)) != 0)
@@ -1698,15 +1736,13 @@ void main()
         bindVao(m_vao);
     }
 
-    // Marks the pending batch in the target's overlay mask. Only called for
-    // primitives with no perspective (see the note in flushBatch): the HUD and
-    // the minimap are drawn in screen space, so they do not move with the camera
-    // and the blur/interpolation passes must leave them alone. The mask is
-    // cleared once per frame, on first use.
-    void Renderer::drawOverlayMask(GL &gl, Target &target)
+    // Creates the target's overlay mask if needed, clears it once per frame, and
+    // returns its framebuffer (0 if the target cannot have one). The clear
+    // matters because a copy only overwrites the region it covers.
+    GLuint Renderer::ensureTargetMask(GL &gl, Target &target)
     {
         if (target.depth || target.texture == 0)
-            return;
+            return 0;
         const uint32_t w = target.width * m_scale, h = target.height * m_scale;
         if (target.maskTexture == 0)
         {
@@ -1727,6 +1763,17 @@ void main()
             const GLfloat zero = 0.0f;
             gl.glClearNamedFramebufferfv(target.maskFramebuffer, GL_COLOR, 0, &zero);
         }
+        return target.maskFramebuffer;
+    }
+
+    // Marks the pending batch in the target's overlay mask. Only called for
+    // primitives with no perspective (see the note in flushBatch): the HUD and
+    // the minimap are drawn in screen space, so they do not move with the camera
+    // and the blur/interpolation passes must leave them alone.
+    void Renderer::drawOverlayMask(GL &gl, Target &target)
+    {
+        if (ensureTargetMask(gl, target) == 0)
+            return;
         Program &p = m_mask;
         useProgram(p.id);
         setUniform2f(p, uniform(p, "u_targetSize"), static_cast<float>(target.width), static_cast<float>(target.height));
@@ -1736,6 +1783,32 @@ void main()
         setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         // Viewport, scissor and VAO are the ones applyDrawState just set for this
         // same target, and the next draw re-applies all of it.
+        gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
+        gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
+    }
+
+    // A screen-space pass that reads one target and writes another is a copy of
+    // the frame, and the overlay mask has to travel with it: the HUD is in those
+    // pixels, and by compose time the display has been copied through at least
+    // one other buffer, so a mask left on the scene target is invisible.
+    void Renderer::drawMaskCopy(GL &gl, Target &dst, Target &src)
+    {
+        if (ensureTargetMask(gl, dst) == 0)
+            return;
+        // Clearing the source here too means a source with no overlays this frame
+        // copies zeros rather than the previous frame's bits.
+        ensureTargetMask(gl, src);
+        Program &p = m_maskCopy;
+        useProgram(p.id);
+        setUniform2f(p, uniform(p, "u_targetSize"), static_cast<float>(dst.width), static_cast<float>(dst.height));
+        setUniform2f(p, uniform(p, "u_srcSize"), static_cast<float>(m_textureSourceWidth),
+                     static_cast<float>(m_textureSourceHeight));
+        setUniform1f(p, uniform(p, "u_srcScale"), static_cast<float>(m_scale));
+        gl.glBindTextureUnit(0, src.maskTexture != 0 ? src.maskTexture : m_zeroMask);
+        bindFramebuffer(dst.maskFramebuffer);
+        setBlend(false);
+        setDepthTest(false);
+        setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
     }
@@ -1849,22 +1922,30 @@ void main()
                 const GSContext &c = m_keyState.context;
                 float qmin = m_vertices[0].q, qmax = m_vertices[0].q;
                 uint32_t zmin = m_vertices[0].z, zmax = m_vertices[0].z;
+                float smin = m_vertices[0].s, smax = m_vertices[0].s;
+                float tmin = m_vertices[0].t, tmax = m_vertices[0].t;
                 for (const Vertex &v : m_vertices)
                 {
                     qmin = std::min(qmin, v.q);
                     qmax = std::max(qmax, v.q);
                     zmin = std::min(zmin, v.z);
                     zmax = std::max(zmax, v.z);
+                    smin = std::min(smin, v.s);
+                    smax = std::max(smax, v.s);
+                    tmin = std::min(tmin, v.t);
+                    tmax = std::max(tmax, v.t);
                 }
                 std::fprintf(stderr,
                              "[gs:draw] n=%llu target=%dx%d %dx%d at (%d,%d) ztst=%u zw=%u tme=%d abe=%d tbp=%u tw=%u "
-                             "th=%u psm=%u fbp=%u q=%.4f..%.4f z=%u..%u v=%zu\n",
+                             "th=%u psm=%u fbp=%u q=%.4f..%.4f z=%u..%u st=(%.3f,%.3f)..(%.3f,%.3f) v=%zu\n",
                              (unsigned long long)++m_frameDrawIndex, col ? static_cast<int>(col->width) : 0,
                              col ? static_cast<int>(col->height) : 0, m_batchX1 - m_batchX0 + 1,
                              m_batchY1 - m_batchY0 + 1, m_batchX0, m_batchY0, (c.test >> 17) & 3u, c.zbuf.zmask,
                              m_keyState.prim.tme ? 1 : 0, m_keyState.prim.abe ? 1 : 0, c.tex0.tbp0, c.tex0.tw, c.tex0.th,
                              c.tex0.psm, c.frame.fbp, static_cast<double>(qmin), static_cast<double>(qmax),
-                             static_cast<unsigned>(zmin), static_cast<unsigned>(zmax), m_vertices.size());
+                             static_cast<unsigned>(zmin), static_cast<unsigned>(zmax), static_cast<double>(smin),
+                             static_cast<double>(tmin), static_cast<double>(smax), static_cast<double>(tmax),
+                             m_vertices.size());
             }
         }
         m_batchY0 = static_cast<int32_t>(std::floor(minY));
@@ -1887,8 +1968,16 @@ void main()
         gl.glNamedBufferSubData(m_vbo, 0, static_cast<GLsizeiptr>(bytes), m_vertices.data());
         gl.glVertexArrayVertexBuffer(m_vao, 0, m_vbo, 0, sizeof(Vertex));
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
-        if (m_maskEnabled && overlay && m_drawColor != nullptr)
-            drawOverlayMask(gl, *m_drawColor);
+        if (m_maskEnabled && m_drawColor != nullptr)
+        {
+            // An overlay marks itself; a copy of another target carries that
+            // target's overlays with it, which is how the mask reaches the
+            // display the compose reads.
+            if (overlay)
+                drawOverlayMask(gl, *m_drawColor);
+            else if (m_textureSourceTarget != nullptr)
+                drawMaskCopy(gl, *m_drawColor, *m_textureSourceTarget);
+        }
         m_framebufferWriteSinceBarrier = true;
         ++m_statDraws;
         g_gsGpuDraws.fetch_add(1u, std::memory_order_relaxed);
@@ -2907,7 +2996,9 @@ void main()
         {
             static const char *s_dump = std::getenv("PS2X_OVERLAY_MASK_DUMP");
             static bool s_dumped = false;
-            if (s_dump != nullptr && !s_dumped)
+            // Late enough that the frame has been drawn and copied, like the
+            // presents the compose debug uses.
+            if (s_dump != nullptr && !s_dumped && m_presentIndex >= 41u)
             {
                 for (auto &target : m_targets)
                 {
@@ -2923,17 +3014,21 @@ void main()
                     gl.glGetTextureSubImage(target->maskTexture, 0, 0, 0, 0, static_cast<GLsizei>(w),
                                             static_cast<GLsizei>(h), 1, GL_RED, GL_UNSIGNED_BYTE,
                                             static_cast<GLsizei>(px.size()), px.data());
-                    if (FILE *f = std::fopen(s_dump, "wb"))
+                    // One file per target: the mask is built on the scene target
+                    // and propagated through the copies, so seeing each hop says
+                    // where a mis-mapping creeps in.
+                    char path[1024];
+                    std::snprintf(path, sizeof(path), "%s.%u_%ux%u.pgm", s_dump, target->block, w, h);
+                    if (FILE *f = std::fopen(path, "wb"))
                     {
                         std::fprintf(f, "P5\n%u %u\n255\n", w, h);
                         std::fwrite(px.data(), 1, px.size(), f);
                         std::fclose(f);
                     }
                     std::cerr << "[gs] overlay mask: dumped " << w << "x" << h << " (block " << target->block << ") to "
-                              << s_dump << std::endl;
-                    s_dumped = true;
-                    break;
+                              << path << std::endl;
                 }
+                s_dumped = true;
             }
         }
         {
@@ -3342,6 +3437,9 @@ void main()
         if (m_feedbackTexture != 0)
             gl.glDeleteTextures(1, &m_feedbackTexture);
         m_feedbackTexture = 0;
+        if (m_zeroMask != 0)
+            gl.glDeleteTextures(1, &m_zeroMask);
+        m_zeroMask = 0;
         m_feedbackWidth = m_feedbackHeight = 0;
         m_drawColor = m_drawDepth = nullptr;
     }
