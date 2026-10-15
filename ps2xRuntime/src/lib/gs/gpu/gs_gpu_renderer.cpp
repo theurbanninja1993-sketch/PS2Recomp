@@ -24,6 +24,7 @@
 namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
+std::atomic<bool> g_gsMotionBlurOff{false};
 // The host window size, published by the main thread each frame (0 = unknown).
 // The upscaled display readback is capped to it: the composed frame is only
 // ever shown at window size, so transferring more than that is pure waste.
@@ -1532,25 +1533,6 @@ void main()
             if (source)
             {
                 textureSource = source == &color ? feedbackCopy(color) : source->texture;
-                // PS2X_TEXREPL_DUMP_ALL: a texture sampled as a render target
-                // never reaches the matcher, so dump it here too (best effort
-                // from the CPU copy when the target's content is GPU-drawn).
-                static const bool s_dumpTargets =
-                    std::getenv("PS2X_TEXREPL_DUMP_ALL") != nullptr && std::getenv("PS2X_TEXREPL_DUMP") != nullptr;
-                if (s_dumpTargets)
-                {
-                    const GSTex0Reg &tex0 = ctx.tex0;
-                    const uint32_t psm = tex0.psm & 0x3Fu;
-                    const bool palettized = isPalettized(static_cast<uint8_t>(psm));
-                    const bool texa = !palettized && psm != PSM_CT32;
-                    gsrepl::Key key;
-                    key.tex0Hash = hashTextureMemory(state);
-                    key.clutHash = palettized ? hashClut(state) : 0u;
-                    key.bits = gsrepl::makeBits(static_cast<uint8_t>(psm), tex0.tw, tex0.th, texa ? state.texa.ta0 : 0u,
-                                                texa ? state.texa.aem : 0u, texa ? state.texa.ta1 : 0u);
-                    if (m_dumpedTextures.insert(key).second)
-                        dumpReplacementTexture(state, key);
-                }
             }
             else if (replacementsActive() && (replacement = replacementTexture(state)) != 0)
             {
@@ -1696,11 +1678,75 @@ void main()
             m_haveKey = false;
             return;
         }
+        // Motion blur off: drop the draws that read the game's blur buffers.
+        //
+        // VCS's motion blur is not one feedback quad. It accumulates previous
+        // frames into two 256x256 buffers (adjacent in VRAM, TEX0 base 13440
+        // and 14464) in a ~9-pass ping-pong per frame, then blends the result
+        // over the display. Every pass - both the textured ones and the
+        // texture-less ones, which still carry the buffer in TEX0 - names one
+        // of those two as its texture base, so one test drops the whole effect
+        // and its cost. Skipping only the accumulation would leave the buffers
+        // stale and show a frozen ghost; skipping only the display blend would
+        // keep the cost. See PS2X_GS_TRACE_FULLSCREEN for the draw stream.
+        static const bool s_forceBlurOff = std::getenv("PS2X_MOTIONBLUR_OFF") != nullptr;
+        if (s_forceBlurOff || g_gsMotionBlurOff.load(std::memory_order_relaxed))
+        {
+            static const uint32_t s_blurBase0 = []()
+            {
+                const char *env = std::getenv("PS2X_MOTIONBLUR_BUFS");
+                return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 10)) : 13440u;
+            }();
+            static const uint32_t s_blurBase1 = []()
+            {
+                const char *env = std::getenv("PS2X_MOTIONBLUR_BUFS");
+                if (!env)
+                    return 14464u;
+                const char *comma = std::strchr(env, ',');
+                return comma ? static_cast<uint32_t>(std::strtoul(comma + 1, nullptr, 10)) : 14464u;
+            }();
+            const uint32_t tbp = m_keyState.context.tex0.tbp0;
+            if (tbp == s_blurBase0 || tbp == s_blurBase1)
+            {
+                m_vertices.clear();
+                m_haveKey = false;
+                ++m_statBlurSkipped;
+                return;
+            }
+        }
         float minY = m_vertices[0].y, maxY = m_vertices[0].y;
+        float minX = m_vertices[0].x, maxX = m_vertices[0].x;
         for (const Vertex &v : m_vertices)
         {
             minY = std::min(minY, v.y);
             maxY = std::max(maxY, v.y);
+            minX = std::min(minX, v.x);
+            maxX = std::max(maxX, v.x);
+        }
+        m_batchX0 = static_cast<int32_t>(std::floor(minX));
+        m_batchX1 = static_cast<int32_t>(std::ceil(maxX)) - 1;
+        // PS2X_GS_TRACE_FULLSCREEN: log every draw covering most of its target.
+        // The motion-blur signature is a screen-sized quad; this says whether
+        // one exists, what it samples, and how it blends.
+        {
+            static const bool s_traceFull = std::getenv("PS2X_GS_TRACE_FULLSCREEN") != nullptr;
+            if (s_traceFull)
+            {
+                const Target *col = m_drawColor;
+                const GSContext &c = m_keyState.context;
+                const int32_t bw = col ? static_cast<int32_t>(col->width) : 0;
+                const int32_t bh = col ? static_cast<int32_t>(col->height) : 0;
+                const int32_t w = m_batchX1 - m_batchX0 + 1, h = m_batchY1 - m_batchY0 + 1;
+                if (bw != 0 && w * 2 >= bw && h * 2 >= bh)
+                    std::fprintf(stderr,
+                                 "[gs:full] target=%dx%d %dx%d at (%d,%d) tme=%d abe=%d a=%d,%d,%d,%d date=%d fbp=%u fbw=%u "
+                                 "tbp=%u tbw=%u tw=%u th=%u\n",
+                                 bw, bh, w, h, m_batchX0, m_batchY0, m_keyState.prim.tme ? 1 : 0, m_keyState.prim.abe ? 1 : 0,
+                                 static_cast<int>(c.alpha & 3u), static_cast<int>((c.alpha >> 2) & 3u),
+                                 static_cast<int>((c.alpha >> 4) & 3u), static_cast<int>((c.alpha >> 6) & 3u),
+                                 static_cast<int>((c.test >> 14) & 1u), c.frame.fbp, c.frame.fbw, c.tex0.tbp0, c.tex0.tbw, c.tex0.tw,
+                                 c.tex0.th);
+            }
         }
         m_batchY0 = static_cast<int32_t>(std::floor(minY));
         m_batchY1 = static_cast<int32_t>(std::ceil(maxY)) - 1; // an edge at y covers rows < y

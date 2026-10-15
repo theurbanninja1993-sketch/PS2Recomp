@@ -93,6 +93,16 @@ struct PS2HostSettings
     bool smoothFiltering = true; // bilinear scaling of the picture (off: sharp pixels)
     int internalScale = 1;       // GPU renderer resolution multiplier (1 = native 640x448)
     bool flickerFilter = false;  // the game's interlace flicker filter (a vertical blur)
+    // The game's motion blur (VCS accumulates previous frames into a pair of
+    // 256x256 buffers and blends the result over the display). Off skips the
+    // draws that read those buffers, so the picture stays sharp. Measured from
+    // the GS stream: see the note in the renderer.
+    enum class MotionBlur : int
+    {
+        PS2 = 0, // as on the console
+        Off = 1,
+    };
+    MotionBlur motionBlur = MotionBlur::PS2;
     float fieldOfView = 70.0f;  // degrees at the game's default view (70 = original)
     float drawDistance = 1.0f;  // multiplier on view / detail distances (1 = original)
     float mouseSensitivity = 1.0f;

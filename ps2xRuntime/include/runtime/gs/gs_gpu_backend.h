@@ -22,6 +22,9 @@ namespace gsgpu
 // times the GS size; 0 = no request). Set from the host settings; applied
 // between frames. PS2X_GS_SCALE sets the starting value.
 extern std::atomic<uint32_t> g_gsGpuScaleRequest;
+// Settings > Display > Motion blur. When true the renderer skips the draws
+// that read the game's blur accumulation buffers, so the picture stays sharp.
+extern std::atomic<bool> g_gsMotionBlurOff;
 namespace gsgpu
 {
     // Publishes the host window's native GL context (see gl_context.h); call

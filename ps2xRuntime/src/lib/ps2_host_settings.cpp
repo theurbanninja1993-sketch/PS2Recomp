@@ -330,6 +330,8 @@ void ps2HostSettingsLoad()
             s.internalScale = std::clamp(std::atoi(v), 1, 4);
         else if (key == "flicker_filter")
             s.flickerFilter = std::atoi(v) != 0;
+        else if (key == "motion_blur")
+            s.motionBlur = static_cast<PS2HostSettings::MotionBlur>(std::atoi(v));
         else if (key == "field_of_view")
             s.fieldOfView = std::clamp(std::strtof(v, nullptr), 40.0f, 120.0f);
         else if (key == "draw_distance")
@@ -419,6 +421,7 @@ void ps2HostSettingsApplyRenderer()
         g_gsGpuScaleRequest.store(static_cast<uint32_t>(g_settings.internalScale), std::memory_order_relaxed);
     s_first = false;
     g_gsFlickerFilter.store(g_settings.flickerFilter, std::memory_order_relaxed);
+    g_gsMotionBlurOff.store(g_settings.motionBlur == PS2HostSettings::MotionBlur::Off, std::memory_order_relaxed);
 }
 
 bool ps2HostSettingsFirstLaunch()
@@ -468,6 +471,7 @@ void ps2HostSettingsSave()
         << "smooth_filtering=" << (s.smoothFiltering ? 1 : 0) << "\n"
         << "internal_scale=" << s.internalScale << "\n"
         << "flicker_filter=" << (s.flickerFilter ? 1 : 0) << "\n"
+        << "motion_blur=" << static_cast<int>(s.motionBlur) << "\n"
         << "field_of_view=" << s.fieldOfView << "\n"
         << "draw_distance=" << s.drawDistance << "\n"
         << "mouse_sensitivity=" << s.mouseSensitivity << "\n"

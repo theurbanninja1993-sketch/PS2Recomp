@@ -2651,6 +2651,21 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
 
                 changed |= ImGui::Checkbox("PS2 flicker filter (softer image)", &settings.flickerFilter);
 
+                // The game's motion blur: it accumulates previous frames into a
+                // pair of 256x256 buffers and blends them over the display, so
+                // it smears badly on a modern panel. Off skips those draws
+                // entirely, which removes the look and its cost.
+                static const char *kMotionBlur[] = {"PS2 (original)", "Off"};
+                int motionBlur = static_cast<int>(settings.motionBlur);
+                if (ImGui::Combo("Motion blur", &motionBlur, kMotionBlur, IM_ARRAYSIZE(kMotionBlur)))
+                {
+                    settings.motionBlur = static_cast<PS2HostSettings::MotionBlur>(motionBlur);
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("PS2 is the console's frame-accumulation blur.\n"
+                                      "Off skips it, which also removes its per-frame cost.");
+
                 ImGui::SeparatorText("View");
                 changed |= ImGui::SliderFloat("Field of view", &settings.fieldOfView, 50.0f, 110.0f, "%.0f deg");
                 ImGui::SameLine();
