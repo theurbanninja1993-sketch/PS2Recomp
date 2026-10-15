@@ -724,6 +724,15 @@ void ps2PerfLogVBlank(double lateMs, uint64_t eeCycle)
             std::fprintf(s_file, " gsTargets=%llu",
                          static_cast<unsigned long long>(g_gsGpuTargets.load(std::memory_order_relaxed)));
         }
+        {
+            // Full 32 MB button-text scans this interval. Each pass is ~7.5 ms,
+            // so this is a direct read on one of the game thread's costs.
+            extern std::atomic<uint64_t> g_vcsButtonScans;
+            static uint64_t s_lastScans = 0;
+            const uint64_t scans = g_vcsButtonScans.load(std::memory_order_relaxed);
+            std::fprintf(s_file, " vcsScans=%llu", static_cast<unsigned long long>(scans - s_lastScans));
+            s_lastScans = scans;
+        }
     }
     // Per-thread CPU, keyed by thread id (see ps2ThreadCpuTicks). This is the
     // number that says which thread is the bottleneck, and it works on Windows

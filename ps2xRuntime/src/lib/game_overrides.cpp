@@ -27,6 +27,12 @@
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 
+// Defined in EeScheduler.cpp. The button-text scan gate counts frames, not
+// calls (this is reached many times per frame).
+extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
+// Full 32 MB button-text scans, reported in the perf log.
+std::atomic<uint64_t> g_vcsButtonScans{0};
+
 namespace
 {
     std::mutex &registryMutex()
@@ -769,16 +775,27 @@ namespace
         // The strings load lazily, with the menus that use them (cheat menu,
         // business lists, pause pages), so this keeps looking for the whole
         // session - a full pass every 60 frames is cheap (first-char filter).
-        static int s_cooldown = 0;
-        if (s_cooldown-- > 0)
+        //
+        // The gate counts *frames*, not calls. This is reached from vcsFrameUpdate,
+        // which hooks a game function the game calls many times per frame, so a
+        // per-call countdown of 60 ran the scan every couple of frames: a full
+        // 32 MB pass costs ~7.5 ms, which made this 26% of the game thread in a
+        // gameplay profile - by far its largest single cost.
+        static uint64_t s_nextScanFrame = 0;
+        const uint64_t scanFrame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+        if (scanFrame < s_nextScanFrame)
             return;
-        s_cooldown = 60;
+        s_nextScanFrame = scanFrame + 60;
+        g_vcsButtonScans.fetch_add(1u, std::memory_order_relaxed);
         // One pass over RAM. Cheap first-char filter keeps it fast. '~' finds
         // the embedded menu tokens (~X~ / ~O~), which sit anywhere in their
         // string, so that branch walks back to the string start itself.
+        // One uint16 load per step rather than two byte loads plus a shift: this
+        // loop runs 16.7M times a pass, so it is the whole cost of the scan.
+        const uint16_t *words = reinterpret_cast<const uint16_t *>(rdram);
         for (uint32_t a = 0x00100000u; a + 128u < PS2_RAM_SIZE; a += 2u)
         {
-            const uint16_t first = vcsUtf16At(rdram, a);
+            const uint16_t first = words[a >> 1];
             if (first == '~')
             {
                 vcsTryMenuPromptSite(rdram, a);

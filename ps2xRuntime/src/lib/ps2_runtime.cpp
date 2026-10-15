@@ -3456,6 +3456,10 @@ void PS2Runtime::run()
                 if (s_exitFrame != 0u && s_presentedFrames >= s_exitFrame)
                 {
                     std::cerr << "[run] PS2X_EXIT_AFTER_FRAME reached at frame " << s_presentedFrames << std::endl;
+                    // This path skips the normal shutdown by design, but the PC
+                    // profile has to be written: ending a run this way is how a
+                    // profile is captured, and _Exit would drop it.
+                    writePcSamples();
                     if (__gcov_dump)
                         __gcov_dump();
                     std::_Exit(0);
