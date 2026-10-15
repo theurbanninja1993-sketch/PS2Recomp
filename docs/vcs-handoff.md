@@ -941,10 +941,51 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     **`PS2X_CAMERA_LOG=1`** writes cameralog.txt next to the executable (the
     Linux launcher sets it; `windows/cameralog.cmd` does the same on Windows).
 
-    Next: the homography from the camera delta, a reproject+blend in the
-    compose (the display already renders into a GPU framebuffer in both present
-    paths, so the previous frame is available either way), and a
-    `Motion blur: PS2 / Off / Modern` option.
+    **Progress (2026-10-15): "Modern" is implemented.** `Motion blur: PS2 / Off /
+    Modern` with a `Blur amount` slider (0..0.9, default 0.5), plus
+    `PS2X_MODERN_BLUR=1` and `PS2X_MODERN_BLUR_STRENGTH` to A/B it from a launcher.
+
+    The homography is `ps2CameraHomography` in `runtime/ps2_camera.h`: the
+    previous camera's basis is applied to the current frame's rays, and the
+    camera translation is reprojected against a single depth plane (default 100
+    world units, ~10 m; `PS2X_BLUR_DEPTH` overrides). Rotation is exact;
+    translation is an approximation because the port has no usable depth buffer -
+    the GS receives vertices the game already projected, so its Z values cannot
+    be inverted without the game's matrices. A wrong depth scales the translation
+    part, it does not corrupt it.
+
+    Screen convention, worth stating because it is the thing most likely to be
+    silently wrong: the draw shader maps GS y straight to GL clip y with no flip,
+    so the target texture's row 0 is GS y 0 and `gl_FragCoord.y` increases *down*
+    the picture - the opposite of the camera's y-up basis, so the intrinsics carry
+    the sign. Verified by the port's own readback path: `glGetTextureSubImage`
+    returns GL row 0 first and the host draws that as the top of the picture.
+
+    The pass: the compose draws into `m_composeTexture`, the warp+blend shader
+    reads it with the history and writes the display target, then the display is
+    copied into the history - so each frame blends against the previous *output*
+    and a turn leaves a decaying trail rather than a single ghost. A sample that
+    falls outside the previous frame keeps the current pixel instead of smearing
+    a clamp in. All textures grow-only, like the present pair.
+
+    Verified locally (no screen available): `tools`-style numeric checks of the
+    homography against hand-computed cases (identity, yaw, forward translation
+    with two depths, pitch - both vertical signs) all pass, and applying it to
+    the owner's real cameralog gives an *exact* identity for all 34 static
+    camera pairs, with the game's FOV ramp showing up as a ~0.0002 scale. The
+    pass also renders byte-identical to the unblurred path on the intro (31/31
+    dumped frames), where there is no camera and it is a pass-through.
+
+    Not verified: the warp's *appearance* on real gameplay - that needs a screen.
+    What to look for: on a turn, the smear should follow the direction the world
+    moves, and it should be strongest near the edges and near geometry (parallax),
+    with the horizon barely moving. A vertical smear where there should be a
+    horizontal one would mean the screen convention above is wrong.
+
+    Next: reuse the same pass for frame interpolation above 60 (the history is
+    already the previous frame; interpolation needs the composed frame kept
+    clean rather than accumulated), and per-object motion if camera-only proves
+    too thin.
 
 14. **Frame rates above 60 (owner ask).** The emulation is locked to 60
     VBlanks/s - the game's logic runs per VBlank - so anything above 60 must be

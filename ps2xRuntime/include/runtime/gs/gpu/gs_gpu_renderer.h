@@ -3,6 +3,7 @@
 #include "runtime/gs/gs_backend.h"
 #include "runtime/gs/gpu/gl_context.h"
 #include "runtime/gs/gs_texture_replacements.h"
+#include "runtime/ps2_camera.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -157,7 +158,7 @@ namespace gsgpu
         void clearUniformCaches()
         {
             for (Program *p : {&m_draw, &m_loadColor, &m_loadDepth, &m_resolve, &m_hostToLocal, &m_localToLocal,
-                               &m_clutLoad, &m_compose})
+                               &m_clutLoad, &m_compose, &m_blur})
                 p->uniforms.clear();
         }
         void flushBatch();
@@ -274,6 +275,26 @@ namespace gsgpu
         Program m_draw, m_loadColor, m_loadDepth, m_resolve, m_hostToLocal, m_localToLocal, m_clutLoad, m_compose;
         GLuint m_presentTexture = 0, m_presentFramebuffer = 0; // upscaled display output
         uint32_t m_presentWidth = 0, m_presentHeight = 0;
+        // Reprojection ("Motion blur: Modern"). The compose draws into
+        // m_composeFramebuffer; the warp+blend pass reads that with the history
+        // and writes the display target; the display is then copied into the
+        // history for the next frame. All grow-only, like the present pair.
+        Program m_blur;
+        GLuint m_composeTexture = 0, m_composeFramebuffer = 0;
+        uint32_t m_composeWidth = 0, m_composeHeight = 0;
+        GLuint m_historyTexture = 0, m_historyFramebuffer = 0;
+        uint32_t m_historyWidth = 0, m_historyHeight = 0;
+        bool m_blurHistoryValid = false; // false until the history holds a frame
+        Ps2CameraState m_blurPrevCamera; // the camera the history was built with
+        uint64_t m_blurPrevFrame = ~0ull;
+        uint32_t m_blurLastWidth = 0, m_blurLastHeight = 0; // size the history was built at
+        // Sizes the compose/history pair if needed, and drops the history when
+        // it no longer matches (a resize makes the old one unusable).
+        void ensureBlurTargets(GL &gl, uint32_t width, uint32_t height);
+        // Warps the frame in m_composeTexture onto the previous camera and mixes
+        // it with the history, writing into destinationFramebuffer.
+        void reprojectCompose(GL &gl, uint32_t width, uint32_t height, GLuint destinationFramebuffer);
+        void destroyBlurTargets();
         // Downscale target for the presentation readback (see upscalePresentation).
         GLuint m_readbackTexture = 0, m_readbackFramebuffer = 0;
         uint32_t m_readbackWidth = 0, m_readbackHeight = 0;

@@ -26,6 +26,8 @@ namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<bool> g_gsMotionBlurOff{false};
+std::atomic<bool> g_gsModernBlur{false};
+std::atomic<float> g_gsModernBlurStrength{0.0f};
 Ps2CameraState g_ps2Camera;
 std::atomic<uint64_t> g_ps2CameraFrame{0};
 // The host window size, published by the main thread each frame (0 = unknown).
@@ -679,6 +681,35 @@ void main()
 }
 )";
 
+        // Reprojection: warp the previous frame onto the current camera and mix
+        // it in. u_warp maps a current screen coordinate to where that content
+        // was in the previous frame (see ps2CameraHomography). Sampled with
+        // texture() rather than texelFetch: the warp lands between texels, and
+        // the bilinear tap is what keeps it smooth instead of blocky.
+        const char *kBlurShader = R"(#version 450 core
+layout(binding = 0) uniform sampler2D u_current;
+layout(binding = 1) uniform sampler2D u_history;
+// Column-major, passed as three columns.
+uniform vec3 u_warp0;
+uniform vec3 u_warp1;
+uniform vec3 u_warp2;
+uniform vec2 u_size;     // composed size in pixels
+uniform float u_strength;
+out vec4 o_color;
+void main()
+{
+    vec2 uv = gl_FragCoord.xy / u_size;
+    vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uv, 1.0);
+    vec2 prev = q.xy / q.z;
+    vec4 cur = texture(u_current, uv);
+    // A sample that falls outside the previous frame is not something to smear
+    // along: keep the current picture there rather than clamping a smear in.
+    float inside = (prev.x >= 0.0 && prev.x <= 1.0 && prev.y >= 0.0 && prev.y <= 1.0) ? 1.0 : 0.0;
+    vec4 hist = texture(u_history, clamp(prev, 0.0, 1.0));
+    o_color = mix(cur, hist, u_strength * inside);
+}
+)";
+
         // Full-target triangle for load passes (rows limited by the scissor).
         const char *kFullscreenVertexShader = R"(#version 450 core
 void main()
@@ -1043,6 +1074,8 @@ void main()
         m_clutLoad.id = linkProgram(gl, {compileShader(gl, GL_COMPUTE_SHADER, header + kClutLoadShader)});
         m_compose.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
                                         compileShader(gl, GL_FRAGMENT_SHADER, kComposeShader)});
+        m_blur.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
+                                     compileShader(gl, GL_FRAGMENT_SHADER, kBlurShader)});
 
         gl.glCreateBuffers(1, &m_vramBuffer);
         gl.glNamedBufferStorage(m_vramBuffer, kLocalMemoryBytes, nullptr, GL_DYNAMIC_STORAGE_BIT);
@@ -2831,6 +2864,167 @@ void main()
         return frame;
     }
 
+    // Sizes the compose/history pair for the reprojection. Grow-only, like the
+    // present pair: the display size churns through the logos and the intro, and
+    // recreating these on every change would hitch exactly there.
+    void Renderer::ensureBlurTargets(GL &gl, uint32_t width, uint32_t height)
+    {
+        if (m_composeTexture == 0 || m_composeWidth < width || m_composeHeight < height)
+        {
+            if (m_composeTexture != 0)
+            {
+                gl.glDeleteFramebuffers(1, &m_composeFramebuffer);
+                gl.glDeleteTextures(1, &m_composeTexture);
+            }
+            m_composeWidth = std::max(m_composeWidth, width);
+            m_composeHeight = std::max(m_composeHeight, height);
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_composeTexture);
+            gl.glTextureStorage2D(m_composeTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_composeWidth),
+                                  static_cast<GLsizei>(m_composeHeight));
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.glTextureParameteri(m_composeTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            gl.glCreateFramebuffers(1, &m_composeFramebuffer);
+            gl.glNamedFramebufferTexture(m_composeFramebuffer, GL_COLOR_ATTACHMENT0, m_composeTexture, 0);
+            gl.glNamedFramebufferDrawBuffer(m_composeFramebuffer, GL_COLOR_ATTACHMENT0);
+            m_blurHistoryValid = false;
+        }
+        if (m_historyTexture == 0 || m_historyWidth < width || m_historyHeight < height)
+        {
+            if (m_historyTexture != 0)
+            {
+                gl.glDeleteFramebuffers(1, &m_historyFramebuffer);
+                gl.glDeleteTextures(1, &m_historyTexture);
+            }
+            m_historyWidth = std::max(m_historyWidth, width);
+            m_historyHeight = std::max(m_historyHeight, height);
+            gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_historyTexture);
+            gl.glTextureStorage2D(m_historyTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_historyWidth),
+                                  static_cast<GLsizei>(m_historyHeight));
+            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.glTextureParameteri(m_historyTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            gl.glCreateFramebuffers(1, &m_historyFramebuffer);
+            gl.glNamedFramebufferTexture(m_historyFramebuffer, GL_COLOR_ATTACHMENT0, m_historyTexture, 0);
+            gl.glNamedFramebufferDrawBuffer(m_historyFramebuffer, GL_COLOR_ATTACHMENT0);
+            m_blurHistoryValid = false;
+        }
+    }
+
+    void Renderer::destroyBlurTargets()
+    {
+        GL &gl = m_context.gl;
+        if (m_composeTexture != 0)
+        {
+            gl.glDeleteFramebuffers(1, &m_composeFramebuffer);
+            gl.glDeleteTextures(1, &m_composeTexture);
+            m_composeTexture = m_composeFramebuffer = 0;
+        }
+        if (m_historyTexture != 0)
+        {
+            gl.glDeleteFramebuffers(1, &m_historyFramebuffer);
+            gl.glDeleteTextures(1, &m_historyTexture);
+            m_historyTexture = m_historyFramebuffer = 0;
+        }
+        m_blurHistoryValid = false;
+    }
+
+    // Warps the frame the compose just drew (m_composeTexture) onto the previous
+    // camera and mixes it with the history, writing into destinationFramebuffer,
+    // then seeds the history with the result. That last step is what makes it an
+    // accumulation: each frame blends against the previous *output*, so a turn
+    // leaves a decaying trail rather than a single ghost.
+    void Renderer::reprojectCompose(GL &gl, uint32_t width, uint32_t height, GLuint destinationFramebuffer)
+    {
+        // The present path publishes the camera after the compose, so the value
+        // here is the one this frame was built with. Read it twice around the
+        // generation counter: the game thread writes it, and a torn read would
+        // mix one frame's orientation with another's position.
+        Ps2CameraState cur;
+        uint64_t generation = 0;
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            generation = g_ps2CameraFrame.load(std::memory_order_relaxed);
+            cur = g_ps2Camera;
+            if (g_ps2CameraFrame.load(std::memory_order_relaxed) == generation)
+                break;
+        }
+
+        // Depth in world units: 1 unit is about 0.1 m, so 100 is ~10 m, roughly
+        // what fills a chase-camera frame. It only scales the translation part.
+        static const float s_depth = []()
+        {
+            const char *env = std::getenv("PS2X_BLUR_DEPTH");
+            return env ? static_cast<float>(std::atof(env)) : 100.0f;
+        }();
+
+        const Ps2CameraHomography warp = ps2CameraHomography(m_blurPrevCamera, cur, s_depth);
+        m_blurPrevCamera = cur;
+
+        if (width != m_blurLastWidth || height != m_blurLastHeight)
+        {
+            m_blurLastWidth = width;
+            m_blurLastHeight = height;
+            m_blurHistoryValid = false; // the history is stored at the old size
+        }
+
+        // Nothing valid to blend with on the first frame after enabling,
+        // resizing or a camera that has not been built: pass the frame through
+        // and let the history copy seed it.
+        float strength = g_gsModernBlurStrength.load(std::memory_order_relaxed);
+        if (!warp.usable || !m_blurHistoryValid)
+            strength = 0.0f;
+
+        ensureBlurTargets(gl, width, height);
+        {
+            // One-shot note so it is visible whether the pass ran at all and with
+            // what (there is no console on Windows, and this is the difference
+            // between "no blur because nothing was valid" and "broken").
+            static bool s_reported = false;
+            if (!s_reported)
+            {
+                s_reported = true;
+                std::cerr << "[gs] reprojection: " << (warp.usable ? "warp" : "no camera") << ", strength " << strength
+                          << ", depth " << s_depth << ", " << width << "x" << height << std::endl;
+            }
+        }
+        if (m_blur.id != 0)
+        {
+            Program &p = m_blur;
+            useProgram(p.id);
+            setUniform3f(p, uniform(p, "u_warp0"), warp.m[0], warp.m[1], warp.m[2]);
+            setUniform3f(p, uniform(p, "u_warp1"), warp.m[3], warp.m[4], warp.m[5]);
+            setUniform3f(p, uniform(p, "u_warp2"), warp.m[6], warp.m[7], warp.m[8]);
+            setUniform2f(p, uniform(p, "u_size"), static_cast<float>(width), static_cast<float>(height));
+            setUniform1f(p, uniform(p, "u_strength"), strength);
+            gl.glBindTextureUnit(0, m_composeTexture);
+            gl.glBindTextureUnit(1, m_historyTexture);
+            bindFramebuffer(destinationFramebuffer);
+            setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+            setScissorTest(false);
+            setBlend(false);
+            setDepthTest(false);
+            setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            bindVao(m_emptyVao);
+            gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+        else
+        {
+            // No program (a compile failure): still get the frame out, unblurred.
+            gl.glBlitNamedFramebuffer(m_composeFramebuffer, destinationFramebuffer, 0, 0, static_cast<GLint>(width),
+                                      static_cast<GLint>(height), 0, 0, static_cast<GLint>(width),
+                                      static_cast<GLint>(height), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        }
+        // Seed the history with what was just shown.
+        gl.glBlitNamedFramebuffer(destinationFramebuffer, m_historyFramebuffer, 0, 0, static_cast<GLint>(width),
+                                  static_cast<GLint>(height), 0, 0, static_cast<GLint>(width), static_cast<GLint>(height),
+                                  GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        m_blurHistoryValid = true;
+        gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
+    }
+
     void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
     {
         // The host draws the composed frame with raylib between our frames, and
@@ -3028,8 +3222,17 @@ void main()
         setUniform2f(p, uniform(p, "u_mode"), both ? (mmod ? alp : -1.0f) : 1.0f, both && slbg ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, top.target->texture);
         gl.glBindTextureUnit(1, both ? c2.target->texture : top.target->texture);
-        bindFramebuffer(
-                             sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer);
+        const GLuint displayFramebuffer =
+            sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer;
+        // "Motion blur: Modern" needs the composed frame as a texture to warp, so
+        // it goes into the compose target and the reprojection writes the display.
+        // Otherwise the compose goes straight to the display, as it always did.
+        const bool reproject = g_gsModernBlur.load(std::memory_order_relaxed) && m_blur.id != 0;
+        if (reproject)
+            ensureBlurTargets(gl, width, height);
+        else
+            m_blurHistoryValid = false; // a stale history must never be blended later
+        bindFramebuffer(reproject ? m_composeFramebuffer : displayFramebuffer);
         setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
         setScissorTest(false);
         setBlend(false);
@@ -3037,6 +3240,8 @@ void main()
         setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         bindVao(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (reproject)
+            reprojectCompose(gl, width, height, displayFramebuffer);
         if (sharePresent)
         {
             // Make the write visible to the host's context (it draws this
@@ -3162,6 +3367,7 @@ void main()
         m_feedbackTexture = 0;
         m_feedbackWidth = m_feedbackHeight = 0;
         m_drawColor = m_drawDepth = nullptr;
+        destroyBlurTargets();
     }
 
     bool Renderer::clearFramebuffer(const GSContext &context, uint32_t rgba)

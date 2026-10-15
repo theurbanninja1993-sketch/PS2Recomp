@@ -2662,7 +2662,7 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 // pair of 256x256 buffers and blends them over the display, so
                 // it smears badly on a modern panel. Off skips those draws
                 // entirely, which removes the look and its cost.
-                static const char *kMotionBlur[] = {"PS2 (original)", "Off"};
+                static const char *kMotionBlur[] = {"PS2 (original)", "Off", "Modern"};
                 int motionBlur = static_cast<int>(settings.motionBlur);
                 if (ImGui::Combo("Motion blur", &motionBlur, kMotionBlur, IM_ARRAYSIZE(kMotionBlur)))
                 {
@@ -2671,7 +2671,18 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("PS2 is the console's frame-accumulation blur.\n"
-                                      "Off skips it, which also removes its per-frame cost.");
+                                      "Off skips it, which also removes its per-frame cost.\n"
+                                      "Modern replaces it with a reprojection: the previous frame is\n"
+                                      "warped onto the current camera, so the smear follows the camera\n"
+                                      "instead of sitting on the screen as a fixed ghost.");
+                if (settings.motionBlur == PS2HostSettings::MotionBlur::Modern)
+                {
+                    changed |= ImGui::SliderFloat("Blur amount", &settings.motionBlurStrength, 0.0f, 0.9f, "%.2f");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("How much of the reprojected previous frame goes into each frame.\n"
+                                          "Higher smears further. Only camera motion is known, so objects\n"
+                                          "moving through a still camera do not smear.");
+                }
 
                 ImGui::SeparatorText("View");
                 // No FOV slider: the game has its own swappable FOVs (the
