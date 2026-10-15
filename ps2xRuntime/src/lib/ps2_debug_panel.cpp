@@ -2662,37 +2662,22 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                 // pair of 256x256 buffers and blends them over the display, so
                 // it smears badly on a modern panel. Off skips those draws
                 // entirely, which removes the look and its cost.
-                // Menu order is PS2 / Modern / Off (the owner's ask). The enum
-                // values stay put: they are what the settings file stores.
-                static const char *kMotionBlur[] = {"PS2 (original)", "Modern", "Off"};
-                static const PS2HostSettings::MotionBlur kMotionBlurValue[] = {
-                    PS2HostSettings::MotionBlur::PS2, PS2HostSettings::MotionBlur::Modern,
-                    PS2HostSettings::MotionBlur::Off};
-                int motionBlur = 0;
-                for (int i = 0; i < IM_ARRAYSIZE(kMotionBlurValue); ++i)
-                    if (kMotionBlurValue[i] == settings.motionBlur)
-                        motionBlur = i;
+                // Parked: the Modern blur is withdrawn from the menu (it smears
+                // the HUD on frames where the game draws the HUD after the copy
+                // that carries the overlay mask to the display - see the note in
+                // the renderer). The code is still here and PS2X_MODERN_BLUR=1
+                // still drives it for testing; frame interpolation needs the same
+                // mask, so the fix belongs with that work.
+                static const char *kMotionBlur[] = {"PS2 (original)", "Off"};
+                int motionBlur = static_cast<int>(settings.motionBlur);
                 if (ImGui::Combo("Motion blur", &motionBlur, kMotionBlur, IM_ARRAYSIZE(kMotionBlur)))
                 {
-                    settings.motionBlur = kMotionBlurValue[motionBlur];
+                    settings.motionBlur = static_cast<PS2HostSettings::MotionBlur>(motionBlur);
                     changed = true;
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("PS2 is the console's frame-accumulation blur.\n"
-                                      "Modern blurs the picture along the camera's own motion, like a\n"
-                                      "shutter: a turn or a fast approach smears in that direction.\n"
-                                      "The HUD and the minimap are left sharp.\n"
-                                      "Off skips it, which also removes the PS2 blur's cost.");
-                if (settings.motionBlur == PS2HostSettings::MotionBlur::Modern)
-                {
-                    changed |= ImGui::SliderFloat("Blur length", &settings.motionBlurStrength, 0.0f, 1.5f, "%.2f");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How far the smear reaches, in frames of camera motion.\n"
-                                          "0.5 is a half-frame shutter, 1.0 a full one, above that is\n"
-                                          "longer than the motion between frames.\n"
-                                          "Only camera motion is known, so objects moving through a\n"
-                                          "still camera do not smear.");
-                }
+                                      "Off skips it, which also removes its per-frame cost.");
 
                 ImGui::SeparatorText("View");
                 // No FOV slider: the game has its own swappable FOVs (the

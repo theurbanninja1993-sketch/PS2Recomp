@@ -333,11 +333,10 @@ void ps2HostSettingsLoad()
         else if (key == "vsync")
             s.vsync = std::atoi(v) != 0;
         else if (key == "motion_blur")
-            // Anything but Off is PS2, so a file from the first Modern attempt
-            // (which wrote 2) cannot become an out-of-range value.
-            s.motionBlur = std::atoi(v) == 1 ? PS2HostSettings::MotionBlur::Off
-                                             : (std::atoi(v) == 2 ? PS2HostSettings::MotionBlur::Modern
-                                                                  : PS2HostSettings::MotionBlur::PS2);
+            // Off, or PS2 for anything else: Modern is parked (env-only), and a
+            // settings file from when it was in the menu could say 2, which must
+            // not become an out-of-range value for a two-item combo.
+            s.motionBlur = std::atoi(v) == 1 ? PS2HostSettings::MotionBlur::Off : PS2HostSettings::MotionBlur::PS2;
         else if (key == "motion_blur_strength")
             s.motionBlurStrength = std::clamp(std::strtof(v, nullptr), 0.0f, 1.5f);
         else if (key == "field_of_view")
@@ -432,12 +431,15 @@ void ps2HostSettingsApplyRenderer()
     // Both Off and Modern drop the game's own blur accumulation: Off leaves the
     // picture sharp, Modern replaces the smear with its own. Keeping the game's
     // blur as well would blend two different ghosts.
-    // PS2X_MODERN_BLUR=1 forces it on and PS2X_MODERN_BLUR_STRENGTH sets the
-    // amount, so it can be A/B'd from a launcher without the settings UI.
+    //
+    // Modern is parked: it is not in the settings menu, and only
+    // PS2X_MODERN_BLUR=1 turns it on, because it smears the HUD on frames where
+    // the game draws the HUD after the copy that carries the overlay mask to the
+    // display (see the note in the renderer). Frame interpolation needs the same
+    // mask, so the fix belongs with that work.
     static const char *s_envModern = std::getenv("PS2X_MODERN_BLUR");
     static const char *s_envStrength = std::getenv("PS2X_MODERN_BLUR_STRENGTH");
-    const bool modern = (s_envModern != nullptr && std::atoi(s_envModern) != 0) ||
-                        g_settings.motionBlur == PS2HostSettings::MotionBlur::Modern;
+    const bool modern = s_envModern != nullptr && std::atoi(s_envModern) != 0;
     const float strength = s_envStrength != nullptr ? std::strtof(s_envStrength, nullptr) : g_settings.motionBlurStrength;
     g_gsMotionBlurOff.store(modern || g_settings.motionBlur == PS2HostSettings::MotionBlur::Off,
                             std::memory_order_relaxed);

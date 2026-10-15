@@ -999,6 +999,38 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
     reprojected against a single depth plane (`PS2X_BLUR_DEPTH`, default 100
     world units ~ 10 m), which only scales the translation part.
 
+    **Parked (2026-10-15):** Modern is out of the settings menu; only
+    `PS2X_MODERN_BLUR=1` turns it on. It is parked because of the mask, not the
+    blur: the HUD is blurred outright on frames where the mask is missing.
+
+    **Why the mask is intermittent - measured, and the thing to fix next.**
+    The display target's mask is empty on some frames and populated on others.
+    Two findings from dumping every target's mask across consecutive frames:
+
+    - The copies that carry the mask to the display happen on only *some* frames
+      (blocks 0, 12288, 13440, 14464 each appear on a handful of the seven frames
+      examined). Propagating through them therefore cannot be the whole answer:
+      on a frame with no copy, the display's mask is stale or absent.
+    - The game draws the HUD into the *scene* framebuffer (block 4480), and the
+      scene's own mask is the complete one - it holds the HUD directly and the
+      minimap through the composite that draws it in. The compose reads the
+      display, so it reads the wrong target.
+
+    So the fix is to have the compose read the mask from the target the overlays
+    were actually drawn into (the widest such target, which is the scene - the
+    minimap's own target is only 128 wide), and to make the per-frame clear
+    deterministic rather than lazy. Both were attempted and are *not* in the
+    tree: the measurement loop needed the mask dump to be frame-numbered, and the
+    trace and the dump turned out to be off by one frame from each other, so the
+    results could not be trusted. Start by making those two agree.
+
+    A caution for whoever picks this up: several of the earlier "verified" claims
+    in this item were taken from a replay that was silently not applying the
+    renderer settings (`g_gsModernBlur` stayed false), and one live check was
+    defeated by the owner's saved `motion_blur_strength=0.05`, which is a
+    sub-pixel smear and reads as "the blur does nothing". Check the one-shot
+    `[gs] motion blur:` line says what you expect before believing a comparison.
+
     Next: the same motion vectors are what item 14 needs, so the overlay split
     has to be solved once, properly, before either is worth shipping.
 
