@@ -1832,6 +1832,13 @@ void main()
     {
         if (ensureTargetMask(gl, target) == 0)
             return;
+        // Remember the widest target overlays are drawn into - the scene
+        // framebuffer. The compose reads the mask from there, not from the
+        // display: the copies that carry it to the display happen on only some
+        // frames, and the narrow targets (the minimap's own 128-wide one) are not
+        // the frame.
+        if (m_overlayTarget == nullptr || target.width > m_overlayTarget->width)
+            m_overlayTarget = &target;
         Program &p = m_mask;
         useProgram(p.id);
         setUniform2f(p, uniform(p, "u_targetSize"), static_cast<float>(target.width), static_cast<float>(target.height));
@@ -3059,10 +3066,9 @@ void main()
         if (m_maskEnabled)
         {
             static const char *s_dump = std::getenv("PS2X_OVERLAY_MASK_DUMP");
-            static bool s_dumped = false;
             // Late enough that the frame has been drawn and copied, like the
             // presents the compose debug uses.
-            if (s_dump != nullptr && !s_dumped && m_presentIndex >= 41u)
+            if (s_dump != nullptr && m_presentIndex >= 40u && m_presentIndex <= 46u)
             {
                 for (auto &target : m_targets)
                 {
@@ -3082,7 +3088,8 @@ void main()
                     // and propagated through the copies, so seeing each hop says
                     // where a mis-mapping creeps in.
                     char path[1024];
-                    std::snprintf(path, sizeof(path), "%s.%u_%ux%u.pgm", s_dump, target->block, w, h);
+                    std::snprintf(path, sizeof(path), "%s.%llu_%u_%ux%u.pgm", s_dump,
+                                  (unsigned long long)m_presentIndex, target->block, w, h);
                     if (FILE *f = std::fopen(path, "wb"))
                     {
                         std::fprintf(f, "P5\n%u %u\n255\n", w, h);
@@ -3092,13 +3099,16 @@ void main()
                     std::cerr << "[gs] overlay mask: dumped " << w << "x" << h << " (block " << target->block << ") to "
                               << path << std::endl;
                 }
-                s_dumped = true;
             }
         }
         {
             static const char *s_traceDraws = std::getenv("PS2X_GS_TRACE_DRAWS");
+            // Mark the *start* of the traced frame, so the draws that follow are
+            // that frame's. (This used to fire on the next present, which made the
+            // trace and the mask dump describe different frames - they were off by
+            // one, and comparisons between them were meaningless.)
             if (s_traceDraws != nullptr &&
-                static_cast<uint64_t>(std::strtoull(s_traceDraws, nullptr, 10)) + 1u == m_presentIndex)
+                static_cast<uint64_t>(std::strtoull(s_traceDraws, nullptr, 10)) == m_presentIndex)
                 std::fprintf(stderr, "[gs:present] --- start of frame %llu ---\n", (unsigned long long)m_presentIndex);
         }
         // Presentation reads local memory (both circuits, preferred source).
@@ -3490,9 +3500,13 @@ void main()
         // does (the two circuits are the two fields of one buffer).
         {
             static const bool s_overlayDebug = std::getenv("PS2X_OVERLAY_MASK_DEBUG") != nullptr;
-            const bool sameTarget = !both || c2.target == top.target;
-            const bool overlayValid = m_maskEnabled && sameTarget && top.target->maskTexture != 0;
-            gl.glBindTextureUnit(2, overlayValid ? top.target->maskTexture : top.target->texture);
+            // Read the mask from the target the overlays were drawn into (the
+            // scene), not from the display: the HUD lives in the scene framebuffer
+            // and the copies that carry it to the display happen on only some
+            // frames, so a mask read from the display is missing on the others.
+            Target *maskTarget = m_overlayTarget != nullptr ? m_overlayTarget : top.target;
+            const bool overlayValid = m_maskEnabled && maskTarget->maskTexture != 0;
+            gl.glBindTextureUnit(2, overlayValid ? maskTarget->maskTexture : top.target->texture);
             setUniform1f(p, uniform(p, "u_overlayValid"), overlayValid ? 1.0f : 0.0f);
             // In alpha only when the blur will read it: the display texture itself
             // has to stay opaque.

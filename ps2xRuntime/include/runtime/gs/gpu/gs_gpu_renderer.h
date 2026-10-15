@@ -297,6 +297,14 @@ namespace gsgpu
         // that target into another (the game's copies of the finished frame), so
         // the mask reaches the display the compose reads.
         Program m_maskCopy;
+        // The widest target an overlay has been drawn into: the scene framebuffer,
+        // where the HUD lives. The compose reads the mask from here rather than
+        // from the display, because the copies that carry the mask to the display
+        // happen on only some frames - a mask read from the display is missing on
+        // the others and the HUD blurs outright. The two rects are the same size
+        // and start within a couple of rows of each other, which for a protective
+        // region is close enough.
+        Target *m_overlayTarget = nullptr;
         GLuint m_zeroMask = 0; // 1x1 R8 zero, for a source that has no mask yet
         bool m_maskEnabled = false;
         // The target a draw samples as its texture, if it is one (set by
