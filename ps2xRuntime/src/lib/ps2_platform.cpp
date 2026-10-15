@@ -51,6 +51,9 @@ namespace
 void ps2SetHostThread()
 {
     g_hostThread = std::this_thread::get_id();
+    // Name it too: the per-thread CPU report otherwise shows the frame loop as
+    // an anonymous thread<tid>, which is indistinguishable from a driver thread.
+    ThreadNaming::SetCurrentThreadName("MainThread");
 }
 
 bool ps2IsHostThread()
@@ -84,7 +87,10 @@ std::vector<Ps2ThreadCpu> ps2ThreadCpuTicks()
         {
             if (entry.th32OwnerProcessID != pid)
                 continue;
-            HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
+            // THREAD_QUERY_INFORMATION for the start address (fall back if denied).
+            HANDLE thread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
+            if (thread == nullptr)
+                thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
             if (thread == nullptr)
                 continue;
             FILETIME creation{}, exitTime{}, kernel{}, user{};
@@ -106,7 +112,41 @@ std::vector<Ps2ThreadCpu> ps2ThreadCpuTicks()
                     }
                 }
                 if (cpu.label.empty())
-                    cpu.label = "thread" + std::to_string(cpu.id);
+                {
+                    // Not one of ours (we name every thread we create), so it is
+                    // the OS, the audio device or the GPU driver. Say which DLL
+                    // owns it: that is the difference between "a driver thread is
+                    // saturated" and "we forgot to name a thread".
+                    using NtQueryInformationThreadFn = LONG(WINAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+                    static const auto s_query = []() -> NtQueryInformationThreadFn
+                    {
+                        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+                        return ntdll != nullptr
+                                   ? reinterpret_cast<NtQueryInformationThreadFn>(GetProcAddress(ntdll, "NtQueryInformationThread"))
+                                   : nullptr;
+                    }();
+                    void *start = nullptr;
+                    if (s_query != nullptr)
+                        s_query(thread, 9u /* ThreadQuerySetWin32StartAddress */, &start, sizeof(start), nullptr);
+                    std::string module;
+                    if (start != nullptr)
+                    {
+                        HMODULE owner = nullptr;
+                        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                               reinterpret_cast<LPCWSTR>(start), &owner) &&
+                            owner != nullptr)
+                        {
+                            wchar_t name[MAX_PATH] = {};
+                            if (GetModuleBaseNameW(GetCurrentProcess(), owner, name, MAX_PATH) > 0)
+                            {
+                                std::wstring wide(name);
+                                module.assign(wide.begin(), wide.end());
+                            }
+                        }
+                    }
+                    cpu.label = module.empty() ? ("thread" + std::to_string(cpu.id)) : (module + ":" + std::to_string(cpu.id));
+                }
                 out.push_back(std::move(cpu));
             }
             CloseHandle(thread);

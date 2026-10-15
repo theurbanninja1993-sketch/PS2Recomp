@@ -5,6 +5,7 @@
 #include "runtime/gs/ps2_gs_memory.h"
 #include "runtime/ps2_host_settings.h" // smoothFiltering: the shared display texture's filter
 
+#include "ThreadNaming.h"
 #include "raylib.h" // PS2X_TEXREPL_DUMP: ExportImage writes the dumped PNGs
 
 #define XXH_INLINE_ALL
@@ -26,6 +27,9 @@ std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 // The host window size, published by the main thread each frame (0 = unknown).
 // The upscaled display readback is capped to it: the composed frame is only
 // ever shown at window size, so transferring more than that is pure waste.
+// Draw calls issued to GL. One per state-change flush, so this is the number
+// the GPU driver's own threads have to process each frame.
+std::atomic<uint64_t> g_gsGpuDraws{0};
 std::atomic<uint32_t> g_gsGpuPresentWidth{0};
 std::atomic<uint32_t> g_gsGpuPresentHeight{0};
 // Set once the GL path is really running (see the Renderer constructor).
@@ -1542,6 +1546,7 @@ void main()
         gl.glVertexArrayVertexBuffer(m_vao, 0, m_vbo, 0, sizeof(Vertex));
         gl.glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_vertices.size()));
         ++m_statDraws;
+        g_gsGpuDraws.fetch_add(1u, std::memory_order_relaxed);
 
         // The targets now hold data VRAM lacks in the drawn rows.
         auto markDirty = [&](Target *target)
@@ -2083,7 +2088,12 @@ void main()
         if (!m_replThread.joinable())
         {
             m_replStop = false;
-            m_replThread = std::thread([this]() { replacementWorker(); });
+            m_replThread = std::thread(
+                [this]()
+                {
+                    ThreadNaming::SetCurrentThreadName("TexRepl");
+                    replacementWorker();
+                });
         }
     }
 
