@@ -879,6 +879,53 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       it: its presented-frame dump returns nothing, and the vramHash is
       *expected* to change when the blur stops writing VRAM.
 
+12. **VSync + VRR - DONE (2026-10-15).** Tearing on both platforms came from
+    `SetTargetFPS(60)`: a software cap, not a sync, so the buffer swap never
+    waited for the display. **Display > VSync** now sets the swap interval
+    (`FLAG_VSYNC_HINT`), default on. That is also all a VRR display needs - the
+    driver and panel handle the rest - but note the emulation is fixed at 60
+    VBlanks/s, so a VRR panel will sit at ~60 Hz until frame interpolation
+    exists. The 60 fps cap is kept deliberately: with vsync on it is redundant,
+    and removing it would present duplicate frames faster than the emulation
+    produces them.
+
+13. **A modern motion blur (owner ask, 2026-10-15).** Effort depends entirely
+    on which kind, and it is worth being precise because the cheap version and
+    the good version are different projects:
+    - **Camera-relative reprojection - moderate (~a day).** The port already
+      composes the display and owns the previous frame, and it already has the
+      camera matrix (from the vehicle-look work). Warp the previous frame by
+      the camera delta and blend: cheap, plausible, and it fixes the *look*.
+      Limits: only camera motion is known, so moving objects do not smear
+      correctly, and disocclusion (turning to reveal new geometry) smears.
+    - **Per-object - hard, and fragile.** Needs per-object motion vectors,
+      which the GS does not provide. They would have to be synthesised from the
+      transform stream the port already sees, per drawn primitive. That is real
+      work with a long tail of edge cases (skinning, particles, billboards).
+    - Recommendation: do the reprojection version first as an opt-in
+      `Motion blur: Modern`, and only consider per-object if it proves too
+      smeary to be worth having.
+
+14. **Frame rates above 60 (owner ask).** The emulation is locked to 60
+    VBlanks/s - the game's logic runs per VBlank - so anything above 60 must be
+    *interpolated*, not emulated. Three shapes, cheapest first:
+    - **Reprojection (as in item 13).** Generate intermediate display frames by
+      warping the previous composed frame along the camera delta. Reuses the
+      same warp pass, so items 13 and 14 are one piece of machinery. Quality:
+      smooth, with the same camera-only limits - expect edge smear and
+      disocclusion artefacts, so it wants to be opt-in and per-frame tunable.
+    - **Render the scene twice per emulated frame** - not possible without the
+      game's cooperation: the GS stream is game-driven, so there is no
+      intermediate state to render.
+    - **Optical-flow / model-based frame generation (DLSS-FG style)** - needs
+      motion vectors plus a model. Out of scope.
+    - This is also what makes VRR above 60 worth having: with reprojection the
+      display can run at 120/144 and VRR will follow the *generated* rate.
+    - The optimisation work matters here: reprojection is extra GPU work per
+      displayed frame, so it is only affordable because the renderer's pass
+      count and the game thread came down (state/uniform caches, VU0 compiled,
+      the VBlank catch-up fix). Worth re-checking the headroom before starting.
+
 ## Third-party assets (release-page credits)
 
 Both packs are by **AL2009man**, MIT-licensed, (c) 2024 Al. Lopez:
