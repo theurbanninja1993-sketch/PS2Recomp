@@ -3471,7 +3471,7 @@ void main()
         const uint32_t w = m_lastComposedWidth, hgt = m_lastComposedHeight;
         if (m_synthTexture[0] == 0 || m_synthWidth < w || m_synthHeight < hgt)
         {
-            for (int i = 0; i < 2; ++i)
+            for (int i = 0; i < kSynthRing; ++i)
             {
                 if (m_synthTexture[i] != 0)
                 {
@@ -3482,7 +3482,7 @@ void main()
             }
             m_synthWidth = std::max(m_synthWidth, w);
             m_synthHeight = std::max(m_synthHeight, hgt);
-            for (int i = 0; i < 2; ++i)
+            for (int i = 0; i < kSynthRing; ++i)
             {
                 gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_synthTexture[i]);
                 gl.glTextureStorage2D(m_synthTexture[i], 1, GL_RGBA8, static_cast<GLsizei>(m_synthWidth),
@@ -3497,9 +3497,8 @@ void main()
             }
             m_synthIndex = 0;
         }
-        // Write into the *other* one: the display may still be showing the last
-        // synthesized frame, so it must not be overwritten in place.
-        m_synthIndex ^= 1;
+        // Next slot in the ring: whatever is still in flight is left alone.
+        m_synthIndex = (m_synthIndex + 1) % kSynthRing;
 
         const Target *maskTarget = m_overlayTarget;
         const bool maskValid = maskTarget != nullptr && maskTarget->maskTexture != 0;
@@ -3526,6 +3525,30 @@ void main()
         // shared present path does the same thing for the same reason.
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
         gl.glFlush();
+        // PS2X_SYNTH_CHECK=1: sample the middle of what was just written and
+        // complain if it is black. The renderer reporting on its own output is the
+        // only reliable view - a host-side screenshot races the swap.
+        static const bool s_check = std::getenv("PS2X_SYNTH_CHECK") != nullptr;
+        if (s_check)
+        {
+            const GLsizei cw = 16, ch = 16;
+            const GLint cx = static_cast<GLint>(w / 2u), cy = static_cast<GLint>(hgt / 2u);
+            uint8_t px[cw * ch * 4] = {};
+            gl.glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            gl.glGetTextureSubImage(m_synthTexture[m_synthIndex], 0, cx, cy, 0, cw, ch, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                                    sizeof(px), px);
+            uint32_t sum = 0;
+            for (size_t i = 0; i + 3u < sizeof(px); i += 4u)
+                sum += px[i] + px[i + 1u] + px[i + 2u];
+            static uint64_t s_black = 0, s_total = 0;
+            ++s_total;
+            if (sum < 32u)
+            {
+                ++s_black;
+                std::cerr << "[gs] synthesized frame is black (mid " << cx << "," << cy << "): " << s_black << " of "
+                          << s_total << std::endl;
+            }
+        }
         outWidth = w;
         outHeight = hgt;
         return m_synthTexture[m_synthIndex];
@@ -3905,7 +3928,7 @@ void main()
         m_feedbackWidth = m_feedbackHeight = 0;
         m_drawColor = m_drawDepth = nullptr;
         destroyBlurTargets();
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < kSynthRing; ++i)
         {
             if (m_synthTexture[i] != 0)
             {

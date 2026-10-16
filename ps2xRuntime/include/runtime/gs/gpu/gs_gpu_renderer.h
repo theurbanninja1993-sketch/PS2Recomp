@@ -338,10 +338,13 @@ namespace gsgpu
         GLuint m_lastComposedTexture = 0;
         uint32_t m_lastComposedWidth = 0, m_lastComposedHeight = 0;
         Program m_synth;
-        // Double-buffered, like the shared present pair: the display may still be
-        // scanning out the last synthesized frame when the next one is written, and
-        // overwriting it in place is what a flash on every other frame is.
-        GLuint m_synthTexture[2] = {0u, 0u}, m_synthFramebuffer[2] = {0u, 0u};
+        // A ring, not a pair. The host *queues* its draws, so several synthesized
+        // frames can be in flight at once: at 240 there are three per picture, and
+        // a two-deep ring lets the renderer rewrite a texture before the host's
+        // draw of it has even executed - the draw then shows a later frame, or a
+        // partly rewritten one.
+        static constexpr int kSynthRing = 6;
+        GLuint m_synthTexture[kSynthRing] = {}, m_synthFramebuffer[kSynthRing] = {};
         uint32_t m_synthWidth = 0, m_synthHeight = 0;
         int m_synthIndex = 0;
         // Reads the published camera into m_interpCamera, tracking the previous
