@@ -549,6 +549,31 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
      range lands across the whole travel. Needs an owner feel-test; if the car
      feels underpowered instead, the game's range really is 0..255 and the max
      should go back up.
+
+    - **Proportional throttle, the working way (Controls -> "Analog throttle").**
+      The pressure route is a dead end for driving (above): the game reads the
+      byte, saturates it and only ever tests it. Worse, VCS's own throttle is a
+      button, so the car is flat out or stopped.
+      What the game really has is a small control model in the vehicle:
+      - `vehicle + 0x25C` is the **throttle request**, signed: +1 accelerating,
+        -1 braking / reversing. It was the strongest correlation with the
+        trigger of every field in the vehicle (0.85), and `FUN_001b9360` uses
+        `abs(...)` of it as the limit it ramps toward.
+      - `vehicle + 0x66C` is the **gas pedal**, `+0x670` the **brake pedal** -
+        written by the control update `FUN_001b8a68` (0 or 1, from the button)
+        and read as floats by `FUN_001b9360` / `FUN_001ba600`.
+      - `FUN_001b9360` is the ramp: it returns `min(limit, pedal + 0.09)`, i.e.
+        the pedal eases toward the request, which is what gives the game its
+        feel.
+      So the hook (`game_overrides.cpp`) writes only the **request**, from the
+      triggers (`RT - LT`, filtered), and lets the game's own ramp and physics do
+      the rest. Writing the *pedal* instead was fought by the control update -
+      the vehicle update `FUN_001b5d68` calls the pedal readers on both sides of
+      it - and the car surged; the trace (`PS2X_THROTTLE_TRACE=1`, and
+      `PS2X_THROTTLE_SCAN=1` for the field dump) is what showed the pedal was
+      steady while the car still surged.
+      A real DualShock 2's pressure would have taken exactly this path. Off
+      unless the Controls tab option is ticked.
 6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
    regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
 7. **Player-selectable render API (Vulkan; D3D11 for Windows).** Owner's ask:
