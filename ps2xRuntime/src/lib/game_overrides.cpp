@@ -2111,7 +2111,7 @@ namespace
     // would see the smoothed value and some ours, which is felt as the car
     // surging. Writing immediately before every read is what makes it one
     // consistent amount.
-    void vcsWritePlayerPedals(const uint8_t *rdram)
+    void vcsWritePlayerPedals(const uint8_t *rdram, const char *tag)
     {
         if (!ps2HostSettings().analogThrottle)
             return;
@@ -2121,13 +2121,42 @@ namespace
         // The vehicle's control block: gas pedal at +0x66C, brake at +0x670
         // (FUN_001b8a68), read as floats by FUN_001b9360 / FUN_001ba600.
         uint8_t *ram = const_cast<uint8_t *>(rdram);
+        const auto readFloat = [ram, vehicle](uint32_t offset)
+        {
+            float value = 0.0f;
+            std::memcpy(&value, ram + vehicle + offset, 4);
+            return value;
+        };
         const auto writePedal = [ram, vehicle](uint32_t offset, float value)
         {
             if (vehicle + offset + 4u <= PS2_RAM_SIZE)
                 std::memcpy(ram + vehicle + offset, &value, 4);
         };
-        writePedal(0x66Cu, g_ps2PadTriggerRight.load(std::memory_order_relaxed));
-        writePedal(0x670u, g_ps2PadTriggerLeft.load(std::memory_order_relaxed));
+        const float gas = g_ps2PadTriggerRight.load(std::memory_order_relaxed);
+        const float brake = g_ps2PadTriggerLeft.load(std::memory_order_relaxed);
+        if (std::getenv("PS2X_THROTTLE_TRACE") != nullptr)
+        {
+            static FILE *s_file = std::fopen("throttle_trace.txt", "a");
+            static FILE *s_config = []() -> FILE *
+            {
+                const std::filesystem::path path =
+                    std::filesystem::path(ps2HostSettingsPath()).parent_path() / "throttle_trace.txt";
+                return std::fopen(path.string().c_str(), "a");
+            }();
+            char line[256];
+            std::snprintf(line, sizeof line, "[tr] f=%llu %s gas_was=%.3f gas=%.3f brake_was=%.3f brake=%.3f\n",
+                          (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed),
+                          tag, static_cast<double>(readFloat(0x66Cu)), static_cast<double>(gas),
+                          static_cast<double>(readFloat(0x670u)), static_cast<double>(brake));
+            for (FILE *sink : {s_file, s_config})
+                if (sink != nullptr)
+                {
+                    std::fputs(line, sink);
+                    std::fflush(sink);
+                }
+        }
+        writePedal(0x66Cu, gas);
+        writePedal(0x670u, brake);
     }
 
     PS2Runtime::RecompiledFunction g_vcsOrigPedalReadA = nullptr;
@@ -2135,14 +2164,14 @@ namespace
 
     void vcsPedalReadA(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        vcsWritePlayerPedals(rdram);
+        vcsWritePlayerPedals(rdram, "readA");
         if (g_vcsOrigPedalReadA != nullptr)
             g_vcsOrigPedalReadA(rdram, ctx, runtime);
     }
 
     void vcsPedalReadB(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        vcsWritePlayerPedals(rdram);
+        vcsWritePlayerPedals(rdram, "readB");
         if (g_vcsOrigPedalReadB != nullptr)
             g_vcsOrigPedalReadB(rdram, ctx, runtime);
     }
@@ -2151,7 +2180,7 @@ namespace
     {
         if (g_vcsOrigVehicleControl != nullptr)
             g_vcsOrigVehicleControl(rdram, ctx, runtime);
-        vcsWritePlayerPedals(rdram);
+        vcsWritePlayerPedals(rdram, "ctl");
     }
 
     void applyGtaVcsUs(PS2Runtime &runtime)
