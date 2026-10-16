@@ -578,6 +578,17 @@ namespace GSMem
 	// the (fixed) in-block nibble layout applied by a lookup instead of the
 	// page/block/column walk per pixel.
 	void WriteT4Tile(u8* data, u32 bp, u32 bw, u32 tileX, u32 tileY, const u8* src, u32 srcRowBytes);
+	// Source offset and shift for the two nibbles of each destination byte, so
+	// the T4 mirror's inner loop needs no (x, y) lookup or multiply.
+	struct T4TileTables
+	{
+		u32 loOffset[256];
+		u32 hiOffset[256];
+		u8 loShift[256];
+		u8 hiShift[256];
+	};
+	T4TileTables BuildT4TileTables(u32 srcRowBytes);
+	void WriteT4Tile(u8* data, u32 bp, u32 bw, u32 tileX, u32 tileY, const u8* src, const T4TileTables& tables);
 
 	u32 ReadCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
 	u32 ReadZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y);

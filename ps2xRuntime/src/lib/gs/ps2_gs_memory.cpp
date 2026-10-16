@@ -397,18 +397,43 @@ namespace GSMem
 
     constexpr std::array<T4TileSource, 512> T4Inverse = BuildT4Inverse();
 
-    void WriteT4Tile(u8* data, u32 bp, u32 bw, u32 tileX, u32 tileY, const u8* src, u32 srcRowBytes)
+    // The destination byte's two nibbles come from fixed places in the source
+    // (the GS column interleave), so the source offset and shift of each can be
+    // precomputed once per upload - srcRowBytes is constant within one. The inner
+    // loop runs 512 times per 256-byte block and a busy capture mirrors hundreds
+    // of megabytes, so removing two multiplies and the (x, y) indirection from it
+    // is worth the 1 KB of tables.
+    T4TileTables BuildT4TileTables(u32 srcRowBytes)
+    {
+        T4TileTables t{};
+        for (u32 byte = 0; byte < 256u; ++byte)
+        {
+            const T4TileSource lo = T4Inverse[2u * byte], hi = T4Inverse[2u * byte + 1u];
+            t.loOffset[byte] = lo.y * srcRowBytes + (lo.x >> 1);
+            t.hiOffset[byte] = hi.y * srcRowBytes + (hi.x >> 1);
+            t.loShift[byte] = static_cast<u8>((lo.x & 1u) * 4u);
+            t.hiShift[byte] = static_cast<u8>((hi.x & 1u) * 4u);
+        }
+        return t;
+    }
+
+    void WriteT4Tile(u8* data, u32 bp, u32 bw, u32 tileX, u32 tileY, const u8* src, const T4TileTables& t)
     {
         u8 block[256];
         for (u32 byte = 0; byte < 256u; ++byte)
         {
-            const T4TileSource lo = T4Inverse[2u * byte], hi = T4Inverse[2u * byte + 1u];
-            const u8 v0 = static_cast<u8>((src[lo.y * srcRowBytes + (lo.x >> 1)] >> ((lo.x & 1u) * 4u)) & 0xFu);
-            const u8 v1 = static_cast<u8>((src[hi.y * srcRowBytes + (hi.x >> 1)] >> ((hi.x & 1u) * 4u)) & 0xFu);
+            const u8 v0 = static_cast<u8>((src[t.loOffset[byte]] >> t.loShift[byte]) & 0xFu);
+            const u8 v1 = static_cast<u8>((src[t.hiOffset[byte]] >> t.hiShift[byte]) & 0xFu);
             block[byte] = static_cast<u8>(v0 | (v1 << 4));
         }
         const u32 blockBase = PixelByteAddress(static_cast<u32>(P4), bp, bw, tileX, tileY) & ~255u;
         std::memcpy(&data[blockBase & (MEMORY_SIZE - 1u)], block, 256u);
+    }
+
+    // Kept for callers that mirror a single tile.
+    void WriteT4Tile(u8* data, u32 bp, u32 bw, u32 tileX, u32 tileY, const u8* src, u32 srcRowBytes)
+    {
+        WriteT4Tile(data, bp, bw, tileX, tileY, src, BuildT4TileTables(srcRowBytes));
     }
 
     u32 ReadCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y)

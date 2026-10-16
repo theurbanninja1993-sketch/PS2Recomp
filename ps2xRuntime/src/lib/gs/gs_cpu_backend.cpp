@@ -1663,10 +1663,11 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
         (dsax & 31u) == 0u && (m_transfer.trxpos.dsay & 15u) == 0u && (rrw & 31u) == 0u && (rrh & 15u) == 0u)
     {
         const uint32_t srcRowBytes = rrw / 2u;
+        const GSMem::T4TileTables tables = GSMem::BuildT4TileTables(srcRowBytes);
         for (uint32_t tileY = 0; tileY < rrh; tileY += 16u)
             for (uint32_t tileX = 0; tileX < rrw; tileX += 32u)
                 GSMem::WriteT4Tile(m_vram, dbp, dbw, dsax + tileX, m_transfer.trxpos.dsay + tileY,
-                                   data + tileY * srcRowBytes + tileX / 2u, srcRowBytes);
+                                   data + tileY * srcRowBytes + tileX / 2u, tables);
         m_transferState.copiedPixels = total;
         m_transferState.direction = 3u;
         m_transferState.totalPixels = 0u;

@@ -455,6 +455,20 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
    - Verification harness: `tools/gs_replay` frame diffs + comparing
      `[texrepl]` hit/hash counts before/after (identical hits = identical
      mirrored bytes).
+   - **T4 mirror tables (2026-10-16).** `WriteT4Tile` ran 512 iterations per
+     256-byte block, each doing two `(x, y)` table lookups and two
+     `y * srcRowBytes` multiplies. The destination byte's two nibbles come from
+     fixed places in the source, so those offsets and shifts are now
+     precomputed once per upload (`GSMem::T4TileTables`). On the airport capture
+     (594 MB, 228 presents): **mirrorMs 231 -> 137** (and 234 -> 137 with the
+     pack on), replay 6.11 -> 5.12 ms/present, with `vramHash` bit-identical in
+     both configurations (`bc5111eb0bb24b61` without the pack,
+     `6bcdb83ff62b0f44` with it).
+     - Measured split (airport capture, pack on): the mirror is **~12%** of the
+       replay and runs whether or not the pack is active; the pack's own **+15%**
+       (62,017 replacement hits + 555 loaded textures) is the draw-side
+       replacement path, a separate piece of work. T8/C32 are 2 MB of 159 MB, so
+       extending the block path to them is not worth it.
    - **F9 capture stalls fixed (2026-10-16).** Pressing F9 lagged the game
      badly. `gsCaptureRecord` wrote every GIF packet and register with
      `std::fwrite` as it arrived, on the game thread with the GS state mutex
