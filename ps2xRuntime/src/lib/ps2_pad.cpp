@@ -789,10 +789,11 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         const float value = env != nullptr ? std::strtof(env, nullptr) : 64.0f;
         return std::clamp(value, 8.0f, 255.0f);
     }();
-    // PS2X_PAD_ANALOG_THROTTLE=1: pulse the accelerate / brake buttons at the
-    // trigger's duty cycle, so a vehicle gets a proportional throttle out of a
-    // game whose own throttle is a button bit. See the trigger block below.
-    static const bool s_analogThrottle = std::getenv("PS2X_PAD_ANALOG_THROTTLE") != nullptr;
+    // Pulse the accelerate / brake buttons at the trigger's duty cycle, so a
+    // vehicle gets a proportional throttle out of a game whose own throttle is
+    // only a button bit. Controls tab ("Analog throttle"); the environment
+    // variable forces it on for testing.
+    static const bool s_analogThrottleForced = std::getenv("PS2X_PAD_ANALOG_THROTTLE") != nullptr;
     auto clearBit = [&btns](uint16_t mask)
     { btns &= ~mask; };
     auto press = [&clearBit](int ps2Button)
@@ -889,7 +890,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 // matching the trigger's position - an error-diffusion
                 // accumulator, so the pulses stay evenly spread - and the
                 // vehicle's mass smooths them into an average.
-                if (s_analogThrottle && context == ps2controls::InVehicle && hostPressure[b] > 0.0f)
+                if ((settings.analogThrottle || s_analogThrottleForced) &&
+                    context == ps2controls::InVehicle && hostPressure[b] > 0.0f)
                 {
                     static float s_pwmPhase[2] = {0.0f, 0.0f};
                     float &phase = s_pwmPhase[trigger];

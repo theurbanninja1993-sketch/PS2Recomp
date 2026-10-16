@@ -2785,6 +2785,10 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
                     else
                         ImGui::TextDisabled("none connected");
                 }
+                ImGui::SeparatorText("Driving");
+                changed |= ImGui::Checkbox("Analog throttle (triggers)", &settings.analogThrottle);
+                ImGui::TextDisabled("The game's throttle is a button, so this pulses the accelerate and brake "
+                                    "buttons at the trigger's position instead. Full pull is unchanged.");
                 ImGui::SeparatorText("Button prompts");
                 {
                     static const char *const kPromptSets[] = {"Auto (active controller or keyboard)", "Xbox", "Steam",
