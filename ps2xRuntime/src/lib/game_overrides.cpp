@@ -2153,30 +2153,6 @@ namespace
         // so driving the input lets the game's ramp and physics work as designed
         // rather than fighting the pedal's value.
         const float throttleInput = std::clamp(s_smoothGas - s_smoothBrake, -1.0f, 1.0f);
-        if (std::getenv("PS2X_THROTTLE_TRACE") != nullptr)
-        {
-            static FILE *s_file = std::fopen("throttle_trace.txt", "a");
-            static FILE *s_config = []() -> FILE *
-            {
-                const std::filesystem::path path =
-                    std::filesystem::path(ps2HostSettingsPath()).parent_path() / "throttle_trace.txt";
-                return std::fopen(path.string().c_str(), "a");
-            }();
-            char line[320];
-            std::snprintf(line, sizeof line,
-                          "[tr] f=%llu %s in_was=%.3f in=%.3f gas_was=%.3f gas=%.3f smooth=%.3f brake_was=%.3f brake=%.3f\n",
-                          (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed),
-                          tag, static_cast<double>(readFloat(0x25Cu)), static_cast<double>(throttleInput),
-                          static_cast<double>(readFloat(0x66Cu)), static_cast<double>(gas),
-                          static_cast<double>(s_smoothGas), static_cast<double>(readFloat(0x670u)),
-                          static_cast<double>(brake));
-            for (FILE *sink : {s_file, s_config})
-                if (sink != nullptr)
-                {
-                    std::fputs(line, sink);
-                    std::fflush(sink);
-                }
-        }
         writePedal(0x25Cu, throttleInput);
         writePedal(0x66Cu, s_smoothGas);
         writePedal(0x670u, s_smoothBrake);

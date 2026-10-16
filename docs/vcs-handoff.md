@@ -550,30 +550,51 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
      feels underpowered instead, the game's range really is 0..255 and the max
      should go back up.
 
-    - **Proportional throttle, the working way (Controls -> "Analog throttle").**
-      The pressure route is a dead end for driving (above): the game reads the
-      byte, saturates it and only ever tests it. Worse, VCS's own throttle is a
-      button, so the car is flat out or stopped.
-      What the game really has is a small control model in the vehicle:
-      - `vehicle + 0x25C` is the **throttle request**, signed: +1 accelerating,
-        -1 braking / reversing. It was the strongest correlation with the
-        trigger of every field in the vehicle (0.85), and `FUN_001b9360` uses
-        `abs(...)` of it as the limit it ramps toward.
-      - `vehicle + 0x66C` is the **gas pedal**, `+0x670` the **brake pedal** -
-        written by the control update `FUN_001b8a68` (0 or 1, from the button)
-        and read as floats by `FUN_001b9360` / `FUN_001ba600`.
-      - `FUN_001b9360` is the ramp: it returns `min(limit, pedal + 0.09)`, i.e.
-        the pedal eases toward the request, which is what gives the game its
-        feel.
-      So the hook (`game_overrides.cpp`) writes only the **request**, from the
-      triggers (`RT - LT`, filtered), and lets the game's own ramp and physics do
-      the rest. Writing the *pedal* instead was fought by the control update -
-      the vehicle update `FUN_001b5d68` calls the pedal readers on both sides of
-      it - and the car surged; the trace (`PS2X_THROTTLE_TRACE=1`, and
-      `PS2X_THROTTLE_SCAN=1` for the field dump) is what showed the pedal was
-      steady while the car still surged.
-      A real DualShock 2's pressure would have taken exactly this path. Off
-      unless the Controls tab option is ticked.
+    - **Proportional throttle - PARKED (owner's call, after five attempts).**
+      The owner's ask: a car that accelerates with the trigger instead of being
+      flat out or stopped. The option exists (Controls -> "Analog throttle") and
+      it *does* work - the car is proportional - but at a partial pull it
+      **surges**, and that was never solved. **Off by default, so nothing
+      regresses.** Delete the option without hesitation if the code is in the
+      way.
+
+      What the game actually does (all in the vehicle):
+      - `+0x25C` - the **throttle request**, signed: +1 accelerating, -1
+        braking/reversing. The strongest trigger correlation of any vehicle
+        field.
+      - `+0x66C` the **gas pedal**, `+0x670` the **brake pedal**, floats.
+      - `FUN_001b9360` is the **ramp**: it returns `min(abs(request), pedal +
+        0.09)`, i.e. the pedal eases toward the request. `FUN_001b8a68` is the
+        control update (writes the pedals, 0/1, from the button), `FUN_001b5d68`
+        the vehicle update.
+      So the game *has* a small analog-capable model; only the input is a
+      button.
+
+      What the port does when the option is on (`game_overrides.cpp`): writes the
+      request and both pedals from the triggers (`RT - LT`, low-passed) at the
+      entry of the vehicle update (`FUN_001b5d68`), at the control's tail, and
+      at the entry of both pedal readers (`FUN_001b9360`, `FUN_001ba600`).
+
+      Why it still surges (from `PS2X_THROTTLE_TRACE=1`, now removed): the game
+      writes **+1.0 into the request in the *player* update, once per presented
+      frame, before the vehicle update runs**, and its own player-side logic
+      consumes it there. The trace shows `upd in_was=1.000` then `upd
+      in_was=0.398` - our write lands, and the whole vehicle update sees it, but
+      the earlier write has already been used. That matches the owner's
+      observation exactly: **the stutter is fast and close together at a light
+      pull and longer and more spread out deeper in**, which is what gear logic
+      acting on a full-throttle signal while the engine only gets a partial one
+      would do.
+
+      The one lever not tried: **suppress the Cross/Square buttons in a vehicle**
+      (so the game's own request write produces 0 and its player-side logic sees
+      "no input") while the port keeps driving the request. Untested, and it
+      risks the player-side logic behaving oddly, but it is the only way left to
+      reach that window.
+
+      Debug tools kept: `PS2X_THROTTLE_SCAN=1` dumps the vehicle's words to
+      `throttle_scan.txt` (config folder and working directory);
+      `PS2X_PAD_PEDAL_SMOOTH` overrides the trigger filter coefficient.
 6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
    regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
 7. **Player-selectable render API (Vulkan; D3D11 for Windows).** Owner's ask:
