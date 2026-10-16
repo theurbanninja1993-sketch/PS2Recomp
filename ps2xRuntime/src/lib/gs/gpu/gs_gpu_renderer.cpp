@@ -27,17 +27,19 @@ namespace fs = std::filesystem;
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<uint64_t> g_gsComposedFrames{0}; // successful GPU composes, for the interp log
 
-    // Anisotropic filtering for replacement textures. 16 taps per sample at
-    // grazing angles is a real cost on HD textures; PS2X_TEXREPL_ANISO tests it
-    // (4 is where the quality plateaus for most art). The replay cannot measure
-    // GPU sampling cost - the GPU is asynchronous - so this is judged in
-    // gameplay.
+    // Anisotropic filtering for replacement textures. Owner-measured at the
+    // airport with the HD pack: 16 taps per sample at grazing angles cost about
+    // half the frame rate (into the 30s), while 4 shows no slowdown at all - and
+    // 4 is where anisotropic quality plateaus for most art. So 4 is the default,
+    // and PS2X_TEXREPL_ANISO overrides it for testing (1 disables it).
+    // The replay cannot measure this: it is GPU sampling cost, and the GPU is
+    // asynchronous.
     static float replacementAniso()
     {
         static const float s_aniso = []()
         {
             const char *env = std::getenv("PS2X_TEXREPL_ANISO");
-            return env ? static_cast<float>(std::atof(env)) : 16.0f;
+            return env ? static_cast<float>(std::atof(env)) : 4.0f;
         }();
         return s_aniso;
     }

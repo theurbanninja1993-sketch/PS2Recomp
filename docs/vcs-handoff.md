@@ -464,12 +464,15 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
      It is a one-time cost per texture and is already capped at 6 MB/frame to
      avoid the hitch on entering a new area. The per-draw caching is kept: it is
      correct and cheaper, just not the bottleneck.
-     - **Open lever: anisotropy.** Every replacement is created with
-       `GL_TEXTURE_MAX_ANISOTROPY = 16` (16 taps per sample at grazing angles).
-       The replay cannot see GPU sampling cost (the GPU is asynchronous), so this
-       is invisible here but is a real per-frame cost on the HD textures - the
-       candidate for what the owner feels while a pack is loaded. Lowering it (or
-       making it a setting) is the next A/B, judged on the owner's machine.
+     - **ANISOTROPY WAS THE AIRPORT SLOWDOWN (owner-measured 2026-10-16).** Every
+       replacement texture was created with `GL_TEXTURE_MAX_ANISOTROPY = 16` - 16
+       taps per sample at grazing angles, on textures far larger than the texture
+       cache, which is where the airport's surfaces sit. Owner A/B at the airport
+       with the pack: **16 drops into the 30 fps range, 4 shows no slowdown at
+       all.** The default is now **4** (`PS2X_TEXREPL_ANISO` overrides; 1
+       disables). This is why it never showed in the replay: it is GPU sampling
+       cost and the GPU is asynchronous, so the wall time is blind to it - a
+       useful lesson for the next GPU-bound hunt.
    - **T4 mirror tables (2026-10-16).** `WriteT4Tile` ran 512 iterations per
      256-byte block, each doing two `(x, y)` table lookups and two
      `y * srcRowBytes` multiplies. The destination byte's two nibbles come from
