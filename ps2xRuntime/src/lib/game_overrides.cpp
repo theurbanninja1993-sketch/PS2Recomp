@@ -390,7 +390,9 @@ namespace
     // Whether the player is driving: the player ped (found through one of a
     // few static pointers, validated by the back-pointer) points to its vehicle
     // at +0x480, and the vehicle points back to its driver at +0x384.
-    bool vcsPlayerInVehicle(const uint8_t *rdram)
+    // The player's vehicle, or 0. Found through a few static ped pointers and
+    // validated by the vehicle's back-pointer to its driver.
+    uint32_t findPlayerVehicle(const uint8_t *rdram)
     {
         auto read32 = [rdram](uint32_t address) -> uint32_t
         {
@@ -407,55 +409,61 @@ namespace
                 continue;
             const uint32_t vehicle = read32(ped + 0x480u);
             if (vehicle != 0u && read32(vehicle + 0x384u) == ped)
+                return vehicle;
+        }
+        return 0u;
+    }
+
+    bool vcsPlayerInVehicle(const uint8_t *rdram)
+    {
+        const uint32_t vehicle = findPlayerVehicle(rdram);
+        if (vehicle == 0u)
+            return false;
+        // PS2X_THROTTLE_SCAN=1: dump the vehicle's state while driving so the
+        // gas-pedal field can be found from a real drive (hold the trigger,
+        // release, hold again). Written to throttle_scan.txt in the config
+        // folder and the working directory, like padlog.txt.
+        if (std::getenv("PS2X_THROTTLE_SCAN") != nullptr)
+        {
+            static uint64_t s_last = 0;
+            const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
+            if (frame >= s_last + 30u)
             {
-                // PS2X_THROTTLE_SCAN=1: dump the vehicle's state while driving so
-                // the gas-pedal field can be found from a real drive (hold the
-                // trigger, release, hold again). Written to throttle_scan.txt in
-                // the config folder and the working directory, like padlog.txt.
-                if (std::getenv("PS2X_THROTTLE_SCAN") != nullptr)
+                s_last = frame;
+                static FILE *s_file = std::fopen("throttle_scan.txt", "a");
+                static FILE *s_config = []() -> FILE *
                 {
-                    static uint64_t s_last = 0;
-                    const uint64_t frame = g_ps2PresentedFrameCounter.load(std::memory_order_relaxed);
-                    if (frame >= s_last + 30u)
-                    {
-                        s_last = frame;
-                        static FILE *s_file = std::fopen("throttle_scan.txt", "a");
-                        static FILE *s_config = []() -> FILE *
-                        {
-                            const std::filesystem::path path =
-                                std::filesystem::path(ps2HostSettingsPath()).parent_path() / "throttle_scan.txt";
-                            return std::fopen(path.string().c_str(), "a");
-                        }();
-                        static bool s_noted = false;
-                        if (!s_noted)
-                        {
-                            s_noted = true;
-                            std::fprintf(stderr, "[thr] writing throttle_scan.txt (config folder + working directory)\n");
-                        }
-                        std::string line = "[thr] f=" + std::to_string(frame) + " trig=" +
-                                           std::to_string(g_ps2PadTriggerRight.load(std::memory_order_relaxed)) +
-                                           " veh=" + std::to_string(vehicle) + " ";
-                        char word[9];
-                        for (uint32_t off = 0; off < 0x700u; off += 4u)
-                        {
-                            uint32_t value = 0;
-                            std::memcpy(&value, rdram + vehicle + off, 4);
-                            std::snprintf(word, sizeof word, "%08x", value);
-                            line += word;
-                        }
-                        line += "\n";
-                        for (FILE *sink : {s_file, s_config})
-                            if (sink != nullptr)
-                            {
-                                std::fputs(line.c_str(), sink);
-                                std::fflush(sink);
-                            }
-                    }
+                    const std::filesystem::path path =
+                        std::filesystem::path(ps2HostSettingsPath()).parent_path() / "throttle_scan.txt";
+                    return std::fopen(path.string().c_str(), "a");
+                }();
+                static bool s_noted = false;
+                if (!s_noted)
+                {
+                    s_noted = true;
+                    std::fprintf(stderr, "[thr] writing throttle_scan.txt (config folder + working directory)\n");
                 }
-                return true;
+                std::string line = "[thr] f=" + std::to_string(frame) + " trig=" +
+                                   std::to_string(g_ps2PadTriggerRight.load(std::memory_order_relaxed)) +
+                                   " veh=" + std::to_string(vehicle) + " ";
+                char word[9];
+                for (uint32_t off = 0; off < 0x700u; off += 4u)
+                {
+                    uint32_t value = 0;
+                    std::memcpy(&value, rdram + vehicle + off, 4);
+                    std::snprintf(word, sizeof word, "%08x", value);
+                    line += word;
+                }
+                line += "\n";
+                for (FILE *sink : {s_file, s_config})
+                    if (sink != nullptr)
+                    {
+                        std::fputs(line.c_str(), sink);
+                        std::fflush(sink);
+                    }
             }
         }
-        return false;
+        return true;
     }
 
     // Whether the game's pause menu / map is open. 0x004CD2AC is the pause
@@ -2090,6 +2098,34 @@ namespace
         g_vcsOrigFrameUpdate(rdram, ctx, runtime);
     }
 
+    // The game's own accelerator is a button: its control update writes the
+    // vehicle's gas pedal as 0 or 1. Wrapping that update lets the pad's
+    // triggers drive the pedal as a real amount instead, which the vehicle's
+    // physics then uses exactly as it always did - no pulsing. Only the player's
+    // vehicle is touched. Off unless Controls' "Analog throttle" is on.
+    PS2Runtime::RecompiledFunction g_vcsOrigVehicleControl = nullptr;
+
+    void vcsVehicleControl(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (g_vcsOrigVehicleControl != nullptr)
+            g_vcsOrigVehicleControl(rdram, ctx, runtime);
+        if (!ps2HostSettings().analogThrottle)
+            return;
+        const uint32_t vehicle = findPlayerVehicle(rdram);
+        if (vehicle == 0u)
+            return;
+        // The vehicle's control block: gas pedal at +0x66C, brake at +0x670.
+        // FUN_001b8a68 writes them (from the button) and FUN_001b9360 /
+        // FUN_001ba600 read them as floats.
+        const auto writePedal = [rdram, vehicle](uint32_t offset, float value)
+        {
+            if (vehicle + offset + 4u <= PS2_RAM_SIZE)
+                std::memcpy(rdram + vehicle + offset, &value, 4);
+        };
+        writePedal(0x66Cu, g_ps2PadTriggerRight.load(std::memory_order_relaxed));
+        writePedal(0x670u, g_ps2PadTriggerLeft.load(std::memory_order_relaxed));
+    }
+
     void applyGtaVcsUs(PS2Runtime &runtime)
     {
         if ((g_vcsOrigFollowPedCam = runtime.lookupFunction(0x0029DAB0u)))
@@ -2100,6 +2136,8 @@ namespace
             runtime.replaceFunction(0x002A2ED0u, &vcsAfterCamProcess);
         if ((g_vcsOrigFrameUpdate = runtime.lookupFunction(0x001B4688u)))
             runtime.replaceFunction(0x001B4688u, &vcsFrameUpdate);
+        if ((g_vcsOrigVehicleControl = runtime.lookupFunction(0x001B8A68u)))
+            runtime.replaceFunction(0x001B8A68u, &vcsVehicleControl);
         if ((g_vcsOrigSetViewWindow = runtime.lookupFunction(0x0018F2D8u)))
             runtime.replaceFunction(0x0018F2D8u, &vcsSetViewWindow);
         if ((g_vcsOrigSetFarClip = runtime.lookupFunction(0x0018F400u)))
