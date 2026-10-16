@@ -11,6 +11,7 @@
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_gpu_backend.h" // g_gsGpuPresent*: present readback cap
+#include "runtime/ps2_camera.h"
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
 #include "Kernel/Stubs/Audio.h"
@@ -3570,7 +3571,10 @@ void PS2Runtime::run()
                     std::cerr << "[interp] f=" << s_hostFrame << " picture=" << (newPicture ? 1 : 0)
                               << " synth=" << (drewSynth ? 1 : 0) << " phase=" << synthPhase
                               << " draw=" << presentDraw.id << " size=" << presentWidth << "x" << presentHeight
-                              << " screen=" << GetScreenWidth() << "x" << GetScreenHeight() << std::endl;
+                              << " screen=" << GetScreenWidth() << "x" << GetScreenHeight()
+                              << " camValid=" << g_ps2Camera.valid << " camPos=" << g_ps2Camera.pos[0] << ","
+                              << g_ps2Camera.pos[1] << "," << g_ps2Camera.pos[2] << " camFront=" << g_ps2Camera.front[0]
+                              << "," << g_ps2Camera.front[1] << "," << g_ps2Camera.front[2] << std::endl;
             }
         }
         BeginDrawing();
