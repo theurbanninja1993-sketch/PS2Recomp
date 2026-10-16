@@ -3474,7 +3474,8 @@ void PS2Runtime::run()
         // times a second, so the interpolation's pair of composed frames goes
         // stale between them and the screen freezes on the last composable
         // frame. Gameplay is where the interpolation belongs anyway.
-        const bool inCutscene = ps2_game_overrides::isInCutscene(m_memory.getRDRAM());
+        static const bool s_interpInCutscene = std::getenv("PS2X_INTERP_IN_CUTSCENE") != nullptr;
+        const bool inCutscene = ps2_game_overrides::isInCutscene(m_memory.getRDRAM()) && !s_interpInCutscene;
         const bool interp = !s_interpOff && !inCutscene &&
                             (s_forceInterp || g_gsFrameRate.load(std::memory_order_relaxed) > 60u);
         // Tell the renderer, so it builds the overlay mask: a synthesized frame

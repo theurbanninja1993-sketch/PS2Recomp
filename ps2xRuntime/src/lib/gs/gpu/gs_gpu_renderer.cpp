@@ -3747,7 +3747,10 @@ void main()
                               << std::endl;
                 };
                 report(m_prevComposedTexture, m_prevComposedWidth, m_prevComposedHeight, "source");
-                report(m_synthTexture[m_synthIndex], w, hgt, "synth ");
+                // The synthesized texture is at the draw size now, not the
+                // composed size - reading it at the composed size returned a
+                // GL error and a zero buffer, which read as "black".
+                report(m_synthTexture[m_synthIndex], rw, rh, "synth ");
             }
         }
         outWidth = rw;
