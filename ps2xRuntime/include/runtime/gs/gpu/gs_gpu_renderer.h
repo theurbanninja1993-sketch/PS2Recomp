@@ -341,6 +341,10 @@ namespace gsgpu
         bool m_interpHavePrev = false;
         GLuint m_lastComposedTexture = 0;
         uint32_t m_lastComposedWidth = 0, m_lastComposedHeight = 0;
+        // The picture composed before the newest one: the source the
+        // interpolation warps between the previous and current pictures.
+        GLuint m_prevComposedTexture = 0, m_prevComposedFramebuffer = 0;
+        uint32_t m_prevComposedWidth = 0, m_prevComposedHeight = 0;
         Program m_synth;
         // A ring, not a pair. The host *queues* its draws, so several synthesized
         // frames can be in flight at once: at 240 there are three per picture, and

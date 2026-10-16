@@ -2036,14 +2036,14 @@ void main()
                 const char *env = std::getenv("PS2X_FRAME_INTERP_TEST_FRAME");
                 return env ? std::strtoull(env, nullptr, 10) : 45ull;
             }();
-            if (s_interpTest && m_presentIndex == s_testFrame && m_lastComposedTexture != 0)
+            if (s_interpTest && m_presentIndex == s_testFrame && m_prevComposedTexture != 0)
             {
-                const uint32_t w = m_lastComposedWidth, h = m_lastComposedHeight;
+                const uint32_t w = m_prevComposedWidth, h = m_prevComposedHeight;
                 std::vector<uint8_t> before(static_cast<size_t>(w) * h * 4u, 0u);
                 GL &gl = m_context.gl;
                 gl.glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
                 gl.glPixelStorei(GL_PACK_ALIGNMENT, 4);
-                gl.glGetTextureSubImage(m_lastComposedTexture, 0, 0, 0, 0, static_cast<GLsizei>(w),
+                gl.glGetTextureSubImage(m_prevComposedTexture, 0, 0, 0, 0, static_cast<GLsizei>(w),
                                         static_cast<GLsizei>(h), 1, GL_RGBA, GL_UNSIGNED_BYTE,
                                         static_cast<GLsizei>(before.size()), before.data());
                 uint32_t sw = 0, sh = 0;
@@ -3488,12 +3488,12 @@ void main()
         return s_setting;
     }
 
-    // The camera the constant motion between prev and cur predicts at fraction t
-    // past cur, and the homography from the current view to that predicted view.
-    // Used instead of blending (1+t)I - tH, which distorts the frame under a fast
-    // rotation: blending the identity with a rotation matrix in screen space is
-    // exact only to first order.
-    static bool extrapolateCameraHomography(const Ps2CameraState &prev, const Ps2CameraState &cur, float t,
+    // The camera at fraction t of the way from prev to cur, and the homography
+    // from the previous view to that camera. The synthesized frame is warped
+    // *between* the previous and current pictures, never beyond the newest one -
+    // extrapolating past it predicts the future, and a camera that accelerates
+    // makes the whole picture wobble around the static HUD.
+    static bool interpolateCameraHomography(const Ps2CameraState &prev, const Ps2CameraState &cur, float t,
                                             float depth, float out[9])
     {
         // Basis rows (right, up, front), the same convention as ps2CameraHomography.
@@ -3522,9 +3522,8 @@ void main()
         float Rp[9], Rc[9];
         if (!basis(prev, Rp) || !basis(cur, Rc))
             return false;
-        // S = Rp * Rc^T maps the current frame into the previous one, and the
-        // camera's step rotation is S^T. Interpolate that step by t around its
-        // axis and apply it past the current basis.
+        // S = Rp * Rc^T maps the current frame into the previous one; the
+        // camera's step from prev to cur is S^T. Walk t of that step from prev.
         float S[9];
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j)
@@ -3532,32 +3531,33 @@ void main()
         const float cosA = std::clamp((S[0] + S[4] + S[8] - 1.0f) * 0.5f, -1.0f, 1.0f);
         const float ang = std::acos(cosA);
         if (ang < 1e-4f)
-            return false; // barely moving: the linear blend is exact enough
+            return false; // barely moving: the blend below is exact enough
         const float s = 0.5f / std::sin(ang);
         const float ax = (S[7] - S[5]) * s, ay = (S[2] - S[6]) * s, az = (S[3] - S[1]) * s;
-        // The predicted camera at t: R = Rot(axis, -t*ang) * Rc.
+        // R = Rot(axis, -t*ang) * Rp
         const float th = -t * ang;
         const float c = std::cos(th), sn = std::sin(th), ic = 1.0f - c;
         const float Rot[9] = {c + ax * ax * ic,     ax * ay * ic - az * sn, ax * az * ic + ay * sn,
                               ay * ax * ic + az * sn, c + ay * ay * ic,      ay * az * ic - ax * sn,
                               az * ax * ic - ay * sn, az * ay * ic + ax * sn, c + az * az * ic};
-        float Re[9];
+        float Ri[9];
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j)
-                Re[i * 3 + j] = Rot[i * 3] * Rc[j] + Rot[i * 3 + 1] * Rc[3 + j] + Rot[i * 3 + 2] * Rc[6 + j];
-        Ps2CameraState ext = cur;
+                Ri[i * 3 + j] = Rot[i * 3] * Rp[j] + Rot[i * 3 + 1] * Rp[3 + j] + Rot[i * 3 + 2] * Rp[6 + j];
+        Ps2CameraState mid = prev;
         for (int i = 0; i < 3; ++i)
         {
-            ext.front[i] = Re[6 + i];
-            ext.up[i] = Re[3 + i];
-            ext.pos[i] = cur.pos[i] + t * (cur.pos[i] - prev.pos[i]);
+            mid.front[i] = Ri[6 + i];
+            mid.up[i] = Ri[3 + i];
+            mid.pos[i] = prev.pos[i] + t * (cur.pos[i] - prev.pos[i]);
         }
-        const Ps2CameraHomography hf = ps2CameraHomography(ext, cur, depth);
-        if (!hf.usable)
+        // (a, b) maps b -> a, so (mid, prev) maps prev -> mid: the warp we want.
+        const Ps2CameraHomography hm = ps2CameraHomography(mid, prev, depth);
+        if (!hm.usable)
             return false;
-        const float inv = hf.m[8] != 0.0f ? 1.0f / hf.m[8] : 1.0f;
+        const float inv = hm.m[8] != 0.0f ? 1.0f / hm.m[8] : 1.0f;
         for (int i = 0; i < 9; ++i)
-            out[i] = hf.m[i] * inv;
+            out[i] = hm.m[i] * inv;
         return true;
     }
 
@@ -3567,8 +3567,8 @@ void main()
     // Returns the texture, or 0 if it cannot make one.
     GLuint Renderer::synthesizeHostFrame(float phase, uint32_t &outWidth, uint32_t &outHeight)
     {
-        if (m_synth.id == 0 || m_lastComposedTexture == 0 || !m_interpHavePrev || !m_interpPrevCamera.valid ||
-            !m_interpCamera.valid || m_lastComposedWidth == 0 || m_lastComposedHeight == 0)
+        if (m_synth.id == 0 || m_prevComposedTexture == 0 || !m_interpHavePrev || !m_interpPrevCamera.valid ||
+            !m_interpCamera.valid || m_prevComposedWidth == 0 || m_prevComposedHeight == 0)
         {
             // PS2X_SYNTH_WHY=1: say which guard refused, so a synthesis that
             // silently does nothing can be told from one that never runs.
@@ -3577,7 +3577,7 @@ void main()
             {
                 static uint64_t s_n = 0;
                 if ((s_n++ % 60u) == 0u)
-                    std::cerr << "[gs] synth refused: program=" << m_synth.id << " lastComposed=" << m_lastComposedTexture
+                    std::cerr << "[gs] synth refused: program=" << m_synth.id << " prevComposed=" << m_prevComposedTexture
                               << " havePrev=" << m_interpHavePrev << " prevValid=" << m_interpPrevCamera.valid
                               << " curValid=" << m_interpCamera.valid << " size=" << m_lastComposedWidth << "x"
                               << m_lastComposedHeight << std::endl;
@@ -3590,32 +3590,31 @@ void main()
             const char *env = std::getenv("PS2X_BLUR_DEPTH");
             return env ? static_cast<float>(std::atof(env)) : 200.0f;
         }();
-        const Ps2CameraHomography h = ps2CameraHomography(m_interpPrevCamera, m_interpCamera, s_depth);
-        if (!h.usable)
-            return 0;
-
-        // The extrapolation: a point moves from its previous position toward its
-        // current one, so a fraction of a step past the current frame is
-        // (1 + phase)*p - phase*H*p. h.m is column-major, and H is only defined
-        // up to scale, so normalise by its bottom-right entry before blending.
+        // Interpolation: this frame shows the picture a fraction t of the way
+        // from the previous composed frame to the current one, warped by the
+        // interpolated camera. Extrapolation was tried first - warping past the
+        // newest picture - and the owner saw it: a camera that accelerates makes
+        // the prediction wrong, and the whole frame wobbles around the static
+        // HUD. Both endpoints are known here, so the positions are always right.
         const float t = std::clamp(phase, 0.0f, 1.0f);
-        // Extrapolate the camera itself rather than blending matrices: the
-        // linear blend is exact only to first order, and a fast turn makes the
-        // whole frame visibly distort. When the motion is too small to measure,
-        // fall back to the blend, which is exact enough there.
         float ext[9];
-        if (!extrapolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext))
+        if (!interpolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext))
         {
-            const float inv = h.m[8] != 0.0f ? 1.0f / h.m[8] : 1.0f;
+            // Barely moving: the linear blend between the two views is exact
+            // enough, and it needs no axis-angle path.
+            const Ps2CameraHomography hf = ps2CameraHomography(m_interpCamera, m_interpPrevCamera, s_depth);
+            if (!hf.usable)
+                return 0;
+            const float inv = hf.m[8] != 0.0f ? 1.0f / hf.m[8] : 1.0f;
             for (int i = 0; i < 9; ++i)
-                ext[i] = -t * h.m[i] * inv;
-            ext[0] += 1.0f + t;
-            ext[4] += 1.0f + t;
-            ext[8] += 1.0f + t;
+                ext[i] = t * hf.m[i] * inv;
+            ext[0] += 1.0f - t;
+            ext[4] += 1.0f - t;
+            ext[8] += 1.0f - t;
         }
 
         GL &gl = m_context.gl;
-        const uint32_t w = m_lastComposedWidth, hgt = m_lastComposedHeight;
+        const uint32_t w = m_prevComposedWidth, hgt = m_prevComposedHeight;
         if (m_synthTexture[0] == 0 || m_synthWidth < w || m_synthHeight < hgt)
         {
             for (int i = 0; i < kSynthRing; ++i)
@@ -3664,7 +3663,7 @@ void main()
         setUniform2f(p, uniform(p, "u_maskOrigin"), static_cast<float>(m_overlayMaskOriginX),
                      static_cast<float>(m_overlayMaskOriginY));
         setUniform1f(p, uniform(p, "u_maskValid"), maskValid ? 1.0f : 0.0f);
-        gl.glBindTextureUnit(0, m_lastComposedTexture);
+        gl.glBindTextureUnit(0, m_prevComposedTexture);
         gl.glBindTextureUnit(1, maskValid ? maskTarget->maskTexture : m_synthTexture[m_synthIndex]);
         bindFramebuffer(m_synthFramebuffer[m_synthIndex]);
         setViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(hgt));
@@ -3726,7 +3725,7 @@ void main()
                               << (n != 0u ? 100.0 * static_cast<double>(black) / static_cast<double>(n) : 0.0) << "%"
                               << std::endl;
                 };
-                report(m_lastComposedTexture, m_lastComposedWidth, m_lastComposedHeight, "source");
+                report(m_prevComposedTexture, m_prevComposedWidth, m_prevComposedHeight, "source");
                 report(m_synthTexture[m_synthIndex], w, hgt, "synth ");
             }
         }
@@ -4006,6 +4005,45 @@ void main()
             setUniform1f(p, uniform(p, "u_overlayToAlpha"), (reproject && overlayValid) ? 1.0f : 0.0f);
             setUniform1f(p, uniform(p, "u_overlayDebug"), s_overlayDebug ? 1.0f : 0.0f);
         }
+        // The frame about to be overwritten becomes the interpolation source:
+        // synthesized frames are warped between the previous picture and the
+        // current one, never beyond the newest.
+        static const bool s_interpTestKeep = std::getenv("PS2X_FRAME_INTERP_TEST") != nullptr;
+        if (g_gsFrameInterp.load(std::memory_order_relaxed) || s_interpTestKeep)
+        {
+            if (sharePresent)
+            {
+                m_prevComposedTexture = m_presentShared[m_presentSharedIndex];
+            }
+            else if (m_lastComposedTexture != 0)
+            {
+                if (m_prevComposedTexture == 0 || m_prevComposedWidth != width || m_prevComposedHeight != height)
+                {
+                    if (m_prevComposedTexture != 0)
+                    {
+                        gl.glDeleteFramebuffers(1, &m_prevComposedFramebuffer);
+                        gl.glDeleteTextures(1, &m_prevComposedTexture);
+                    }
+                    m_prevComposedWidth = width;
+                    m_prevComposedHeight = height;
+                    gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_prevComposedTexture);
+                    gl.glTextureStorage2D(m_prevComposedTexture, 1, GL_RGBA8, static_cast<GLsizei>(width),
+                                          static_cast<GLsizei>(height));
+                    gl.glTextureParameteri(m_prevComposedTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    gl.glTextureParameteri(m_prevComposedTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    gl.glCreateFramebuffers(1, &m_prevComposedFramebuffer);
+                    gl.glNamedFramebufferTexture(m_prevComposedFramebuffer, GL_COLOR_ATTACHMENT0,
+                                                 m_prevComposedTexture, 0);
+                    gl.glNamedFramebufferDrawBuffer(m_prevComposedFramebuffer, GL_COLOR_ATTACHMENT0);
+                }
+                gl.glBlitNamedFramebuffer(m_presentFramebuffer, m_prevComposedFramebuffer, 0, 0,
+                                          static_cast<GLint>(width), static_cast<GLint>(height), 0, 0,
+                                          static_cast<GLint>(width), static_cast<GLint>(height), GL_COLOR_BUFFER_BIT,
+                                          GL_NEAREST);
+            }
+            m_prevComposedWidth = width;
+            m_prevComposedHeight = height;
+        }
         const GLuint displayFramebuffer =
             sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer;
         if (reproject)
@@ -4188,6 +4226,12 @@ void main()
             gl.glDeleteFramebuffers(1, &m_synthReadbackFramebuffer);
             gl.glDeleteTextures(1, &m_synthReadbackTexture);
             m_synthReadbackTexture = m_synthReadbackFramebuffer = 0;
+        }
+        if (m_prevComposedTexture != 0)
+        {
+            gl.glDeleteFramebuffers(1, &m_prevComposedFramebuffer);
+            gl.glDeleteTextures(1, &m_prevComposedTexture);
+            m_prevComposedTexture = m_prevComposedFramebuffer = 0;
         }
     }
 

@@ -3476,7 +3476,12 @@ void PS2Runtime::run()
         g_gsFrameInterp.store(interp, std::memory_order_relaxed);
         bool drewSynth = false;
         float synthPhase = -1.0f;
-        if (interp && !newPicture)
+        // Every frame is synthesized when interpolating: the display runs one
+        // picture behind the game, and each host frame shows the position
+        // between the previous picture and the current one. The phase sweeps
+        // 0 -> 1 across a picture interval, and at the picture itself it is
+        // near 1, which is exactly the newest picture - so the two agree.
+        if (interp)
         {
             // Where this host frame sits between the two pictures it is between,
             // as a *fraction of the picture interval* rather than a frame count:
