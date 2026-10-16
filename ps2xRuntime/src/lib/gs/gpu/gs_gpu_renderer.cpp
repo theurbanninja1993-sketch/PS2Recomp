@@ -26,6 +26,22 @@ namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<uint64_t> g_gsComposedFrames{0}; // successful GPU composes, for the interp log
+
+    // Anisotropic filtering for replacement textures. 16 taps per sample at
+    // grazing angles is a real cost on HD textures; PS2X_TEXREPL_ANISO tests it
+    // (4 is where the quality plateaus for most art). The replay cannot measure
+    // GPU sampling cost - the GPU is asynchronous - so this is judged in
+    // gameplay.
+    static float replacementAniso()
+    {
+        static const float s_aniso = []()
+        {
+            const char *env = std::getenv("PS2X_TEXREPL_ANISO");
+            return env ? static_cast<float>(std::atof(env)) : 16.0f;
+        }();
+        return s_aniso;
+    }
+
 std::atomic<bool> g_gsMotionBlurOff{false};
 std::atomic<uint32_t> g_gsFrameRate{60};
 std::atomic<bool> g_gsFrameInterp{false};
@@ -2801,7 +2817,7 @@ void main()
                                            static_cast<GLsizei>(l.height), GL_RGBA, GL_UNSIGNED_BYTE, l.data.data());
             }
             gl.glTextureParameteri(texture, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(image.levels.size()) - 1);
-            gl.glTextureParameterf(texture, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, 16.0f);
+            gl.glTextureParameterf(texture, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, replacementAniso());
             it->second.texture = texture;
             ++m_statReplLoaded;
         }
@@ -3135,7 +3151,7 @@ void main()
                                                    GL_UNSIGNED_BYTE, l.data.data());
                     }
                     gl.glTextureParameteri(texture, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(image.levels.size()) - 1);
-                    gl.glTextureParameterf(texture, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, 16.0f);
+                    gl.glTextureParameterf(texture, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, replacementAniso());
                     replacement.texture = texture;
                     ++m_statReplLoaded;
                     hashed.resolved = true;
