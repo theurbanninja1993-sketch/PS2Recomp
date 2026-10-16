@@ -796,6 +796,7 @@ uniform vec3 u_warp1;
 uniform vec3 u_warp2;
 uniform vec2 u_size;
 uniform vec2 u_maskOrigin; // where the composed rect starts in the mask texture
+uniform vec2 u_maskCoordScale; // mask texels per output texel (1 when full size)
 uniform float u_maskValid;
 out vec4 o_color;
 void main()
@@ -810,7 +811,7 @@ void main()
     float mask = 0.0;
     if (u_maskValid > 0.5)
     {
-        ivec2 mp = ivec2(u_maskOrigin) + ivec2(gl_FragCoord.xy);
+        ivec2 mp = ivec2(u_maskOrigin) + ivec2(gl_FragCoord.xy * u_maskCoordScale);
         mask = min(min(min(texelFetch(u_mask, mp, 0).r, texelFetch(u_mask, mp + ivec2(1, 0), 0).r),
                        texelFetch(u_mask, mp + ivec2(-1, 0), 0).r),
                    min(texelFetch(u_mask, mp + ivec2(0, 1), 0).r,
@@ -3616,7 +3617,24 @@ void main()
 
         GL &gl = m_context.gl;
         const uint32_t w = m_prevComposedWidth, hgt = m_prevComposedHeight;
-        if (m_synthTexture[0] == 0 || m_synthWidth < w || m_synthHeight < hgt)
+        // Render the warp at the size the host will draw it, not at the composed
+        // size: at internal scale 4 that is a 7x smaller pass, and 180 of these
+        // a second stalled the game's own GS feeding during cutscenes. The warp
+        // works in normalised coordinates, so only the sampling grid changes.
+        uint32_t rw = w, rh = hgt;
+        if (!(m_context.sharedWithHost() && presentShareSetting() == 1))
+        {
+            const uint32_t hostWidth = g_gsGpuPresentWidth.load(std::memory_order_relaxed);
+            const uint32_t hostHeight = g_gsGpuPresentHeight.load(std::memory_order_relaxed);
+            if (hostWidth != 0u && hostHeight != 0u && hostWidth < w && hostHeight < hgt)
+            {
+                const double fit = std::min(static_cast<double>(hostWidth) / static_cast<double>(w),
+                                            static_cast<double>(hostHeight) / static_cast<double>(hgt));
+                rw = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(w) * fit) & ~1u);
+                rh = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(hgt) * fit) & ~1u);
+            }
+        }
+        if (m_synthTexture[0] == 0 || m_synthWidth < rw || m_synthHeight < rh)
         {
             for (int i = 0; i < kSynthRing; ++i)
             {
@@ -3627,8 +3645,8 @@ void main()
                     m_synthTexture[i] = m_synthFramebuffer[i] = 0;
                 }
             }
-            m_synthWidth = std::max(m_synthWidth, w);
-            m_synthHeight = std::max(m_synthHeight, hgt);
+            m_synthWidth = std::max(m_synthWidth, rw);
+            m_synthHeight = std::max(m_synthHeight, rh);
             for (int i = 0; i < kSynthRing; ++i)
             {
                 gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_synthTexture[i]);
@@ -3660,14 +3678,16 @@ void main()
         setUniform3f(p, uniform(p, "u_warp0"), ext[0], ext[1], ext[2]);
         setUniform3f(p, uniform(p, "u_warp1"), ext[3], ext[4], ext[5]);
         setUniform3f(p, uniform(p, "u_warp2"), ext[6], ext[7], ext[8]);
-        setUniform2f(p, uniform(p, "u_size"), static_cast<float>(w), static_cast<float>(hgt));
+        setUniform2f(p, uniform(p, "u_size"), static_cast<float>(rw), static_cast<float>(rh));
         setUniform2f(p, uniform(p, "u_maskOrigin"), static_cast<float>(m_overlayMaskOriginX),
                      static_cast<float>(m_overlayMaskOriginY));
+        setUniform2f(p, uniform(p, "u_maskCoordScale"), static_cast<float>(w) / static_cast<float>(rw),
+                     static_cast<float>(hgt) / static_cast<float>(rh));
         setUniform1f(p, uniform(p, "u_maskValid"), maskValid ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, m_prevComposedTexture);
         gl.glBindTextureUnit(1, maskValid ? maskTarget->maskTexture : m_synthTexture[m_synthIndex]);
         bindFramebuffer(m_synthFramebuffer[m_synthIndex]);
-        setViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(hgt));
+        setViewport(0, 0, static_cast<GLsizei>(rw), static_cast<GLsizei>(rh));
         setScissorTest(false);
         setBlend(false);
         setDepthTest(false);
@@ -3730,58 +3750,9 @@ void main()
                 report(m_synthTexture[m_synthIndex], w, hgt, "synth ");
             }
         }
-        // The host draws the composed picture from the readback path at a size
-        // fitted to the window. If the synthesized frame is handed over at the
-        // composed size, the two kinds of frame are resampled differently - the
-        // picture near 1:1, the synthesized frame downscaled two or three times -
-        // and the whole screen pulses between the two. Downscale the same way the
-        // present path does, so both are drawn at the same size.
-        GLuint outTex = m_synthTexture[m_synthIndex];
-        uint32_t outW = w, outH = hgt;
-        if (!(m_context.sharedWithHost() && presentShareSetting() == 1))
-        {
-            const uint32_t hostWidth = g_gsGpuPresentWidth.load(std::memory_order_relaxed);
-            const uint32_t hostHeight = g_gsGpuPresentHeight.load(std::memory_order_relaxed);
-            if (hostWidth != 0u && hostHeight != 0u && hostWidth < w && hostHeight < hgt)
-            {
-                const double fit = std::min(static_cast<double>(hostWidth) / static_cast<double>(w),
-                                            static_cast<double>(hostHeight) / static_cast<double>(hgt));
-                const uint32_t rw = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(w) * fit) & ~1u);
-                const uint32_t rh = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(hgt) * fit) & ~1u);
-                if (m_synthReadbackTexture == 0 || m_synthReadbackWidth < rw || m_synthReadbackHeight < rh)
-                {
-                    if (m_synthReadbackTexture != 0)
-                    {
-                        gl.glDeleteFramebuffers(1, &m_synthReadbackFramebuffer);
-                        gl.glDeleteTextures(1, &m_synthReadbackTexture);
-                    }
-                    m_synthReadbackWidth = std::max(m_synthReadbackWidth, rw);
-                    m_synthReadbackHeight = std::max(m_synthReadbackHeight, rh);
-                    gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_synthReadbackTexture);
-                    gl.glTextureStorage2D(m_synthReadbackTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_synthReadbackWidth),
-                                          static_cast<GLsizei>(m_synthReadbackHeight));
-                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                    gl.glCreateFramebuffers(1, &m_synthReadbackFramebuffer);
-                    gl.glNamedFramebufferTexture(m_synthReadbackFramebuffer, GL_COLOR_ATTACHMENT0,
-                                                 m_synthReadbackTexture, 0);
-                    gl.glNamedFramebufferDrawBuffer(m_synthReadbackFramebuffer, GL_COLOR_ATTACHMENT0);
-                }
-                gl.glBlitNamedFramebuffer(m_synthFramebuffer[m_synthIndex], m_synthReadbackFramebuffer, 0, 0,
-                                          static_cast<GLint>(w), static_cast<GLint>(hgt), 0, 0, static_cast<GLint>(rw),
-                                          static_cast<GLint>(rh), GL_COLOR_BUFFER_BIT, GL_LINEAR);
-                gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
-                gl.glFlush();
-                outTex = m_synthReadbackTexture;
-                outW = rw;
-                outH = rh;
-            }
-        }
-        outWidth = outW;
-        outHeight = outH;
-        return outTex;
+        outWidth = rw;
+        outHeight = rh;
+        return m_synthTexture[m_synthIndex];
     }
 
     void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
