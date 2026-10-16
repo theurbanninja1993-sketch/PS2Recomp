@@ -3525,6 +3525,13 @@ void main()
         // shared present path does the same thing for the same reason.
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
         gl.glFlush();
+        // PS2X_SYNTH_FINISH=1: wait for the GPU to actually finish, not just for
+        // the commands to be submitted. If that fixes the flicker, the host's draw
+        // was executing before the writes landed - a deeper ring only widens that
+        // window, it does not close it.
+        static const bool s_finish = std::getenv("PS2X_SYNTH_FINISH") != nullptr;
+        if (s_finish)
+            gl.glFinish();
         // PS2X_SYNTH_CHECK=1: sample the middle of what was just written and
         // complain if it is black. The renderer reporting on its own output is the
         // only reliable view - a host-side screenshot races the swap.
