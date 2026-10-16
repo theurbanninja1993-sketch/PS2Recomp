@@ -13,9 +13,114 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <string>
+#include <vector>
+
+namespace
+{
+    // The knows-good boot files, so a disc can be named rather than just hashed.
+    std::string gameForHash(const std::string &hash)
+    {
+        if (hash == "7f69b961cc427e3dcfd6582e25362be8")
+            return "Grand Theft Auto: Vice City Stories";
+        if (hash == "3d2280cadf1a74ce39e121d1ea6941b2")
+            return "Grand Theft Auto: Liberty City Stories";
+        return {};
+    }
+
+    bool hashBootFile(ps2x::IsoImage &image, std::string &hash, std::string &error)
+    {
+        const std::string path = "/" + ps2x::isoBootFile(image);
+        const ps2x::IsoEntry *entry = image.find(path);
+        std::vector<uint8_t> data;
+        if (!entry || !image.readFile(*entry, data, error))
+        {
+            error = "can't read " + path;
+            return false;
+        }
+        const XXH128_hash_t h = XXH3_128bits(data.data(), data.size());
+        char text[40];
+        std::snprintf(text, sizeof text, "%016" PRIx64 "%016" PRIx64, h.high64, h.low64);
+        hash = text;
+        return true;
+    }
+
+    int checkIso(const std::string &source, bool wait)
+    {
+        std::printf("ps2x_iso - disc check\n=====================\n\n");
+
+        std::vector<std::string> sources;
+        if (source.empty())
+        {
+            sources = ps2x::opticalDrives();
+            if (sources.empty())
+            {
+                std::printf("No optical drive found.\n\n"
+                            "No CD/DVD device was reported. Worth checking:\n"
+                            "  - the drive is plugged in and switched on;\n"
+                            "  - a disc is in it (give it a few seconds to spin up);\n"
+                            "  - the system shows the drive (Explorer with a letter,\n"
+                            "    or /dev/sr* on Linux).\n");
+            }
+            else
+            {
+                std::printf("Optical drive%s found:", sources.size() > 1 ? "s" : "");
+                for (const std::string &drive : sources)
+                    std::printf(" %s", drive.c_str());
+                std::printf("\n");
+            }
+        }
+        else
+        {
+            sources.push_back(source);
+        }
+
+        for (const std::string &item : sources)
+        {
+            std::printf("\n--- %s\n", item.c_str());
+            ps2x::IsoImage image;
+            std::string error;
+            if (!image.open(item, error))
+            {
+                std::printf("    %s\n", error.c_str());
+                continue;
+            }
+            size_t files = 0;
+            for (const auto &entry : image.entries())
+                files += entry.directory ? 0u : 1u;
+            std::printf("    volume: %s\n    boot:   %s\n    files:  %zu\n    bytes:  %" PRIu64 "\n",
+                        image.volumeId().c_str(), ps2x::isoBootFile(image).c_str(), files, image.totalFileBytes());
+
+            std::string hash;
+            if (!hashBootFile(image, hash, error))
+            {
+                std::printf("    %s\n", error.c_str());
+                continue;
+            }
+            std::printf("    boot hash: %s\n", hash.c_str());
+            const std::string game = gameForHash(hash);
+            std::printf("    %s\n", game.empty() ? "This is a PS2 disc, but not one of the two games this is for."
+                                                 : ("Recognised: " + game).c_str());
+        }
+
+        if (wait)
+        {
+            std::printf("\nDone. Press Enter to close.\n");
+            std::fflush(stdout);
+            std::getchar();
+        }
+        return 0;
+    }
+}
 
 int main(int argc, char **argv)
 {
+    // No arguments at all: check whatever disc is in the drive and wait at the
+    // end, so double-clicking it from Explorer is enough.
+    if (argc < 2)
+        return checkIso({}, true);
+    if (argc >= 2 && std::string(argv[1]) == "check")
+        return checkIso(argc > 2 ? argv[2] : std::string{}, false);
     if (argc >= 2 && std::string(argv[1]) == "drives")
     {
         for (const std::string &drive : ps2x::opticalDrives())
