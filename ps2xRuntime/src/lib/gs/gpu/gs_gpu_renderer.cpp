@@ -3797,9 +3797,25 @@ void main()
         // When every enabled circuit reads a buffer the GPU drew, compose
         // the display from the targets at full resolution (the CPU path's
         // merge); anything else is left to the CPU composition.
+        // When the GPU cannot compose this picture (the FMV movies and some
+        // cutscenes draw in a way the CPU path handles), the composed pair the
+        // interpolation warps between goes stale - and with the display one
+        // picture behind, that would freeze the screen on the last composable
+        // picture while the movie's audio keeps playing. Drop the pair so the
+        // host falls back to the raw picture, and require two fresh composes
+        // before interpolating again.
+        const auto dropInterpSource = [&]()
+        {
+            m_lastComposedTexture = 0;
+            m_prevComposedTexture = 0;
+            m_interpHavePrev = false;
+        };
         static const bool s_fieldBob = std::getenv("PS2X_FIELD_BOB") != nullptr;
         if (s_fieldBob)
+        {
+            dropInterpSource();
             return;
+        }
         struct Circuit
         {
             Target *target = nullptr;
@@ -3836,12 +3852,18 @@ void main()
         Circuit c1, c2;
         if ((crt1 && !circuit(request.dispfb1, request.display1, c1)) ||
             (crt2 && !circuit(request.dispfb2, request.display2, c2)) || (!crt1 && !crt2))
+        {
+            dropInterpSource();
             return;
+        }
         // A game-specific display source substitution (see GS frontend) is
         // the CPU path's.
         if (request.hasPreferredSource && !(crt1 && crt2) &&
             request.preferredDestFbp == (crt1 ? c1 : c2).target->block / 32u)
+        {
+            dropInterpSource();
             return;
+        }
 
         GL &gl = m_context.gl;
         const uint32_t s = m_scale;
@@ -4011,7 +4033,7 @@ void main()
         static const bool s_interpTestKeep = std::getenv("PS2X_FRAME_INTERP_TEST") != nullptr;
         if (g_gsFrameInterp.load(std::memory_order_relaxed) || s_interpTestKeep)
         {
-            if (sharePresent)
+            if (sharePresent && m_lastComposedTexture != 0)
             {
                 m_prevComposedTexture = m_presentShared[m_presentSharedIndex];
             }
