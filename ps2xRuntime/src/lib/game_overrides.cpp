@@ -2134,6 +2134,21 @@ namespace
         };
         const float gas = g_ps2PadTriggerRight.load(std::memory_order_relaxed);
         const float brake = g_ps2PadTriggerLeft.load(std::memory_order_relaxed);
+        // A real hand on a trigger is jittery (and the axis is quantised): a held
+        // "steady" pull wanders over a band of a tenth or more. The game's own
+        // pedal model smoothed that away; writing the raw value straight to the
+        // physics hands it over instead, which is felt as the car surging. Filter
+        // it the way the game would have. PS2X_PAD_PEDAL_SMOOTH overrides the
+        // coefficient (0..1, higher = quicker).
+        static const float s_smoothing = []()
+        {
+            const char *env = std::getenv("PS2X_PAD_PEDAL_SMOOTH");
+            const float value = env != nullptr ? std::strtof(env, nullptr) : 0.12f;
+            return std::clamp(value, 0.01f, 1.0f);
+        }();
+        static float s_smoothGas = 0.0f, s_smoothBrake = 0.0f;
+        s_smoothGas += (gas - s_smoothGas) * s_smoothing;
+        s_smoothBrake += (brake - s_smoothBrake) * s_smoothing;
         if (std::getenv("PS2X_THROTTLE_TRACE") != nullptr)
         {
             static FILE *s_file = std::fopen("throttle_trace.txt", "a");
@@ -2144,10 +2159,12 @@ namespace
                 return std::fopen(path.string().c_str(), "a");
             }();
             char line[256];
-            std::snprintf(line, sizeof line, "[tr] f=%llu %s gas_was=%.3f gas=%.3f brake_was=%.3f brake=%.3f\n",
+            std::snprintf(line, sizeof line,
+                          "[tr] f=%llu %s gas_was=%.3f gas=%.3f smooth=%.3f brake_was=%.3f brake=%.3f\n",
                           (unsigned long long)g_ps2PresentedFrameCounter.load(std::memory_order_relaxed),
                           tag, static_cast<double>(readFloat(0x66Cu)), static_cast<double>(gas),
-                          static_cast<double>(readFloat(0x670u)), static_cast<double>(brake));
+                          static_cast<double>(s_smoothGas), static_cast<double>(readFloat(0x670u)),
+                          static_cast<double>(brake));
             for (FILE *sink : {s_file, s_config})
                 if (sink != nullptr)
                 {
@@ -2155,8 +2172,8 @@ namespace
                     std::fflush(sink);
                 }
         }
-        writePedal(0x66Cu, gas);
-        writePedal(0x670u, brake);
+        writePedal(0x66Cu, s_smoothGas);
+        writePedal(0x670u, s_smoothBrake);
     }
 
     PS2Runtime::RecompiledFunction g_vcsOrigPedalReadA = nullptr;
