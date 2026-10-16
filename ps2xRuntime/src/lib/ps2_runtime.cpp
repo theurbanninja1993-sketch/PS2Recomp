@@ -67,6 +67,10 @@ void ps2IopRpcHistogram(char *out, size_t size)
 #include "ps2x/iop/iop_subsystem.h"
 
 #include <iostream>
+
+// raylib's rlgl texture readback. rlgl.h is not on this file's include path, and
+// the symbol is exported with C linkage, so declare it here.
+extern "C" void *rlReadTexturePixels(unsigned int id, int width, int height, int format);
 #include <stdexcept>
 #include <fstream>
 #include <algorithm>
@@ -3497,6 +3501,39 @@ void PS2Runtime::run()
                 presentDraw = s_synth;
                 presentWidth = synthWidth;
                 presentHeight = synthHeight;
+                // PS2X_SYNTH_HOST_CHECK=1: read the synthesized texture back
+                // from *this* context and report how dark it is. The renderer
+                // reads it from its own context and never sees black; if the host
+                // does, the two contexts are not ordered and the host is sampling
+                // before the renderer's writes have landed.
+                static const bool s_hostCheck = std::getenv("PS2X_SYNTH_HOST_CHECK") != nullptr;
+                if (s_hostCheck)
+                {
+                    void *px = rlReadTexturePixels(synthTexture, static_cast<int>(synthWidth),
+                                                   static_cast<int>(synthHeight), PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                    if (px != nullptr)
+                    {
+                        const uint8_t *p = static_cast<const uint8_t *>(px);
+                        const size_t n = static_cast<size_t>(synthWidth) * synthHeight;
+                        uint64_t sum = 0;
+                        for (size_t i = 0; i < n; ++i)
+                            sum += p[i * 4u] + p[i * 4u + 1u] + p[i * 4u + 2u];
+                        const double mean = n != 0u ? static_cast<double>(sum) / static_cast<double>(n * 3u) : 0.0;
+                        static uint64_t s_black = 0, s_total = 0;
+                        static double s_meanSum = 0.0;
+                        ++s_total;
+                        s_meanSum += mean;
+                        if (mean < 4.0)
+                            ++s_black;
+                        if ((s_total % 240u) == 0u)
+                        {
+                            std::cerr << "[gs] HOST synth check: black " << s_black << " of " << s_total
+                                      << ", mean brightness " << (s_meanSum / static_cast<double>(s_total))
+                                      << std::endl;
+                        }
+                        std::free(px);
+                    }
+                }
             }
         }
 

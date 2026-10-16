@@ -3532,28 +3532,47 @@ void main()
         static const bool s_finish = std::getenv("PS2X_SYNTH_FINISH") != nullptr;
         if (s_finish)
             gl.glFinish();
-        // PS2X_SYNTH_CHECK=1: sample the middle of what was just written and
-        // complain if it is black. The renderer reporting on its own output is the
-        // only reliable view - a host-side screenshot races the swap.
+        // PS2X_SYNTH_CHECK=1: every 60th synthesized frame, read back both the
+        // frame this one was warped from and the synthesized frame itself, and
+        // report how bright each is and how much of it is black. Three outcomes
+        // mean three different things:
+        //   source black, synth black  -> the composed frame was already black
+        //   source fine, synth black   -> the warp pass itself is producing black
+        //   both fine                  -> the renderer's output is right, so the
+        //                                 black is introduced after it, on the way
+        //                                 to the display
+        // The readback is synchronous, so this is a diagnostic and not a setting:
+        // it changes the very timing a race would depend on.
         static const bool s_check = std::getenv("PS2X_SYNTH_CHECK") != nullptr;
         if (s_check)
         {
-            const GLsizei cw = 16, ch = 16;
-            const GLint cx = static_cast<GLint>(w / 2u), cy = static_cast<GLint>(hgt / 2u);
-            uint8_t px[cw * ch * 4] = {};
-            gl.glPixelStorei(GL_PACK_ALIGNMENT, 1);
-            gl.glGetTextureSubImage(m_synthTexture[m_synthIndex], 0, cx, cy, 0, cw, ch, 1, GL_RGBA, GL_UNSIGNED_BYTE,
-                                    sizeof(px), px);
-            uint32_t sum = 0;
-            for (size_t i = 0; i + 3u < sizeof(px); i += 4u)
-                sum += px[i] + px[i + 1u] + px[i + 2u];
-            static uint64_t s_black = 0, s_total = 0;
-            ++s_total;
-            if (sum < 32u)
+            static uint64_t s_tick = 0;
+            if ((++s_tick % 60u) == 0u)
             {
-                ++s_black;
-                std::cerr << "[gs] synthesized frame is black (mid " << cx << "," << cy << "): " << s_black << " of "
-                          << s_total << std::endl;
+                auto report = [&](GLuint texture, uint32_t tw, uint32_t th, const char *what)
+                {
+                    if (texture == 0u || tw == 0u || th == 0u)
+                        return;
+                    std::vector<uint8_t> px(static_cast<size_t>(tw) * th * 4u, 0u);
+                    gl.glPixelStorei(GL_PACK_ALIGNMENT, 4);
+                    gl.glGetTextureSubImage(texture, 0, 0, 0, 0, static_cast<GLsizei>(tw), static_cast<GLsizei>(th), 1,
+                                            GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(px.size()), px.data());
+                    uint64_t sum = 0, black = 0;
+                    for (size_t i = 0; i + 3u < px.size(); i += 4u)
+                    {
+                        const uint32_t luma = px[i] + px[i + 1u] + px[i + 2u];
+                        sum += luma;
+                        if (luma < 12u)
+                            ++black;
+                    }
+                    const size_t n = static_cast<size_t>(tw) * th;
+                    std::cerr << "[gs] synth check " << what << " " << tw << "x" << th << ": mean brightness "
+                              << (n != 0u ? static_cast<double>(sum) / static_cast<double>(n * 3u) : 0.0) << ", black "
+                              << (n != 0u ? 100.0 * static_cast<double>(black) / static_cast<double>(n) : 0.0) << "%"
+                              << std::endl;
+                };
+                report(m_lastComposedTexture, m_lastComposedWidth, m_lastComposedHeight, "source");
+                report(m_synthTexture[m_synthIndex], w, hgt, "synth ");
             }
         }
         outWidth = w;
@@ -3926,6 +3945,10 @@ void main()
             }
         }
         m_targets.clear();
+        // m_overlayTarget points into m_targets, so it dangles the moment the
+        // targets are destroyed. The interpolation samples it, so a stale
+        // pointer there would be a read of freed memory.
+        m_overlayTarget = nullptr;
         if (m_feedbackTexture != 0)
             gl.glDeleteTextures(1, &m_feedbackTexture);
         m_feedbackTexture = 0;
