@@ -789,6 +789,10 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         const float value = env != nullptr ? std::strtof(env, nullptr) : 64.0f;
         return std::clamp(value, 8.0f, 255.0f);
     }();
+    // PS2X_PAD_ANALOG_THROTTLE=1: pulse the accelerate / brake buttons at the
+    // trigger's duty cycle, so a vehicle gets a proportional throttle out of a
+    // game whose own throttle is a button bit. See the trigger block below.
+    static const bool s_analogThrottle = std::getenv("PS2X_PAD_ANALOG_THROTTLE") != nullptr;
     auto clearBit = [&btns](uint16_t mask)
     { btns &= ~mask; };
     auto press = [&clearBit](int ps2Button)
@@ -877,6 +881,25 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 // A small deadzone counts as pressed, so the full travel feeds
                 // the pressure rather than only the upper half.
                 down = down || hostPressure[b] > 0.1f;
+                // Proportional throttle emulation. The game's throttle is the
+                // button bit: it reads the pressure only as a "pressed" flag
+                // (the poll does dest = min(pressure * 4, 255) and every use is
+                // a "!= 0" test), so a trigger cannot be made proportional by
+                // the pressure alone. Instead the bit is pulsed at a duty cycle
+                // matching the trigger's position - an error-diffusion
+                // accumulator, so the pulses stay evenly spread - and the
+                // vehicle's mass smooths them into an average.
+                if (s_analogThrottle && context == ps2controls::InVehicle && hostPressure[b] > 0.0f)
+                {
+                    static float s_pwmPhase[2] = {0.0f, 0.0f};
+                    float &phase = s_pwmPhase[trigger];
+                    phase += hostPressure[b];
+                    const bool on = phase >= 1.0f;
+                    if (on)
+                        phase -= 1.0f;
+                    down = on;
+                    hostPressure[b] = on ? 1.0f : 0.0f; // the game wants a flag
+                }
             }
             hostDown[b] = down;
             anyDown = anyDown || down;
