@@ -37,6 +37,24 @@ namespace
 {
     using namespace ps2controls;
 
+    // The prompts are runtime art, so their resolution is ours to choose. At the
+    // internal scale of 3x or 4x a 64 px prompt is stretched to two or three
+    // hundred pixels on screen and reads as low-res next to the rest of the UI
+    // (especially with a texture pack that upscales everything else). They are
+    // generated at the size the display actually needs instead; the game maps
+    // them onto its own quad with its own uv, so a larger texture costs nothing
+    // but memory. PS2X_PROMPT_ART_SIZE overrides it for testing.
+    int promptArtSize()
+    {
+        static const int s_size = []()
+        {
+            const char *env = std::getenv("PS2X_PROMPT_ART_SIZE");
+            const int size = env ? std::atoi(env) : 256;
+            return size >= 32 ? size : 256;
+        }();
+        return s_size;
+    }
+
     // ---------------------------------------------------------------- tables
     // Which PS2 button each shipped prompt texture shows (ps2controls order).
     struct TextureArt
@@ -206,7 +224,7 @@ namespace
             for (const char *path : kPaths)
                 if (FileExists(path))
                 {
-                    Font font = LoadFontEx(path, 64, codepoints, count);
+                    Font font = LoadFontEx(path, promptArtSize(), codepoints, count);
                     if (font.texture.id != 0)
                         return font;
                 }
@@ -476,6 +494,7 @@ namespace
         uint64_t h = 1469598103934665603ull;
         for (char c : set)
             mix(h, c);
+        mix(h, static_cast<uint64_t>(promptArtSize())); // a size change must rewrite the art
         if (set == "keyboard")
         {
             for (const TextureArt &t : kTextures)
@@ -582,7 +601,7 @@ bool ps2PromptArtRefreshIfNeeded()
 
     for (const TextureArt &t : kTextures)
     {
-        Image img = glyphFor(t.ps2Button, 64);
+        Image img = glyphFor(t.ps2Button, promptArtSize());
         if (img.data == nullptr)
             continue;
         toGsAlpha(img);
