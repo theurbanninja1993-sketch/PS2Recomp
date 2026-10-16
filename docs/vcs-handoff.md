@@ -1187,6 +1187,50 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       count and the game thread came down (state/uniform caches, VU0 compiled,
       the VBlank catch-up fix). Worth re-checking the headroom before starting.
 
+      **The black flicker, and what it actually was (2026-10-15).** Every
+      interpolated frame went black on screen, worse the higher the rate (more
+      synthesized frames), while the renderer's own readback said its output was
+      a faithful warp of the source. Five fixes were tried and none was the
+      cause: a deeper ring of synthesized textures, a `glFinish` after the
+      synthesis, enabling the overlay mask for interpolation, deriving the phase
+      from time, and pinning the phase. `glFinish` changing nothing was the clue
+      that it was not a timing or visibility race at all.
+
+      The cause was a *context* mistake. A synthesized frame is handed to the
+      host as a GL texture and drawn there, not read back - and that only works
+      if the renderer's context is in the window's share group. It never was.
+      `GS`'s constructor calls `reset()`, which called `m_backend->Flush()`,
+      which reached `execute()` and constructed the `Renderer` - whose
+      constructor creates the GL context. `GS` is a `PS2Runtime` member, so that
+      all happened at construction time, before `InitWindow()` had even run.
+      `GLContext::create` only tries the GLX share when `g_hostSharedGlContext`
+      is already published, so it silently fell back to an EGL surfaceless
+      context of its own (`[own context]` in the log) - and the host then drew a
+      texture *name* that means something else in its own context. Black.
+
+      Two changes fix it, both about ordering rather than GL: `GS::reset()` no
+      longer touches the backend until the GS is initialised
+      (`m_localMemoryStorage != nullptr`), and the renderer is created on the
+      first command instead of when the render thread starts.
+      `syncCoreSubsystems()` - which is what actually initialises the GS - then
+      moved after `publishHostGlContext()` in `PS2Runtime::initialize()`.
+
+      Verified on the same machine: the log now reads
+      `[shares the window's context]`, the present path is `shared texture`, and
+      the brightness the host actually puts on screen is 14.28 (synthesized) vs
+      13.90 (picture) - it was 4.04 vs 13.3. `PS2X_HOST_FRAMECHECK=1` measures
+      exactly that, averaged separately for the two kinds of frame; a readback
+      from the renderer's side cannot see this class of bug at all, because the
+      renderer's own context is always right.
+
+      **A side effect worth knowing:** sharing working also switches the present
+      path to the shared texture (no readback, no re-upload) whenever the
+      internal scale is above 1, which it always was on Windows. That path had
+      never actually run - sharing never worked - so it is worth a look at the
+      edges of the image. `PS2X_GS_PRESENT_SHARE=0` (`play-readback.sh`) forces
+      the old readback path for an A/B; measured here the two are visually
+      identical (0.56/255 mean difference, filtering only).
+
 ## Third-party assets (release-page credits)
 
 Both packs are by **AL2009man**, MIT-licensed, (c) 2024 Al. Lopez:

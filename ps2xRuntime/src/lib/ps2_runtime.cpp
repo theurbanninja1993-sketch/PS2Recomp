@@ -68,9 +68,11 @@ void ps2IopRpcHistogram(char *out, size_t size)
 
 #include <iostream>
 
+extern "C" unsigned char *rlReadScreenPixels(int width, int height);
+extern "C" void rlDrawRenderBatchActive(void);
+
 // raylib's rlgl texture readback. rlgl.h is not on this file's include path, and
 // the symbol is exported with C linkage, so declare it here.
-extern "C" void *rlReadTexturePixels(unsigned int id, int width, int height, int format);
 #include <stdexcept>
 #include <fstream>
 #include <algorithm>
@@ -1209,11 +1211,6 @@ bool PS2Runtime::initialize(const char *title)
             return false;
         }
 
-        if (!syncCoreSubsystems())
-        {
-            std::cerr << "Failed to bind runtime core subsystems" << std::endl;
-            return false;
-        }
 #if defined(PLATFORM_VITA)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
         gsgpu::publishHostGlContext(); // the renderer joins the window's GL share group
@@ -1230,6 +1227,20 @@ bool PS2Runtime::initialize(const char *title)
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
+
+        // The GS renderer creates its own GL context, and it can only join the
+        // window's share group if the window already exists and its context has
+        // been published - so this must come *after* publishHostGlContext().
+        // It used to come first: the renderer silently fell back to a context of
+        // its own, the composed frame had to be read back and re-uploaded, and a
+        // synthesized frame - which is handed over as a texture, not read back -
+        // was drawn from a name that means nothing in the host's context, which
+        // is the black flicker between pictures.
+        if (!syncCoreSubsystems())
+        {
+            std::cerr << "Failed to bind runtime core subsystems" << std::endl;
+            return false;
+        }
         // The host loop is the *present* loop, and the game's rate comes from the
         // VBlank clock, not from here - so this can run faster than the game
         // without changing it. That is the frame structure interpolation needs
@@ -3462,6 +3473,7 @@ void PS2Runtime::run()
         // Tell the renderer, so it builds the overlay mask: a synthesized frame
         // must leave the HUD where it is.
         g_gsFrameInterp.store(interp, std::memory_order_relaxed);
+        bool drewSynth = false;
         if (interp && !newPicture)
         {
             // Where this host frame sits between the two pictures it is between,
@@ -3499,41 +3511,9 @@ void PS2Runtime::run()
                 s_synth.mipmaps = 1;
                 s_synth.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
                 presentDraw = s_synth;
+                drewSynth = true;
                 presentWidth = synthWidth;
                 presentHeight = synthHeight;
-                // PS2X_SYNTH_HOST_CHECK=1: read the synthesized texture back
-                // from *this* context and report how dark it is. The renderer
-                // reads it from its own context and never sees black; if the host
-                // does, the two contexts are not ordered and the host is sampling
-                // before the renderer's writes have landed.
-                static const bool s_hostCheck = std::getenv("PS2X_SYNTH_HOST_CHECK") != nullptr;
-                if (s_hostCheck)
-                {
-                    void *px = rlReadTexturePixels(synthTexture, static_cast<int>(synthWidth),
-                                                   static_cast<int>(synthHeight), PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-                    if (px != nullptr)
-                    {
-                        const uint8_t *p = static_cast<const uint8_t *>(px);
-                        const size_t n = static_cast<size_t>(synthWidth) * synthHeight;
-                        uint64_t sum = 0;
-                        for (size_t i = 0; i < n; ++i)
-                            sum += p[i * 4u] + p[i * 4u + 1u] + p[i * 4u + 2u];
-                        const double mean = n != 0u ? static_cast<double>(sum) / static_cast<double>(n * 3u) : 0.0;
-                        static uint64_t s_black = 0, s_total = 0;
-                        static double s_meanSum = 0.0;
-                        ++s_total;
-                        s_meanSum += mean;
-                        if (mean < 4.0)
-                            ++s_black;
-                        if ((s_total % 240u) == 0u)
-                        {
-                            std::cerr << "[gs] HOST synth check: black " << s_black << " of " << s_total
-                                      << ", mean brightness " << (s_meanSum / static_cast<double>(s_total))
-                                      << std::endl;
-                        }
-                        std::free(px);
-                    }
-                }
             }
         }
 
@@ -3646,6 +3626,75 @@ void PS2Runtime::run()
                     std::fprintf(f, "[host] fps=%d frameMs=%.2f gameFps=%d\n", GetFPS(), GetFrameTime() * 1000.0f,
                                  gameFps);
                     std::fclose(f);
+                }
+            }
+        }
+        // PS2X_HOST_FRAMECHECK=1: read back the frame the host just drew, the way
+        // the display will, and report how bright it is, averaged separately for
+        // picture and synthesized frames. A synthesized frame being darker than a
+        // picture frame is the whole question, and the two are interleaved, so a
+        // single average hides it. This is what the eye actually sees; no readback
+        // from the renderer's side can answer it.
+        {
+            static const bool s_frameCheck = std::getenv("PS2X_HOST_FRAMECHECK") != nullptr;
+            if (s_frameCheck)
+            {
+                const int fw = GetScreenWidth(), fh = GetScreenHeight();
+                if (fw > 0 && fh > 0)
+                {
+                    // raylib batches its draws and only submits them at
+                    // EndDrawing, so without this the readback sees the buffer as
+                    // ClearBackground left it, not what was drawn.
+                    rlDrawRenderBatchActive();
+                    unsigned char *px = rlReadScreenPixels(fw, fh);
+                    if (px != nullptr)
+                    {
+                        const size_t n = static_cast<size_t>(fw) * static_cast<size_t>(fh);
+                        uint64_t sum = 0;
+                        for (size_t i = 0; i < n; ++i)
+                            sum += px[i * 4u] + px[i * 4u + 1u] + px[i * 4u + 2u];
+                        static uint64_t s_synthN = 0, s_picN = 0;
+                        static double s_synthSum = 0.0, s_picSum = 0.0;
+                        const double mean =
+                            n != 0u ? static_cast<double>(sum) / static_cast<double>(n * 3u) : 0.0;
+                        if (drewSynth)
+                        {
+                            ++s_synthN;
+                            s_synthSum += mean;
+                        }
+                        else
+                        {
+                            ++s_picN;
+                            s_picSum += mean;
+                        }
+                        // PS2X_HOST_FRAMECHECK_DUMP=<path>: write one presented
+                        // frame out as a PPM, to compare what two present paths
+                        // actually put on screen (a brightness average cannot see
+                        // a stretched or shifted image).
+                        if (const char *dump = std::getenv("PS2X_HOST_FRAMECHECK_DUMP"))
+                        {
+                            static bool s_dumped = false;
+                            if (!s_dumped && (s_synthN + s_picN) == 1200u)
+                            {
+                                s_dumped = true;
+                                if (FILE *f = std::fopen(dump, "wb"))
+                                {
+                                    std::fprintf(f, "P6\n%d %d\n255\n", fw, fh);
+                                    for (size_t i = 0; i < n; ++i)
+                                        std::fwrite(&px[i * 4u], 1, 3, f);
+                                    std::fclose(f);
+                                    std::cerr << "[host] frame check: wrote " << dump << std::endl;
+                                }
+                            }
+                        }
+                        if (((s_synthN + s_picN) % 240u) == 0u)
+                            std::cerr << "[host] frame check: synth mean "
+                                      << (s_synthN != 0u ? s_synthSum / static_cast<double>(s_synthN) : 0.0) << " over "
+                                      << s_synthN << ", picture mean "
+                                      << (s_picN != 0u ? s_picSum / static_cast<double>(s_picN) : 0.0) << " over "
+                                      << s_picN << std::endl;
+                        std::free(px);
+                    }
                 }
             }
         }

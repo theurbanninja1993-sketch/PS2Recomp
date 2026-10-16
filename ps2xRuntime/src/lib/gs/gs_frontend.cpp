@@ -301,7 +301,12 @@ void GS::reset()
     m_preferredDisplaySourceFrame = {};
     m_preferredDisplayDestFbp = 0;
     m_hasPreferredDisplaySource = false;
-    if (m_backend)
+    // Only once the GS has been initialised. The constructor calls reset() too,
+    // and touching the backend there brings the GPU renderer up before the
+    // window exists - which costs it the window's GL share group, and with
+    // it the ability to hand a synthesized frame over as a texture, since
+    // that one is drawn by the host rather than read back.
+    if (m_backend && m_localMemoryStorage != nullptr)
     {
         m_backend->Flush();
         m_backend->Sync(GSSyncReason::Reset);

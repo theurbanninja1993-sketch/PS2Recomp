@@ -179,7 +179,6 @@ void GSGpuBackend::runSync(const std::function<void()> &fn, const char *why) con
 void GSGpuBackend::renderLoop()
 {
     ThreadNaming::SetCurrentThreadName("GsGpu");
-    m_renderer = std::make_unique<gsgpu::Renderer>();
     std::vector<Command> batch;
     for (;;)
     {
@@ -202,6 +201,14 @@ void GSGpuBackend::renderLoop()
 
 void GSGpuBackend::execute(Command &command)
 {
+    // Created on the first command rather than when the thread starts. The
+    // Renderer's constructor creates its GL context, and that context can only
+    // join the window's share group if the window exists and its context has
+    // been published. This thread is started by the GS constructor, which runs
+    // long before the window, so deferring it here means the first command -
+    // the GS init, itself now ordered after the window - brings it up.
+    if (!m_renderer)
+        m_renderer = std::make_unique<gsgpu::Renderer>();
     switch (command.type)
     {
     case CommandType::State:
