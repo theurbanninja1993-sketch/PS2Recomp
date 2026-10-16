@@ -139,11 +139,6 @@ struct PS2HostSettings
     bool musicShuffle = true;
     bool radioOffEnabled = true; // hold D-pad Down / M toggles "Radio Off" (Mods tab)
     bool pnachCheats = true;            // apply .pnach memory patches from enabled mods
-    // Pulse the accelerate / brake buttons at the trigger's position, so a
-    // vehicle gets a proportional throttle out of a game whose own throttle is
-    // only a button bit (see ps2_pad.cpp). Off by default: it is a deliberate
-    // approximation, not what the game does.
-    bool analogThrottle = false;
     // Button-prompt replacement set: PCSX2-named glyph textures in
     // prompts/<set>/ next to the executable. Auto follows the active device.
     enum class ButtonPrompts : int

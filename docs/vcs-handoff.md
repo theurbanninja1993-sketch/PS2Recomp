@@ -552,11 +552,11 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
 
     - **Proportional throttle - PARKED (owner's call, after five attempts).**
       The owner's ask: a car that accelerates with the trigger instead of being
-      flat out or stopped. The option exists (Controls -> "Analog throttle") and
-      it *does* work - the car is proportional - but at a partial pull it
-      **surges**, and that was never solved. **Off by default, so nothing
-      regresses.** Delete the option without hesitation if the code is in the
-      way.
+      flat out or stopped. It was built and did work - the car was proportional -
+      but at a partial pull it **surges**, and that was never solved. The owner
+      called it: **the option is removed from the menu and the settings, and the
+      hooks are gone**, because a broken setting in the menu is worse than no
+      setting. The knowledge below is kept in case anyone wants to try again.
 
       What the game actually does (all in the vehicle):
       - `+0x25C` - the **throttle request**, signed: +1 accelerating, -1
@@ -570,10 +570,11 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       So the game *has* a small analog-capable model; only the input is a
       button.
 
-      What the port does when the option is on (`game_overrides.cpp`): writes the
-      request and both pedals from the triggers (`RT - LT`, low-passed) at the
-      entry of the vehicle update (`FUN_001b5d68`), at the control's tail, and
-      at the entry of both pedal readers (`FUN_001b9360`, `FUN_001ba600`).
+      What the port did (now removed, `game_overrides.cpp`): wrote the request
+      and both pedals from the triggers (`RT - LT`, low-passed) at the entry of
+      the vehicle update (`FUN_001b5d68`), at the control's tail, and at the
+      entry of both pedal readers (`FUN_001b9360`, `FUN_001ba600`). The four
+      `replaceFunction` calls are gone, so the game is untouched again.
 
       Why it still surges (from `PS2X_THROTTLE_TRACE=1`, now removed): the game
       writes **+1.0 into the request in the *player* update, once per presented
@@ -592,9 +593,8 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       risks the player-side logic behaving oddly, but it is the only way left to
       reach that window.
 
-      Debug tools kept: `PS2X_THROTTLE_SCAN=1` dumps the vehicle's words to
-      `throttle_scan.txt` (config folder and working directory);
-      `PS2X_PAD_PEDAL_SMOOTH` overrides the trigger filter coefficient.
+      Debug tool kept: `PS2X_THROTTLE_SCAN=1` dumps the vehicle's words to
+      `throttle_scan.txt` (config folder and working directory).
 6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
    regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
 7. **Player-selectable render API (Vulkan; D3D11 for Windows).** Owner's ask:

@@ -367,8 +367,6 @@ void ps2HostSettingsLoad()
             s.controllerName = value;
         else if (key == "pnach_cheats")
             s.pnachCheats = std::atoi(v) != 0;
-        else if (key == "analog_throttle")
-            s.analogThrottle = std::atoi(v) != 0;
         else if (key == "button_prompts")
             s.buttonPrompts = static_cast<PS2HostSettings::ButtonPrompts>(std::clamp(std::atoi(v), 0, 7));
         else if (key == "mods_disabled")
@@ -498,7 +496,6 @@ void ps2HostSettingsSave()
         << "show_at_launch=" << (s.showAtLaunch ? 1 : 0) << "\n"
         << "show_fps=" << (s.showFps ? 1 : 0) << "\n"
         << "pnach_cheats=" << (s.pnachCheats ? 1 : 0) << "\n"
-        << "analog_throttle=" << (s.analogThrottle ? 1 : 0) << "\n"
         << "button_prompts=" << static_cast<int>(s.buttonPrompts) << "\n";
     out << "mods_disabled=";
     for (size_t i = 0; i < s.disabledMods.size(); ++i)

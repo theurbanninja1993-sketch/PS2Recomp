@@ -2098,104 +2098,6 @@ namespace
         g_vcsOrigFrameUpdate(rdram, ctx, runtime);
     }
 
-    // The game's own accelerator is a button: its control update writes the
-    // vehicle's gas pedal as 0 or 1. Wrapping that update lets the pad's
-    // triggers drive the pedal as a real amount instead, which the vehicle's
-    // physics then uses exactly as it always did - no pulsing. Only the player's
-    // vehicle is touched. Off unless Controls' "Analog throttle" is on.
-    PS2Runtime::RecompiledFunction g_vcsOrigVehicleControl = nullptr;
-
-    // The vehicle's update (FUN_001b5d68) calls the pedal readers around its own
-    // control update, and the control update smooths the pedal (it blends toward
-    // its 0/1 target), so a single write would be half overwritten: some readers
-    // would see the smoothed value and some ours, which is felt as the car
-    // surging. Writing immediately before every read is what makes it one
-    // consistent amount.
-    void vcsWritePlayerPedals(const uint8_t *rdram, const char *tag)
-    {
-        if (!ps2HostSettings().analogThrottle)
-            return;
-        const uint32_t vehicle = findPlayerVehicle(rdram);
-        if (vehicle == 0u)
-            return;
-        // The vehicle's control block: gas pedal at +0x66C, brake at +0x670
-        // (FUN_001b8a68), read as floats by FUN_001b9360 / FUN_001ba600.
-        uint8_t *ram = const_cast<uint8_t *>(rdram);
-        const auto readFloat = [ram, vehicle](uint32_t offset)
-        {
-            float value = 0.0f;
-            std::memcpy(&value, ram + vehicle + offset, 4);
-            return value;
-        };
-        const auto writePedal = [ram, vehicle](uint32_t offset, float value)
-        {
-            if (vehicle + offset + 4u <= PS2_RAM_SIZE)
-                std::memcpy(ram + vehicle + offset, &value, 4);
-        };
-        const float gas = g_ps2PadTriggerRight.load(std::memory_order_relaxed);
-        const float brake = g_ps2PadTriggerLeft.load(std::memory_order_relaxed);
-        // A real hand on a trigger is jittery (and the axis is quantised): a held
-        // "steady" pull wanders over a band of a tenth or more. The game's own
-        // pedal model smoothed that away; writing a raw value straight to the
-        // physics hands it over instead. Filter it the way the game would have.
-        // PS2X_PAD_PEDAL_SMOOTH overrides the coefficient (0..1, higher = quicker).
-        static const float s_smoothing = []()
-        {
-            const char *env = std::getenv("PS2X_PAD_PEDAL_SMOOTH");
-            const float value = env != nullptr ? std::strtof(env, nullptr) : 0.12f;
-            return std::clamp(value, 0.01f, 1.0f);
-        }();
-        static float s_smoothGas = 0.0f, s_smoothBrake = 0.0f;
-        s_smoothGas += (gas - s_smoothGas) * s_smoothing;
-        s_smoothBrake += (brake - s_smoothBrake) * s_smoothing;
-        // The vehicle's own throttle *input* at +0x25C, signed: +1 accelerating,
-        // -1 braking / reversing. FUN_001b9360 ramps the +0x66C pedal toward it,
-        // so driving the input lets the game's ramp and physics work as designed
-        // rather than fighting the pedal's value.
-        const float throttleInput = std::clamp(s_smoothGas - s_smoothBrake, -1.0f, 1.0f);
-        writePedal(0x25Cu, throttleInput);
-        writePedal(0x66Cu, s_smoothGas);
-        writePedal(0x670u, s_smoothBrake);
-    }
-
-    // The game sets the throttle request from the button *before* the vehicle
-    // update runs, and the whole update - gear logic included - reads it. Every
-    // write inside the update therefore came too late for the logic that had
-    // already consumed it. Writing at the update's entry is what makes the
-    // analog request the one everything sees.
-    PS2Runtime::RecompiledFunction g_vcsOrigVehicleUpdate = nullptr;
-
-    void vcsVehicleUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-    {
-        vcsWritePlayerPedals(rdram, "upd");
-        if (g_vcsOrigVehicleUpdate != nullptr)
-            g_vcsOrigVehicleUpdate(rdram, ctx, runtime);
-    }
-
-    PS2Runtime::RecompiledFunction g_vcsOrigPedalReadA = nullptr;
-    PS2Runtime::RecompiledFunction g_vcsOrigPedalReadB = nullptr;
-
-    void vcsPedalReadA(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-    {
-        vcsWritePlayerPedals(rdram, "readA");
-        if (g_vcsOrigPedalReadA != nullptr)
-            g_vcsOrigPedalReadA(rdram, ctx, runtime);
-    }
-
-    void vcsPedalReadB(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-    {
-        vcsWritePlayerPedals(rdram, "readB");
-        if (g_vcsOrigPedalReadB != nullptr)
-            g_vcsOrigPedalReadB(rdram, ctx, runtime);
-    }
-
-    void vcsVehicleControl(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-    {
-        if (g_vcsOrigVehicleControl != nullptr)
-            g_vcsOrigVehicleControl(rdram, ctx, runtime);
-        vcsWritePlayerPedals(rdram, "ctl");
-    }
-
     void applyGtaVcsUs(PS2Runtime &runtime)
     {
         if ((g_vcsOrigFollowPedCam = runtime.lookupFunction(0x0029DAB0u)))
@@ -2206,14 +2108,6 @@ namespace
             runtime.replaceFunction(0x002A2ED0u, &vcsAfterCamProcess);
         if ((g_vcsOrigFrameUpdate = runtime.lookupFunction(0x001B4688u)))
             runtime.replaceFunction(0x001B4688u, &vcsFrameUpdate);
-        if ((g_vcsOrigVehicleUpdate = runtime.lookupFunction(0x001B5D68u)))
-            runtime.replaceFunction(0x001B5D68u, &vcsVehicleUpdate);
-        if ((g_vcsOrigVehicleControl = runtime.lookupFunction(0x001B8A68u)))
-            runtime.replaceFunction(0x001B8A68u, &vcsVehicleControl);
-        if ((g_vcsOrigPedalReadA = runtime.lookupFunction(0x001B9360u)))
-            runtime.replaceFunction(0x001B9360u, &vcsPedalReadA);
-        if ((g_vcsOrigPedalReadB = runtime.lookupFunction(0x001BA600u)))
-            runtime.replaceFunction(0x001BA600u, &vcsPedalReadB);
         if ((g_vcsOrigSetViewWindow = runtime.lookupFunction(0x0018F2D8u)))
             runtime.replaceFunction(0x0018F2D8u, &vcsSetViewWindow);
         if ((g_vcsOrigSetFarClip = runtime.lookupFunction(0x0018F400u)))
