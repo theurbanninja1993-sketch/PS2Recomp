@@ -2029,7 +2029,12 @@ void main()
         // from a capture, which has no game running to drive the host path.
         {
             static const bool s_interpTest = std::getenv("PS2X_FRAME_INTERP_TEST") != nullptr;
-            if (s_interpTest && m_presentIndex == 45u && m_lastComposedTexture != 0)
+            static const uint64_t s_testFrame = []()
+            {
+                const char *env = std::getenv("PS2X_FRAME_INTERP_TEST_FRAME");
+                return env ? std::strtoull(env, nullptr, 10) : 45ull;
+            }();
+            if (s_interpTest && m_presentIndex == s_testFrame && m_lastComposedTexture != 0)
             {
                 const uint32_t w = m_lastComposedWidth, h = m_lastComposedHeight;
                 std::vector<uint8_t> before(static_cast<size_t>(w) * h * 4u, 0u);
@@ -3156,8 +3161,13 @@ void main()
         // built whenever the blur is on; PS2X_OVERLAY_MASK forces it for testing.
         {
             static const bool s_force = std::getenv("PS2X_OVERLAY_MASK") != nullptr;
-            m_maskEnabled =
-                s_force || g_gsModernBlur.load(std::memory_order_relaxed) || g_gsFrameInterp.load(std::memory_order_relaxed);
+            // PS2X_INTERP_NO_MASK=1: do not build the mask just because
+            // interpolation is on. The synthesized frame then warps the HUD with
+            // the world, which is wrong, but it tells the mask apart from
+            // everything else when the interpolated picture shimmers.
+            static const bool s_interpNoMask = std::getenv("PS2X_INTERP_NO_MASK") != nullptr;
+            m_maskEnabled = s_force || g_gsModernBlur.load(std::memory_order_relaxed) ||
+                            (g_gsFrameInterp.load(std::memory_order_relaxed) && !s_interpNoMask);
         }
         // PS2X_OVERLAY_MASK_DUMP=<path>: once, write the frame's overlay mask out
         // as a PGM so the 3D/overlay split can be checked by eye. Dumped here, at
@@ -3443,7 +3453,21 @@ void main()
     {
         if (m_synth.id == 0 || m_lastComposedTexture == 0 || !m_interpHavePrev || !m_interpPrevCamera.valid ||
             !m_interpCamera.valid || m_lastComposedWidth == 0 || m_lastComposedHeight == 0)
+        {
+            // PS2X_SYNTH_WHY=1: say which guard refused, so a synthesis that
+            // silently does nothing can be told from one that never runs.
+            static const bool s_why = std::getenv("PS2X_SYNTH_WHY") != nullptr;
+            if (s_why)
+            {
+                static uint64_t s_n = 0;
+                if ((s_n++ % 60u) == 0u)
+                    std::cerr << "[gs] synth refused: program=" << m_synth.id << " lastComposed=" << m_lastComposedTexture
+                              << " havePrev=" << m_interpHavePrev << " prevValid=" << m_interpPrevCamera.valid
+                              << " curValid=" << m_interpCamera.valid << " size=" << m_lastComposedWidth << "x"
+                              << m_lastComposedHeight << std::endl;
+            }
             return 0;
+        }
 
         static const float s_depth = []()
         {

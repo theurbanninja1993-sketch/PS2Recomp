@@ -3474,6 +3474,7 @@ void PS2Runtime::run()
         // must leave the HUD where it is.
         g_gsFrameInterp.store(interp, std::memory_order_relaxed);
         bool drewSynth = false;
+        float synthPhase = -1.0f;
         if (interp && !newPicture)
         {
             // Where this host frame sits between the two pictures it is between,
@@ -3488,6 +3489,7 @@ void PS2Runtime::run()
             static const char *s_fixedPhase = std::getenv("PS2X_INTERP_PHASE_FIXED");
             const float phase = s_fixedPhase != nullptr ? static_cast<float>(std::atof(s_fixedPhase))
                                                        : static_cast<float>(sincePicture * 60.0);
+            synthPhase = phase;
             uint32_t synthWidth = 0, synthHeight = 0;
             const uint32_t synthTexture = m_gs.synthesizeFrame(phase, synthWidth, synthHeight);
             if (synthTexture != 0u && synthWidth != 0u && synthHeight != 0u)
@@ -3552,6 +3554,23 @@ void PS2Runtime::run()
                 SetTextureFilter(frameTex, filter);
                 s_filter = filter;
                 s_filterTexture = frameTex.id;
+            }
+        }
+        // PS2X_INTERP_LOG=1: one line per host frame - whether the game produced
+        // a picture, whether this frame is synthesized, and the phase it used.
+        // The phase is what moves the picture, so a phase that does not advance
+        // smoothly is a picture that jitters. Printing only, so unlike a readback
+        // this does not change the timing it is measuring.
+        {
+            static const bool s_interpLog = std::getenv("PS2X_INTERP_LOG") != nullptr;
+            if (s_interpLog)
+            {
+                static uint64_t s_hostFrame = 0;
+                if (++s_hostFrame < 2000u)
+                    std::cerr << "[interp] f=" << s_hostFrame << " picture=" << (newPicture ? 1 : 0)
+                              << " synth=" << (drewSynth ? 1 : 0) << " phase=" << synthPhase
+                              << " draw=" << presentDraw.id << " size=" << presentWidth << "x" << presentHeight
+                              << " screen=" << GetScreenWidth() << "x" << GetScreenHeight() << std::endl;
             }
         }
         BeginDrawing();
@@ -3673,17 +3692,30 @@ void PS2Runtime::run()
                         // a stretched or shifted image).
                         if (const char *dump = std::getenv("PS2X_HOST_FRAMECHECK_DUMP"))
                         {
-                            static bool s_dumped = false;
-                            if (!s_dumped && (s_synthN + s_picN) == 1200u)
+                            // A run of consecutive frames, so the motion between
+                            // them can be measured: a warp that does not advance
+                            // smoothly is the jitter, and no single frame shows it.
+                            static const long s_first = []()
                             {
-                                s_dumped = true;
-                                if (FILE *f = std::fopen(dump, "wb"))
+                                const char *e = std::getenv("PS2X_HOST_FRAMECHECK_FIRST");
+                                return e ? std::atol(e) : 1200L;
+                            }();
+                            static const long s_count = []()
+                            {
+                                const char *e = std::getenv("PS2X_HOST_FRAMECHECK_COUNT");
+                                return e ? std::atol(e) : 1L;
+                            }();
+                            const long idx = static_cast<long>(s_synthN + s_picN);
+                            if (idx >= s_first && idx < s_first + s_count)
+                            {
+                                char path[1024];
+                                std::snprintf(path, sizeof(path), "%s_%04ld.ppm", dump, idx);
+                                if (FILE *f = std::fopen(path, "wb"))
                                 {
                                     std::fprintf(f, "P6\n%d %d\n255\n", fw, fh);
                                     for (size_t i = 0; i < n; ++i)
                                         std::fwrite(&px[i * 4u], 1, 3, f);
                                     std::fclose(f);
-                                    std::cerr << "[host] frame check: wrote " << dump << std::endl;
                                 }
                             }
                         }
