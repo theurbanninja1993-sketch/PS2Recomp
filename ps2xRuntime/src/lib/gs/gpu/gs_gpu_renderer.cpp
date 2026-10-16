@@ -3174,13 +3174,8 @@ void main()
         // built whenever the blur is on; PS2X_OVERLAY_MASK forces it for testing.
         {
             static const bool s_force = std::getenv("PS2X_OVERLAY_MASK") != nullptr;
-            // PS2X_INTERP_NO_MASK=1: do not build the mask just because
-            // interpolation is on. The synthesized frame then warps the HUD with
-            // the world, which is wrong, but it tells the mask apart from
-            // everything else when the interpolated picture shimmers.
-            static const bool s_interpNoMask = std::getenv("PS2X_INTERP_NO_MASK") != nullptr;
             m_maskEnabled = s_force || g_gsModernBlur.load(std::memory_order_relaxed) ||
-                            (g_gsFrameInterp.load(std::memory_order_relaxed) && !s_interpNoMask);
+                            g_gsFrameInterp.load(std::memory_order_relaxed);
         }
         // PS2X_OVERLAY_MASK_DUMP=<path>: once, write the frame's overlay mask out
         // as a PGM so the 3D/overlay split can be checked by eye. Dumped here, at
@@ -3460,25 +3455,6 @@ void main()
             if (g_ps2CameraFrame.load(std::memory_order_relaxed) == before)
                 break;
         }
-        // PS2X_CAMERA_LOG=1: the camera the compose saw, and the step from the
-        // previous one. A synthesized frame moves by this step, so a camera
-        // that does not advance smoothly is a picture that shimmers.
-        static const bool s_camLog = std::getenv("PS2X_CAMERA_LOG") != nullptr;
-        if (s_camLog)
-        {
-            static uint64_t s_n = 0;
-            if ((s_n++ % 30u) == 0u)
-            {
-                float df[3] = {cur.front[0] - m_interpCamera.front[0], cur.front[1] - m_interpCamera.front[1],
-                               cur.front[2] - m_interpCamera.front[2]};
-                float dp[3] = {cur.pos[0] - m_interpCamera.pos[0], cur.pos[1] - m_interpCamera.pos[1],
-                               cur.pos[2] - m_interpCamera.pos[2]};
-                std::cerr << "[cam] idx=" << m_presentIndex << " valid=" << cur.valid
-                          << " pos=" << cur.pos[0] << "," << cur.pos[1] << "," << cur.pos[2] << " dpos=" << dp[0] << ","
-                          << dp[1] << "," << dp[2] << " front=" << cur.front[0] << "," << cur.front[1] << ","
-                          << cur.front[2] << " dfront=" << df[0] << "," << df[1] << "," << df[2] << std::endl;
-            }
-        }
         m_interpPrevCamera = m_interpCamera;
         m_interpCamera = cur;
         m_interpHavePrev = m_interpHavePrev || cur.valid;
@@ -3680,12 +3656,6 @@ void main()
 
         const Target *maskTarget = m_overlayTarget;
         const bool maskValid = maskTarget != nullptr && maskTarget->maskTexture != 0;
-        static const bool s_maskDbg = std::getenv("PS2X_SYNTH_MASK_DEBUG") != nullptr;
-        if (s_maskDbg)
-            std::cerr << "[gs] synth mask: valid=" << maskValid << " origin=" << m_overlayMaskOriginX << ","
-                      << m_overlayMaskOriginY << " scale=" << m_scale
-                      << " maskSize=" << (maskTarget ? maskTarget->width : 0) << "x" << (maskTarget ? maskTarget->height : 0)
-                      << " composed=" << w << "x" << hgt << std::endl;
         Program &p = m_synth;
         useProgram(p.id);
         setUniform3f(p, uniform(p, "u_warp0"), ext[0], ext[1], ext[2]);
@@ -3713,13 +3683,6 @@ void main()
         // shared present path does the same thing for the same reason.
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
         gl.glFlush();
-        // PS2X_SYNTH_FINISH=1: wait for the GPU to actually finish, not just for
-        // the commands to be submitted. If that fixes the flicker, the host's draw
-        // was executing before the writes landed - a deeper ring only widens that
-        // window, it does not close it.
-        static const bool s_finish = std::getenv("PS2X_SYNTH_FINISH") != nullptr;
-        if (s_finish)
-            gl.glFinish();
         // PS2X_SYNTH_CHECK=1: every 60th synthesized frame, read back both the
         // frame this one was warped from and the synthesized frame itself, and
         // report how bright each is and how much of it is black. Three outcomes
@@ -4094,18 +4057,6 @@ void main()
             frame.glTexture = m_presentShared[m_presentSharedIndex];
             frame.glWidth = m_presentSharedWidth;
             frame.glHeight = m_presentSharedHeight;
-            // PS2X_PRESENT_SIZE_LOG=1: the grow-only texture size against the
-            // composed size. The host draws glWidth x glHeight; the synthesized
-            // frame is drawn at the composed size, so if these differ the two
-            // kinds of frame are scaled differently and the picture shimmers.
-            static const bool s_sizeLog = std::getenv("PS2X_PRESENT_SIZE_LOG") != nullptr;
-            if (s_sizeLog)
-            {
-                static uint64_t s_n = 0;
-                if ((s_n++ % 60u) == 0u)
-                    std::cerr << "[gs] present size: texture " << m_presentSharedWidth << "x" << m_presentSharedHeight
-                              << " composed " << width << "x" << height << std::endl;
-            }
             frame.width = composedWidth;
             frame.height = composedHeight;
             frame.rowPixels = width;

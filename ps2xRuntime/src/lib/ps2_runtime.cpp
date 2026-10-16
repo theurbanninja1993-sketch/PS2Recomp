@@ -3702,39 +3702,6 @@ void PS2Runtime::run()
                             ++s_picN;
                             s_picSum += mean;
                         }
-                        // PS2X_HOST_FRAMECHECK_DUMP=<path>: write one presented
-                        // frame out as a PPM, to compare what two present paths
-                        // actually put on screen (a brightness average cannot see
-                        // a stretched or shifted image).
-                        if (const char *dump = std::getenv("PS2X_HOST_FRAMECHECK_DUMP"))
-                        {
-                            // A run of consecutive frames, so the motion between
-                            // them can be measured: a warp that does not advance
-                            // smoothly is the jitter, and no single frame shows it.
-                            static const long s_first = []()
-                            {
-                                const char *e = std::getenv("PS2X_HOST_FRAMECHECK_FIRST");
-                                return e ? std::atol(e) : 1200L;
-                            }();
-                            static const long s_count = []()
-                            {
-                                const char *e = std::getenv("PS2X_HOST_FRAMECHECK_COUNT");
-                                return e ? std::atol(e) : 1L;
-                            }();
-                            const long idx = static_cast<long>(s_synthN + s_picN);
-                            if (idx >= s_first && idx < s_first + s_count)
-                            {
-                                char path[1024];
-                                std::snprintf(path, sizeof(path), "%s_%04ld.ppm", dump, idx);
-                                if (FILE *f = std::fopen(path, "wb"))
-                                {
-                                    std::fprintf(f, "P6\n%d %d\n255\n", fw, fh);
-                                    for (size_t i = 0; i < n; ++i)
-                                        std::fwrite(&px[i * 4u], 1, 3, f);
-                                    std::fclose(f);
-                                }
-                            }
-                        }
                         if (((s_synthN + s_picN) % 240u) == 0u)
                             std::cerr << "[host] frame check: synth mean "
                                       << (s_synthN != 0u ? s_synthSum / static_cast<double>(s_synthN) : 0.0) << " over "

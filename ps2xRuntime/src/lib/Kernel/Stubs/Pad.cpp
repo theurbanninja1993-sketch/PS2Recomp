@@ -395,8 +395,11 @@ namespace ps2_stubs
 
             fillPadStatus(outData, state, portState);
             {
+                // PS2X_PAD_DEBUG=1: this printed unconditionally, which filled
+                // every run's log.
+                static const bool s_readsLog = std::getenv("PS2X_PAD_DEBUG") != nullptr;
                 static uint64_t s_padReads = 0;
-                if ((++s_padReads % 3000u) == 1u)
+                if (s_readsLog && (++s_padReads % 3000u) == 1u)
                 {
                     std::cerr << "[pad] reads=" << s_padReads << " port=" << port << " slot=" << slot
                               << " buttons=0x" << std::hex << state.buttons << " data0-3="
