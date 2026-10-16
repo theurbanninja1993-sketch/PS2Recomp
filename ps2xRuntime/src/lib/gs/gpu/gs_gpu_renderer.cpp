@@ -3464,6 +3464,21 @@ void main()
         m_interpHavePrev = m_interpHavePrev || cur.valid;
     }
 
+    // PS2X_GS_PRESENT_SHARE: -1 automatic, 1 forced shared, 0 forced readback.
+    // Used by both the present and the synthesis, which must agree on which path
+    // is active: the host draws the composed picture at the readback size, so a
+    // synthesized frame handed over at the composed size is resampled differently
+    // and the picture pulses between the two.
+    static int presentShareSetting()
+    {
+        static const int s_setting = []()
+        {
+            const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
+            return env != nullptr ? (std::atoi(env) != 0 ? 1 : 0) : -1;
+        }();
+        return s_setting;
+    }
+
     // Warps the last composed frame forward by half the last camera motion and
     // writes it into m_synthTexture. Overlays are copied, not warped: the HUD is
     // identical in the two pictures it sits between, so moving it would be wrong.
@@ -3618,9 +3633,58 @@ void main()
                 report(m_synthTexture[m_synthIndex], w, hgt, "synth ");
             }
         }
-        outWidth = w;
-        outHeight = hgt;
-        return m_synthTexture[m_synthIndex];
+        // The host draws the composed picture from the readback path at a size
+        // fitted to the window. If the synthesized frame is handed over at the
+        // composed size, the two kinds of frame are resampled differently - the
+        // picture near 1:1, the synthesized frame downscaled two or three times -
+        // and the whole screen pulses between the two. Downscale the same way the
+        // present path does, so both are drawn at the same size.
+        GLuint outTex = m_synthTexture[m_synthIndex];
+        uint32_t outW = w, outH = hgt;
+        if (!(m_context.sharedWithHost() && presentShareSetting() == 1))
+        {
+            const uint32_t hostWidth = g_gsGpuPresentWidth.load(std::memory_order_relaxed);
+            const uint32_t hostHeight = g_gsGpuPresentHeight.load(std::memory_order_relaxed);
+            if (hostWidth != 0u && hostHeight != 0u && hostWidth < w && hostHeight < hgt)
+            {
+                const double fit = std::min(static_cast<double>(hostWidth) / static_cast<double>(w),
+                                            static_cast<double>(hostHeight) / static_cast<double>(hgt));
+                const uint32_t rw = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(w) * fit) & ~1u);
+                const uint32_t rh = std::max<uint32_t>(64u, static_cast<uint32_t>(static_cast<double>(hgt) * fit) & ~1u);
+                if (m_synthReadbackTexture == 0 || m_synthReadbackWidth < rw || m_synthReadbackHeight < rh)
+                {
+                    if (m_synthReadbackTexture != 0)
+                    {
+                        gl.glDeleteFramebuffers(1, &m_synthReadbackFramebuffer);
+                        gl.glDeleteTextures(1, &m_synthReadbackTexture);
+                    }
+                    m_synthReadbackWidth = std::max(m_synthReadbackWidth, rw);
+                    m_synthReadbackHeight = std::max(m_synthReadbackHeight, rh);
+                    gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_synthReadbackTexture);
+                    gl.glTextureStorage2D(m_synthReadbackTexture, 1, GL_RGBA8, static_cast<GLsizei>(m_synthReadbackWidth),
+                                          static_cast<GLsizei>(m_synthReadbackHeight));
+                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                    gl.glTextureParameteri(m_synthReadbackTexture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                    gl.glCreateFramebuffers(1, &m_synthReadbackFramebuffer);
+                    gl.glNamedFramebufferTexture(m_synthReadbackFramebuffer, GL_COLOR_ATTACHMENT0,
+                                                 m_synthReadbackTexture, 0);
+                    gl.glNamedFramebufferDrawBuffer(m_synthReadbackFramebuffer, GL_COLOR_ATTACHMENT0);
+                }
+                gl.glBlitNamedFramebuffer(m_synthFramebuffer[m_synthIndex], m_synthReadbackFramebuffer, 0, 0,
+                                          static_cast<GLint>(w), static_cast<GLint>(hgt), 0, 0, static_cast<GLint>(rw),
+                                          static_cast<GLint>(rh), GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
+                gl.glFlush();
+                outTex = m_synthReadbackTexture;
+                outW = rw;
+                outH = rh;
+            }
+        }
+        outWidth = outW;
+        outHeight = outH;
+        return outTex;
     }
 
     void Renderer::upscalePresentation(const GSPresentationRequest &request, PresentationFrame &frame)
@@ -3710,13 +3774,7 @@ void main()
         // frames 108-250/600 readback vs 216-293/600 shared, underrun up to
         // 126k vs 163k per 10 s). So: shared only when it pays.
         // PS2X_GS_PRESENT_SHARE overrides: 1 forces shared, 0 forces readback.
-        static const int s_sharePresent = []()
-        {
-            const char *env = std::getenv("PS2X_GS_PRESENT_SHARE");
-            if (env != nullptr)
-                return std::atoi(env) != 0 ? 1 : 0;
-            return -1; // automatic
-        }();
+        const int s_sharePresent = presentShareSetting();
         // Only when asked for. The shared path avoids a readback per frame, but
         // drawing the renderer's display texture from the host's context makes
         // the interpolated picture shimmer - the synthesized frames and the
@@ -4027,6 +4085,12 @@ void main()
                 gl.glDeleteTextures(1, &m_synthTexture[i]);
                 m_synthTexture[i] = m_synthFramebuffer[i] = 0;
             }
+        }
+        if (m_synthReadbackTexture != 0)
+        {
+            gl.glDeleteFramebuffers(1, &m_synthReadbackFramebuffer);
+            gl.glDeleteTextures(1, &m_synthReadbackTexture);
+            m_synthReadbackTexture = m_synthReadbackFramebuffer = 0;
         }
     }
 

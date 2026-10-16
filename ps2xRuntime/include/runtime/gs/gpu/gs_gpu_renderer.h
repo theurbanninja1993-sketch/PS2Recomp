@@ -347,6 +347,10 @@ namespace gsgpu
         GLuint m_synthTexture[kSynthRing] = {}, m_synthFramebuffer[kSynthRing] = {};
         uint32_t m_synthWidth = 0, m_synthHeight = 0;
         int m_synthIndex = 0;
+        // Downscaled copy of the synthesized frame at the readback size, so the
+        // host draws it exactly as it draws the composed picture.
+        GLuint m_synthReadbackTexture = 0, m_synthReadbackFramebuffer = 0;
+        uint32_t m_synthReadbackWidth = 0, m_synthReadbackHeight = 0;
         // Reads the published camera into m_interpCamera, tracking the previous
         // one. Called once per compose, whatever else is enabled.
         void trackCamera();
