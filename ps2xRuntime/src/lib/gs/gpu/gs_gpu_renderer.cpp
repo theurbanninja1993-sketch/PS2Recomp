@@ -794,24 +794,26 @@ uniform vec3 u_warp0; // the half-step extrapolation, column-major
 uniform vec3 u_warp1;
 uniform vec3 u_warp2;
 uniform vec2 u_size;
+uniform vec2 u_maskOrigin; // where the composed rect starts in the mask texture
 uniform float u_maskValid;
 out vec4 o_color;
 void main()
 {
     vec2 uv = gl_FragCoord.xy / u_size;
     vec4 cur = texture(u_source, uv);
-    // The mask is on the scene target, which is the same size and within a
-    // couple of rows of the composed frame, so a plain uv lookup is close enough
-    // for a protective region. Take the minimum of the neighbours so its edge
-    // cannot land a texel either side and flicker.
+    // The mask texture is the scene target's full extent, which is taller than
+    // the composed frame (grow-only), so it must be fetched with the same texel
+    // offset the compose uses - a normalized uv would sample it at the wrong
+    // height and protect the wrong region. Take the minimum of the neighbours so
+    // its edge cannot land a texel either side and flicker.
     float mask = 0.0;
     if (u_maskValid > 0.5)
     {
-        vec2 texel = 1.0 / u_size;
-        mask = min(min(min(texture(u_mask, uv).r, texture(u_mask, uv + vec2(texel.x, 0.0)).r),
-                       texture(u_mask, uv - vec2(texel.x, 0.0)).r),
-                   min(texture(u_mask, uv + vec2(0.0, texel.y)).r,
-                       texture(u_mask, uv - vec2(0.0, texel.y)).r));
+        ivec2 mp = ivec2(u_maskOrigin) + ivec2(gl_FragCoord.xy);
+        mask = min(min(min(texelFetch(u_mask, mp, 0).r, texelFetch(u_mask, mp + ivec2(1, 0), 0).r),
+                       texelFetch(u_mask, mp + ivec2(-1, 0), 0).r),
+                   min(texelFetch(u_mask, mp + ivec2(0, 1), 0).r,
+                       texelFetch(u_mask, mp + ivec2(0, -1), 0).r));
     }
     if (mask > 0.0)
     {
@@ -3177,7 +3179,14 @@ void main()
             static const char *s_dump = std::getenv("PS2X_OVERLAY_MASK_DUMP");
             // Late enough that the frame has been drawn and copied, like the
             // presents the compose debug uses.
-            if (s_dump != nullptr && m_presentIndex >= 40u && m_presentIndex <= 46u)
+            static const uint64_t s_dumpFrame = []()
+            {
+                const char *env = std::getenv("PS2X_OVERLAY_MASK_DUMP_FRAME");
+                return env ? std::strtoull(env, nullptr, 10) : 0ull;
+            }();
+            const bool s_dumpRange = s_dumpFrame == 0ull ? (m_presentIndex >= 40u && m_presentIndex <= 46u)
+                                                         : m_presentIndex == s_dumpFrame;
+            if (s_dump != nullptr && s_dumpRange)
             {
                 for (auto &target : m_targets)
                 {
@@ -3479,6 +3488,79 @@ void main()
         return s_setting;
     }
 
+    // The camera the constant motion between prev and cur predicts at fraction t
+    // past cur, and the homography from the current view to that predicted view.
+    // Used instead of blending (1+t)I - tH, which distorts the frame under a fast
+    // rotation: blending the identity with a rotation matrix in screen space is
+    // exact only to first order.
+    static bool extrapolateCameraHomography(const Ps2CameraState &prev, const Ps2CameraState &cur, float t,
+                                            float depth, float out[9])
+    {
+        // Basis rows (right, up, front), the same convention as ps2CameraHomography.
+        const auto basis = [](const Ps2CameraState &c, float R[9]) -> bool
+        {
+            const float f[3] = {c.front[0], c.front[1], c.front[2]};
+            const float u[3] = {c.up[0], c.up[1], c.up[2]};
+            float r[3] = {f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0]};
+            const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+            const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+            if (!(rl > 1e-4f) || !(fl > 1e-4f))
+                return false;
+            for (int i = 0; i < 3; ++i)
+            {
+                r[i] /= rl;
+                R[6 + i] = f[i] / fl;
+            }
+            R[3] = r[1] * R[8] - r[2] * R[7];
+            R[4] = r[2] * R[6] - r[0] * R[8];
+            R[5] = r[0] * R[7] - r[1] * R[6];
+            R[0] = r[0];
+            R[1] = r[1];
+            R[2] = r[2];
+            return true;
+        };
+        float Rp[9], Rc[9];
+        if (!basis(prev, Rp) || !basis(cur, Rc))
+            return false;
+        // S = Rp * Rc^T maps the current frame into the previous one, and the
+        // camera's step rotation is S^T. Interpolate that step by t around its
+        // axis and apply it past the current basis.
+        float S[9];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                S[i * 3 + j] = Rp[i * 3] * Rc[j * 3] + Rp[i * 3 + 1] * Rc[j * 3 + 1] + Rp[i * 3 + 2] * Rc[j * 3 + 2];
+        const float cosA = std::clamp((S[0] + S[4] + S[8] - 1.0f) * 0.5f, -1.0f, 1.0f);
+        const float ang = std::acos(cosA);
+        if (ang < 1e-4f)
+            return false; // barely moving: the linear blend is exact enough
+        const float s = 0.5f / std::sin(ang);
+        const float ax = (S[7] - S[5]) * s, ay = (S[2] - S[6]) * s, az = (S[3] - S[1]) * s;
+        // The predicted camera at t: R = Rot(axis, -t*ang) * Rc.
+        const float th = -t * ang;
+        const float c = std::cos(th), sn = std::sin(th), ic = 1.0f - c;
+        const float Rot[9] = {c + ax * ax * ic,     ax * ay * ic - az * sn, ax * az * ic + ay * sn,
+                              ay * ax * ic + az * sn, c + ay * ay * ic,      ay * az * ic - ax * sn,
+                              az * ax * ic - ay * sn, az * ay * ic + ax * sn, c + az * az * ic};
+        float Re[9];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                Re[i * 3 + j] = Rot[i * 3] * Rc[j] + Rot[i * 3 + 1] * Rc[3 + j] + Rot[i * 3 + 2] * Rc[6 + j];
+        Ps2CameraState ext = cur;
+        for (int i = 0; i < 3; ++i)
+        {
+            ext.front[i] = Re[6 + i];
+            ext.up[i] = Re[3 + i];
+            ext.pos[i] = cur.pos[i] + t * (cur.pos[i] - prev.pos[i]);
+        }
+        const Ps2CameraHomography hf = ps2CameraHomography(ext, cur, depth);
+        if (!hf.usable)
+            return false;
+        const float inv = hf.m[8] != 0.0f ? 1.0f / hf.m[8] : 1.0f;
+        for (int i = 0; i < 9; ++i)
+            out[i] = hf.m[i] * inv;
+        return true;
+    }
+
     // Warps the last composed frame forward by half the last camera motion and
     // writes it into m_synthTexture. Overlays are copied, not warped: the HUD is
     // identical in the two pictures it sits between, so moving it would be wrong.
@@ -3517,13 +3599,20 @@ void main()
         // (1 + phase)*p - phase*H*p. h.m is column-major, and H is only defined
         // up to scale, so normalise by its bottom-right entry before blending.
         const float t = std::clamp(phase, 0.0f, 1.0f);
-        const float inv = h.m[8] != 0.0f ? 1.0f / h.m[8] : 1.0f;
+        // Extrapolate the camera itself rather than blending matrices: the
+        // linear blend is exact only to first order, and a fast turn makes the
+        // whole frame visibly distort. When the motion is too small to measure,
+        // fall back to the blend, which is exact enough there.
         float ext[9];
-        for (int i = 0; i < 9; ++i)
-            ext[i] = -t * h.m[i] * inv;
-        ext[0] += 1.0f + t;
-        ext[4] += 1.0f + t;
-        ext[8] += 1.0f + t;
+        if (!extrapolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext))
+        {
+            const float inv = h.m[8] != 0.0f ? 1.0f / h.m[8] : 1.0f;
+            for (int i = 0; i < 9; ++i)
+                ext[i] = -t * h.m[i] * inv;
+            ext[0] += 1.0f + t;
+            ext[4] += 1.0f + t;
+            ext[8] += 1.0f + t;
+        }
 
         GL &gl = m_context.gl;
         const uint32_t w = m_lastComposedWidth, hgt = m_lastComposedHeight;
@@ -3560,12 +3649,20 @@ void main()
 
         const Target *maskTarget = m_overlayTarget;
         const bool maskValid = maskTarget != nullptr && maskTarget->maskTexture != 0;
+        static const bool s_maskDbg = std::getenv("PS2X_SYNTH_MASK_DEBUG") != nullptr;
+        if (s_maskDbg)
+            std::cerr << "[gs] synth mask: valid=" << maskValid << " origin=" << m_overlayMaskOriginX << ","
+                      << m_overlayMaskOriginY << " scale=" << m_scale
+                      << " maskSize=" << (maskTarget ? maskTarget->width : 0) << "x" << (maskTarget ? maskTarget->height : 0)
+                      << " composed=" << w << "x" << hgt << std::endl;
         Program &p = m_synth;
         useProgram(p.id);
         setUniform3f(p, uniform(p, "u_warp0"), ext[0], ext[1], ext[2]);
         setUniform3f(p, uniform(p, "u_warp1"), ext[3], ext[4], ext[5]);
         setUniform3f(p, uniform(p, "u_warp2"), ext[6], ext[7], ext[8]);
         setUniform2f(p, uniform(p, "u_size"), static_cast<float>(w), static_cast<float>(hgt));
+        setUniform2f(p, uniform(p, "u_maskOrigin"), static_cast<float>(m_overlayMaskOriginX),
+                     static_cast<float>(m_overlayMaskOriginY));
         setUniform1f(p, uniform(p, "u_maskValid"), maskValid ? 1.0f : 0.0f);
         gl.glBindTextureUnit(0, m_lastComposedTexture);
         gl.glBindTextureUnit(1, maskValid ? maskTarget->maskTexture : m_synthTexture[m_synthIndex]);
