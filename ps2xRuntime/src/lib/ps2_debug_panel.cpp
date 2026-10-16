@@ -3098,15 +3098,22 @@ void PS2DebugPanel::drawSettingsMenu(PS2Runtime &runtime)
             else
                 ImGui::TextDisabled("F2 opens/closes this menu");
         }
-        ImGui::SameLine(columnW - ImGui::CalcTextSize("Quit to desktop").x - style.FramePadding.x * 2.0f);
-        if (ImGui::Button("Quit to desktop"))
-            ImGui::OpenPopup("Quit?");
+        // Leaving the game ends the process either way, but where that lands you
+        // depends on who started it: the launcher brings the selection back, while
+        // a game run on its own really does go to the desktop.
+        const bool fromLauncher = ps2HostLaunchedFromLauncher();
+        const char *leaveLabel = fromLauncher ? "Return to game select" : "Quit to desktop";
+        const char *leaveTitle = fromLauncher ? "Return to game select?" : "Quit to desktop?";
+        ImGui::SameLine(columnW - ImGui::CalcTextSize(leaveLabel).x - style.FramePadding.x * 2.0f);
+        if (ImGui::Button(leaveLabel))
+            ImGui::OpenPopup(leaveTitle);
         ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() * 0.5f, GetScreenHeight() * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+        if (ImGui::BeginPopupModal(leaveTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
         {
-            ImGui::TextUnformatted(launch ? "Quit to desktop?" : "Quit to desktop? Progress since your last save will be lost.");
+            ImGui::TextUnformatted(launch ? "The game has not started yet."
+                                          : "Progress since your last save will be lost.");
             ImGui::Spacing();
-            if (ImGui::Button("Quit"))
+            if (ImGui::Button(fromLauncher ? "Return" : "Quit"))
             {
                 ps2HostSettingsSave();
                 runtime.requestStop();

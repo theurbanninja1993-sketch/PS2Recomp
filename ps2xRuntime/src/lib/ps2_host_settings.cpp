@@ -598,3 +598,15 @@ void ps2HostSettingsApplyWindow()
         break;
     }
 }
+
+bool ps2HostLaunchedFromLauncher()
+{
+    // Read once: the environment cannot change under us, and this is asked every
+    // frame the settings menu draws.
+    static const bool launched = []
+    {
+        const char *value = std::getenv("PS2X_LAUNCHED_FROM_LAUNCHER");
+        return value != nullptr && *value != '\0' && std::string(value) != "0";
+    }();
+    return launched;
+}

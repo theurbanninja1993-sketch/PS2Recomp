@@ -105,6 +105,26 @@ classic/modern gamepad layouts, mods), first-launch menu, controller support
 menu), mouse look on foot and in vehicles (wall/ground collision), PCSX2
 texture packs from `mods/`, Windows build under Wine.
 
+### The launcher round trip: one env var is what makes "return" honest
+
+The launcher (its own repo, `ps2x-launcher`) starts a game with
+`PS2X_LAUNCHED_FROM_LAUNCHER=1` in its environment, and the settings menu asks
+`ps2HostLaunchedFromLauncher()` before it labels the way out: started by the
+launcher it says "Return to game select", started on its own it still says "Quit
+to desktop". The action is identical either way (`runtime.requestStop()`); it is
+the destination that differs, so the wording has to follow who started the
+process. Run the game straight from a shell and nothing sets the variable, which
+is exactly when the old wording is right.
+
+The launcher waits for the game in a thread instead of blocking its loop, so the
+window keeps answering the window manager while the game runs - a window blocked
+for minutes gets flagged "not responding" (and offered up for killing) by some
+window managers. It records that it is away from the menu at the moment it starts
+the game rather than when a frame first observes it running: a game that exits
+faster than one frame would otherwise never hand the menu back, which leaves the
+screen black and the theme silenced for good. Found by pointing the launcher at a
+script that exits immediately, which no real game does.
+
 ### Vehicle mouse look: the wall raycast must run after the game's own body
 
 Owner-reported world flicker (2026-10-14, "geometry flickering in and out of

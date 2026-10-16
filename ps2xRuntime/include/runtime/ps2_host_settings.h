@@ -190,5 +190,9 @@ extern std::atomic<bool> g_ps2SettingsMenuOpen;
 extern std::atomic<bool> g_ps2LaunchMenuPending;
 // No settings file existed when the settings were loaded.
 bool ps2HostSettingsFirstLaunch();
+// The launcher started this process (it sets PS2X_LAUNCHED_FROM_LAUNCHER). What
+// the settings menu calls leaving the game depends on it: from the launcher that
+// goes back to the game selection, on its own it goes all the way to the desktop.
+bool ps2HostLaunchedFromLauncher();
 
 #endif
