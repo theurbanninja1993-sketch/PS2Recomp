@@ -314,6 +314,10 @@ namespace gsgpu
         // pixels (the compose's u_rect1 origin). The synth must fetch the mask at
         // exactly the same texels the compose does.
         int32_t m_overlayMaskOriginX = 0, m_overlayMaskOriginY = 0;
+        // How many times the outgoing picture has been copied into the
+        // interpolation source, and the id it holds - a source that never
+        // updates is a frozen picture.
+        uint64_t m_prevComposedCopies = 0;
         GLuint m_zeroMask = 0; // 1x1 R8 zero, for a source that has no mask yet
         bool m_maskEnabled = false;
         // The target a draw samples as its texture, if it is one (set by
