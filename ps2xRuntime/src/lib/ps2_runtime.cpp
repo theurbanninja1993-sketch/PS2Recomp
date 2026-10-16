@@ -3573,7 +3573,7 @@ void PS2Runtime::run()
             if (s_interpLog)
             {
                 static uint64_t s_hostFrame = 0;
-                if (++s_hostFrame < 2000u)
+                if (++s_hostFrame < 240000u)
                     std::cerr << "[interp] f=" << s_hostFrame << " picture=" << (newPicture ? 1 : 0)
                               << " synth=" << (drewSynth ? 1 : 0) << " phase=" << synthPhase
                               << " draw=" << presentDraw.id << " size=" << presentWidth << "x" << presentHeight
