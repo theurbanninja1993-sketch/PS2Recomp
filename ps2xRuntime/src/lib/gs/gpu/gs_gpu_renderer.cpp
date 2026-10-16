@@ -3698,8 +3698,14 @@ void main()
                 return std::atoi(env) != 0 ? 1 : 0;
             return -1; // automatic
         }();
-        const bool sharePresent = m_context.sharedWithHost() &&
-                                  (s_sharePresent == 1 || (s_sharePresent < 0 && m_scale > 1u));
+        // Only when asked for. The shared path avoids a readback per frame, but
+        // drawing the renderer's display texture from the host's context makes
+        // the interpolated picture shimmer - the synthesized frames and the
+        // composed ones end up rendered differently - and the readback path does
+        // not. Correctness first: PS2X_GS_PRESENT_SHARE=1 opts in (and =0 is now
+        // the same as unset). The renderer still shares the window's context
+        // either way, which is what the synthesized frame needs.
+        const bool sharePresent = m_context.sharedWithHost() && s_sharePresent == 1;
         {
             // Say once which path is in use: the choice depends on the internal
             // scale, so it is not obvious from the outside.
@@ -3853,6 +3859,18 @@ void main()
             frame.glTexture = m_presentShared[m_presentSharedIndex];
             frame.glWidth = m_presentSharedWidth;
             frame.glHeight = m_presentSharedHeight;
+            // PS2X_PRESENT_SIZE_LOG=1: the grow-only texture size against the
+            // composed size. The host draws glWidth x glHeight; the synthesized
+            // frame is drawn at the composed size, so if these differ the two
+            // kinds of frame are scaled differently and the picture shimmers.
+            static const bool s_sizeLog = std::getenv("PS2X_PRESENT_SIZE_LOG") != nullptr;
+            if (s_sizeLog)
+            {
+                static uint64_t s_n = 0;
+                if ((s_n++ % 60u) == 0u)
+                    std::cerr << "[gs] present size: texture " << m_presentSharedWidth << "x" << m_presentSharedHeight
+                              << " composed " << width << "x" << height << std::endl;
+            }
             frame.width = composedWidth;
             frame.height = composedHeight;
             frame.rowPixels = width;
