@@ -3452,7 +3452,11 @@ void PS2Runtime::run()
         // than the game produces pictures, and the frames in between have to be
         // synthesized. PS2X_FRAME_INTERP=1 forces it on regardless, for testing.
         static const bool s_forceInterp = std::getenv("PS2X_FRAME_INTERP") != nullptr;
-        const bool interp = s_forceInterp || g_gsFrameRate.load(std::memory_order_relaxed) > 60u;
+        // PS2X_FRAME_INTERP_OFF=1 keeps the host rate but drops the synthesis, so
+        // "the host runs fast" and "the synthesis runs" can be told apart.
+        static const bool s_interpOff = std::getenv("PS2X_FRAME_INTERP_OFF") != nullptr;
+        const bool interp =
+            !s_interpOff && (s_forceInterp || g_gsFrameRate.load(std::memory_order_relaxed) > 60u);
         // Tell the renderer, so it builds the overlay mask: a synthesized frame
         // must leave the HUD where it is.
         g_gsFrameInterp.store(interp, std::memory_order_relaxed);
@@ -3594,6 +3598,22 @@ void PS2Runtime::run()
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
         EndDrawing();
+
+        // PS2X_HOST_CAPTURE=<prefix>: capture the frame the host actually drew -
+        // not the composed one, because a bad synthesized frame only exists here.
+        // raylib wants this after EndDrawing; a short window keeps it cheap.
+        {
+            static const char *s_capture = std::getenv("PS2X_HOST_CAPTURE");
+            static uint64_t s_hostFrame = 0;
+            ++s_hostFrame;
+            if (s_capture != nullptr && s_hostFrame >= 600u && s_hostFrame <= 660u)
+            {
+                char path[1024];
+                std::snprintf(path, sizeof(path), "%s_%04llu.png", s_capture,
+                              static_cast<unsigned long long>(s_hostFrame));
+                TakeScreenshot(path);
+            }
+        }
 
         // Opt-in frame capture for headless bring-up: PS2X_SCREENSHOT_EVERY=<frames>
         // writes the presented guest frame (no debug UI) to frame_<n>.png in the cwd.
