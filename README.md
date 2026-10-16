@@ -72,6 +72,12 @@ controllers (Xbox, DualSense, DualShock, Switch, Steam), texture packs,
 rumble, and mouse look. See `docs/vcs-handoff.md` for the open list and the
 things that are parked with reasons.
 
+## Not affiliated
+
+Not affiliated with, endorsed by, or connected to Rockstar Games or Take-Two
+Interactive. "Grand Theft Auto" and the game names are their trademarks, used
+here only to say which game this is for.
+
 ## Licence
 
 GPL-3.0 — see `LICENSE`, inherited from PS2Recomp. The history here includes
