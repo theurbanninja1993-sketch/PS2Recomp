@@ -3440,6 +3440,25 @@ void main()
             if (g_ps2CameraFrame.load(std::memory_order_relaxed) == before)
                 break;
         }
+        // PS2X_CAMERA_LOG=1: the camera the compose saw, and the step from the
+        // previous one. A synthesized frame moves by this step, so a camera
+        // that does not advance smoothly is a picture that shimmers.
+        static const bool s_camLog = std::getenv("PS2X_CAMERA_LOG") != nullptr;
+        if (s_camLog)
+        {
+            static uint64_t s_n = 0;
+            if ((s_n++ % 30u) == 0u)
+            {
+                float df[3] = {cur.front[0] - m_interpCamera.front[0], cur.front[1] - m_interpCamera.front[1],
+                               cur.front[2] - m_interpCamera.front[2]};
+                float dp[3] = {cur.pos[0] - m_interpCamera.pos[0], cur.pos[1] - m_interpCamera.pos[1],
+                               cur.pos[2] - m_interpCamera.pos[2]};
+                std::cerr << "[cam] idx=" << m_presentIndex << " valid=" << cur.valid
+                          << " pos=" << cur.pos[0] << "," << cur.pos[1] << "," << cur.pos[2] << " dpos=" << dp[0] << ","
+                          << dp[1] << "," << dp[2] << " front=" << cur.front[0] << "," << cur.front[1] << ","
+                          << cur.front[2] << " dfront=" << df[0] << "," << df[1] << "," << df[2] << std::endl;
+            }
+        }
         m_interpPrevCamera = m_interpCamera;
         m_interpCamera = cur;
         m_interpHavePrev = m_interpHavePrev || cur.valid;
