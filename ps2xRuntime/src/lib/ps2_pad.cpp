@@ -779,6 +779,16 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     // 15, ...). Filled from the analog triggers, which stand in for the
     // pressure-sensitive face buttons the DualShock 2 had.
     uint8_t pressure[16]{};
+    // Full trigger travel maps to this raw pressure. The game reads the byte,
+    // multiplies it by 4 and clamps at 255 (FUN_002843d8 -> func_284370), so a
+    // raw 0..255 saturates at a quarter of the travel and the throttle feels
+    // like a switch. 64 puts the game's whole range across the whole travel.
+    static const float s_pressureMax = []()
+    {
+        const char *env = std::getenv("PS2X_PAD_PRESSURE_MAX");
+        const float value = env != nullptr ? std::strtof(env, nullptr) : 64.0f;
+        return std::clamp(value, 8.0f, 255.0f);
+    }();
     auto clearBit = [&btns](uint16_t mask)
     { btns &= ~mask; };
     auto press = [&clearBit](int ps2Button)
@@ -886,7 +896,7 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 // pull should modulate, not do nothing.
                 if (hostPressure[b] > 0.0f && ps2Button >= 0 && ps2Button < 16)
                 {
-                    const uint8_t value = static_cast<uint8_t>(std::lround(hostPressure[b] * 255.0f));
+                    const uint8_t value = static_cast<uint8_t>(std::lround(hostPressure[b] * s_pressureMax));
                     if (value > pressure[ps2Button])
                         pressure[ps2Button] = value;
                 }

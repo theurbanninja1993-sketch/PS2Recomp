@@ -532,11 +532,23 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
      throttle that creeps. A pull past ~10% sets the button bit too, so the game
      gets both bit and pressure across the whole travel. Verified the value
      reaches the game's read buffer (`[pad] ... pressure: 14:153` with
-     `PS2X_PAD_DEBUG=1`); **not yet verified that the game's driving responds to
-     it** - the scripted runs never get past the cutscenes, so this needs the
-     owner to drive and report. If it does nothing, the next things to try are
-     the pressure offset (the port writes the 12 pressure bytes at data[8..19],
-     right after the sticks) and whether the game wants the bit cleared harder.
+     `PS2X_PAD_DEBUG=1`).
+     **The game's side is now traced, and the offset is right.** The pad poll is
+     `FUN_002843d8` (called from `FUN_00284390`, which gets the per-player pad
+     state from `func_2852A8(i) = 0x005147A8 + i*0xD4`); it passes the read
+     buffer as `$sp` and then reads every pressure byte: `0x8`..`0x19` -> right,
+     left, up, down, triangle, circle, cross, square, L1, L2, R1, R2, i.e. the
+     same `data[8..19]` layout the port writes, with Cross at `0xE` and its
+     field at `+0x2A` of the pad state.
+     **But it scales each one by 4 and clamps at 255** (`func_284370`:
+     `dest = min(dest << 2, 255)`, the store happening in the `jal` delay slot).
+     So a raw 0..255 saturates the game's value at raw 64 - only the first
+     quarter of the trigger's travel would be analog, which is exactly why the
+     owner reported it still feeling on/off. Full trigger travel now maps to a
+     raw maximum of 64 (`PS2X_PAD_PRESSURE_MAX`, default 64) so the game's whole
+     range lands across the whole travel. Needs an owner feel-test; if the car
+     feels underpowered instead, the game's range really is 0..255 and the max
+     should go back up.
 6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
    regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
 7. **Player-selectable render API (Vulkan; D3D11 for Windows).** Owner's ask:
