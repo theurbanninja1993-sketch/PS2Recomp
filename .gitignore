@@ -24,3 +24,6 @@ android/local.properties
 android/.gradle/ 
 .idea/
 build-win/
+
+# ImGui window state, per machine; never part of the project
+imgui.ini
