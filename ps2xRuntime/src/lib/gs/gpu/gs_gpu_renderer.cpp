@@ -25,6 +25,7 @@
 namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
+std::atomic<uint64_t> g_gsComposedFrames{0}; // successful GPU composes, for the interp log
 std::atomic<bool> g_gsMotionBlurOff{false};
 std::atomic<uint32_t> g_gsFrameRate{60};
 std::atomic<bool> g_gsFrameInterp{false};
@@ -4083,6 +4084,7 @@ void main()
         m_lastComposedTexture = sharePresent ? m_presentShared[m_presentSharedIndex] : m_presentTexture;
         m_lastComposedWidth = width;
         m_lastComposedHeight = height;
+        g_gsComposedFrames.fetch_add(1u, std::memory_order_relaxed);
         if (sharePresent)
         {
             // Make the write visible to the host's context (it draws this
