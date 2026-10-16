@@ -53,6 +53,10 @@ namespace ps2x
         uint32_t m_dataOffset = 0;      // user data offset inside a raw sector
         std::vector<IsoEntry> m_entries;
         std::string m_volumeId;
+        // Why the last read failed, so a drive that is not ready, a disc that is
+        // still spinning up or a permission problem does not surface as the
+        // misleading "not an ISO9660 disc image".
+        std::string m_readError;
     };
 
     // Optical drives that can be passed to IsoImage::open: "/dev/sr0" on

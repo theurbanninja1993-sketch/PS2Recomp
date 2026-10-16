@@ -51,6 +51,7 @@ namespace ps2x
 #endif
         m_device = nullptr;
         m_entries.clear();
+        m_readError.clear();
     }
 
     bool IsoImage::readSectors(uint32_t lba, uint32_t count, uint8_t *out)
@@ -62,21 +63,38 @@ namespace ps2x
             LARGE_INTEGER offset;
             offset.QuadPart = static_cast<LONGLONG>(uint64_t(lba) * 2048u);
             if (!SetFilePointerEx(static_cast<HANDLE>(m_device), offset, nullptr, FILE_BEGIN))
+            {
+                m_readError = "can't seek the disc (Windows error " + std::to_string(GetLastError()) + ")";
                 return false;
+            }
             DWORD read = 0;
             const DWORD bytes = count * 2048u;
-            return ReadFile(static_cast<HANDLE>(m_device), out, bytes, &read, nullptr) && read == bytes;
+            if (!ReadFile(static_cast<HANDLE>(m_device), out, bytes, &read, nullptr) || read != bytes)
+            {
+                const DWORD code = GetLastError();
+                m_readError = (code == 21 || code == 1155)
+                                  ? "the disc is not ready - it can need a few seconds after insertion"
+                                  : "can't read the disc (Windows error " + std::to_string(code) + ")";
+                return false;
+            }
+            return true;
         }
 #endif
+        bool ok = false;
         if (m_sectorSize == 2048u)
-            return seek64(m_file, uint64_t(lba) * 2048u) && std::fread(out, 2048u, count, m_file) == count;
-        for (uint32_t i = 0; i < count; ++i)
         {
-            if (!seek64(m_file, uint64_t(lba + i) * m_sectorSize + m_dataOffset) ||
-                std::fread(out + size_t(i) * 2048u, 2048u, 1, m_file) != 1)
-                return false;
+            ok = seek64(m_file, uint64_t(lba) * 2048u) && std::fread(out, 2048u, count, m_file) == count;
         }
-        return true;
+        else
+        {
+            ok = true;
+            for (uint32_t i = 0; i < count && ok; ++i)
+                ok = seek64(m_file, uint64_t(lba + i) * m_sectorSize + m_dataOffset) &&
+                     std::fread(out + size_t(i) * 2048u, 2048u, 1, m_file) == 1;
+        }
+        if (!ok)
+            m_readError = "can't read the image at sector " + std::to_string(lba);
+        return ok;
     }
 
     bool IsoImage::open(const std::string &imagePath, std::string &error)
@@ -91,7 +109,19 @@ namespace ps2x
                                         FILE_ATTRIBUTE_NORMAL, nullptr);
             if (handle == INVALID_HANDLE_VALUE)
             {
-                error = "can't open drive " + imagePath + " (is a disc inserted?)";
+                // The Windows error is the useful part: it separates "no disc"
+                // from "not allowed", which otherwise look identical.
+                const DWORD code = GetLastError();
+                error = "can't open drive " + imagePath + " (Windows error " + std::to_string(code);
+                if (code == 5)
+                    error += ": access denied - try running this as administrator";
+                else if (code == 2)
+                    error += ": no such drive";
+                else if (code == 21 || code == 1155)
+                    error += ": the drive is not ready - no disc, or still spinning up";
+                else
+                    error += ": is a disc inserted?";
+                error += ")";
                 return false;
             }
             m_device = handle;
@@ -101,7 +131,8 @@ namespace ps2x
             m_file = std::fopen(imagePath.c_str(), "rb");
         if (!m_file && !m_device)
         {
-            error = "can't open " + imagePath;
+            // errno is the difference between "no such file" and "not allowed".
+            error = "can't open " + imagePath + " (" + std::strerror(errno) + ")";
             return false;
         }
         // Find the primary volume descriptor (sector 16) for each layout.
@@ -125,7 +156,7 @@ namespace ps2x
         if (!found)
         {
             close();
-            error = "not an ISO9660 disc image";
+            error = m_readError.empty() ? "not an ISO9660 disc image" : ("can't read the disc: " + m_readError);
             return false;
         }
         m_volumeId.assign(reinterpret_cast<const char *>(pvd + 40), 32);
