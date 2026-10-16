@@ -2177,10 +2177,23 @@ namespace
                     std::fflush(sink);
                 }
         }
-        // Only the input is written: the game's own ramp then moves the pedal
-        // toward it at its own rate, which is what gives the smooth feel (and is
-        // why fighting the pedal value directly never settled).
         writePedal(0x25Cu, throttleInput);
+        writePedal(0x66Cu, s_smoothGas);
+        writePedal(0x670u, s_smoothBrake);
+    }
+
+    // The game sets the throttle request from the button *before* the vehicle
+    // update runs, and the whole update - gear logic included - reads it. Every
+    // write inside the update therefore came too late for the logic that had
+    // already consumed it. Writing at the update's entry is what makes the
+    // analog request the one everything sees.
+    PS2Runtime::RecompiledFunction g_vcsOrigVehicleUpdate = nullptr;
+
+    void vcsVehicleUpdate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        vcsWritePlayerPedals(rdram, "upd");
+        if (g_vcsOrigVehicleUpdate != nullptr)
+            g_vcsOrigVehicleUpdate(rdram, ctx, runtime);
     }
 
     PS2Runtime::RecompiledFunction g_vcsOrigPedalReadA = nullptr;
@@ -2217,6 +2230,8 @@ namespace
             runtime.replaceFunction(0x002A2ED0u, &vcsAfterCamProcess);
         if ((g_vcsOrigFrameUpdate = runtime.lookupFunction(0x001B4688u)))
             runtime.replaceFunction(0x001B4688u, &vcsFrameUpdate);
+        if ((g_vcsOrigVehicleUpdate = runtime.lookupFunction(0x001B5D68u)))
+            runtime.replaceFunction(0x001B5D68u, &vcsVehicleUpdate);
         if ((g_vcsOrigVehicleControl = runtime.lookupFunction(0x001B8A68u)))
             runtime.replaceFunction(0x001B8A68u, &vcsVehicleControl);
         if ((g_vcsOrigPedalReadA = runtime.lookupFunction(0x001B9360u)))
