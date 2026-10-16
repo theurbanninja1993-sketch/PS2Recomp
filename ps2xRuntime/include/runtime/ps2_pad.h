@@ -26,6 +26,12 @@ bool ps2IsRealGamepad(int pad);
 // its own device layer (evdev force feedback on Linux, XInput on Windows).
 void ps2PadRumbleSetMotors(uint8_t small, uint8_t large);
 
+// The live analog trigger positions (0..1), left then right. Written by the pad
+// backend every frame; read by the game-side driving hook so the vehicle's own
+// gas pedal can follow the trigger (see game_overrides.cpp).
+extern std::atomic<float> g_ps2PadTriggerLeft;
+extern std::atomic<float> g_ps2PadTriggerRight;
+
 // Push the current motor state to the active controller. Host (window) thread,
 // once a frame, from updateHostInput.
 void ps2PadRumbleTick();

@@ -110,6 +110,10 @@ void ps2SetPreferredGamepad(const std::string &name)
     g_preferredPad = name;
 }
 
+// The live trigger positions, for the game-side driving hook (game_overrides.cpp).
+std::atomic<float> g_ps2PadTriggerLeft{0.0f};
+std::atomic<float> g_ps2PadTriggerRight{0.0f};
+
 // Adds mappings GLFW does not ship, plus an optional user file. Must run with
 // GLFW initialised - raylib does that in InitWindow - because
 // glfwUpdateGamepadMappings only re-evaluates already-connected joysticks and
@@ -879,6 +883,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                 hostPressure[b] = (rest <= -0.5f)
                                       ? std::clamp((axis - rest) / (1.0f - rest), 0.0f, 1.0f)
                                       : 0.0f;
+                (trigger == 0 ? g_ps2PadTriggerLeft : g_ps2PadTriggerRight)
+                    .store(hostPressure[b], std::memory_order_relaxed);
                 // A small deadzone counts as pressed, so the full travel feeds
                 // the pressure rather than only the upper half.
                 down = down || hostPressure[b] > 0.1f;
