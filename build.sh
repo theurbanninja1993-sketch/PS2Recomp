@@ -160,6 +160,30 @@ note "stages: $FROM..$TO$([ "$DRY_RUN" -eq 1 ] && echo " (dry run)")"
 
 mkdir -p "$WORK"
 
+# ---------------------------------------------------------------- tools
+# Every stage below calls a tool out of the build tree, so they have to exist
+# before the first one runs. On a fresh clone this is where they are built; after
+# that cmake finds nothing to do and it costs a couple of seconds. It is not a
+# numbered stage because it is a precondition rather than a step of the build.
+needs_tools=0
+for stage in 0 1 2 4 5; do
+    if [ "$FROM" -le "$stage" ] && [ "$TO" -ge "$stage" ]; then
+        needs_tools=1
+    fi
+done
+if [ "$needs_tools" -eq 1 ]; then
+    stage_begin "tools (configuring and building what the stages call)"
+    note "$ps2_recomp"
+    note "$ps2_iso"
+    note "$vu1_recomp"
+    run cmake -S "$PS2RECOMP" -B "$PS2RECOMP/build" -DCMAKE_BUILD_TYPE=Release
+    run cmake --build "$PS2RECOMP/build" --target ps2_recomp ps2x_iso vu1_recomp -j "$(nproc)"
+    for tool in "$ps2_recomp" "$ps2_iso" "$vu1_recomp"; do
+        [ "$DRY_RUN" -eq 1 ] || [ -x "$tool" ] || die "$tool did not build"
+    done
+    stage_end
+fi
+
 # ---------------------------------------------------------------- stage 0
 if [ "$FROM" -le 0 ] && [ "$TO" -ge 0 ]; then
     stage_begin "0. checking the disc"

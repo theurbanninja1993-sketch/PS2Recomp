@@ -38,6 +38,7 @@ It runs these stages, and each one is timed so you can see where the time goes:
 
 | Stage | What it does | Time |
 |---|---|---|
+| tools | configures and builds the tools the stages call | ~2 min on a fresh clone, seconds after |
 | 0 check | verifies the disc is the right game (boot-file hash) | instant |
 | 1 extract | pulls the files off it | ~17 min from a disc, instant from a folder |
 | 2 recompile | turns the game's ELF into C++ | ~1 s |
@@ -46,7 +47,8 @@ It runs these stages, and each one is timed so you can see where the time goes:
 | 5 vu1 | runs the game to learn its VU1 microprograms, twice | ~4 min |
 | 6 assemble | makes a ready-to-run folder | seconds |
 
-`--from N` / `--to N` resume a long build. The result lands in `dist/`.
+`--from N` / `--to N` resume a long build. The tools are built first whatever
+range is asked for: a fresh clone has none of them, and every stage calls one.
 
 The VU1 stage runs the game with `PS2X_HIDDEN_WINDOW=1`, so no window appears
 while it learns.
