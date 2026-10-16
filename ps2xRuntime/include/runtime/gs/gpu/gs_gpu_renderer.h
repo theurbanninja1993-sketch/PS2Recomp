@@ -231,6 +231,14 @@ namespace gsgpu
         {
             uint64_t generation = 0; // 1 + sum of its pages' write generations when hashed
             uint64_t hash = 0;
+            // The replacement this texture resolves to for this generation, and
+            // whether that is settled. The same texture is drawn thousands of
+            // times, and re-finding it in both replacement maps on every draw was
+            // the pack's per-draw cost. A texture whose load has only been
+            // *requested* is deliberately left unresolved, so its id is picked up
+            // when the worker delivers it.
+            GLuint replacement = 0;
+            bool resolved = false;
         };
         void updateReplacements(); // between frames: a new set of packs
         bool replacementsActive() const { return m_replIndex && !m_replIndex->files.empty(); }

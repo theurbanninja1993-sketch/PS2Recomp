@@ -3054,6 +3054,8 @@ void main()
             ScopeTimer timer{g_texreplHashSecs};
             hashed.hash = hashTextureMemory(state);
             hashed.generation = generation;
+            hashed.resolved = false; // the bytes changed: resolve again
+            hashed.replacement = 0;
         }
         gsrepl::Key key;
         key.tex0Hash = hashed.hash;
@@ -3069,10 +3071,21 @@ void main()
         if (const char *dumpDir = std::getenv("PS2X_TEXREPL_DUMP"); dumpDir && *dumpDir &&
                                                                         m_dumpedTextures.insert(key).second)
             dumpReplacementTexture(state, key);
+        // Settled answer from a previous draw of this same texture: one lookup
+        // instead of two, and no Key comparison in either map.
+        if (hashed.resolved)
+        {
+            if (hashed.replacement != 0)
+                ++m_statReplHits;
+            else
+                ++m_statReplMisses;
+            return hashed.replacement;
+        }
         const auto file = m_replIndex->files.find(key);
         if (file == m_replIndex->files.end())
         {
             ++m_statReplMisses;
+            hashed.resolved = true; // no replacement for this texture at all
             static const bool s_logMisses = std::getenv("PS2X_TEXREPL_LOG_MISSES") != nullptr;
             if (s_logMisses)
                 std::fprintf(stderr, "[texrepl] miss %016llx-%016llx-%08x tbp=%u tbw=%u\n", (unsigned long long)key.tex0Hash,
@@ -3082,7 +3095,11 @@ void main()
         ++m_statReplHits;
         Replacement &replacement = m_replacements[key];
         if (replacement.texture != 0)
+        {
+            hashed.resolved = true;
+            hashed.replacement = replacement.texture;
             return replacement.texture;
+        }
         if (!replacement.requested)
         {
             replacement.requested = true;
@@ -3121,6 +3138,8 @@ void main()
                     gl.glTextureParameterf(texture, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, 16.0f);
                     replacement.texture = texture;
                     ++m_statReplLoaded;
+                    hashed.resolved = true;
+                    hashed.replacement = texture;
                     return replacement.texture;
                 }
                 std::cerr << "[gs:gpu] replacement " << file->second.path << ": " << error << std::endl;

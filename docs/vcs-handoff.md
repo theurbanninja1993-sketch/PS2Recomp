@@ -455,6 +455,21 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
    - Verification harness: `tools/gs_replay` frame diffs + comparing
      `[texrepl]` hit/hash counts before/after (identical hits = identical
      mirrored bytes).
+   - **Where the pack's +15% actually is (2026-10-16, measured).** Not the
+     per-draw replacement lookup: caching the resolved replacement per texture
+     (keyed by its page generation, cleared with the index) changed the airport
+     replay by nothing. The +15% is the **replacement textures' loading and
+     upload** - 555 HD textures per pass, roughly 280 MB pushed to the GPU,
+     ~0.2 s at the observed rate, which matches the 0.211 s difference exactly.
+     It is a one-time cost per texture and is already capped at 6 MB/frame to
+     avoid the hitch on entering a new area. The per-draw caching is kept: it is
+     correct and cheaper, just not the bottleneck.
+     - **Open lever: anisotropy.** Every replacement is created with
+       `GL_TEXTURE_MAX_ANISOTROPY = 16` (16 taps per sample at grazing angles).
+       The replay cannot see GPU sampling cost (the GPU is asynchronous), so this
+       is invisible here but is a real per-frame cost on the HD textures - the
+       candidate for what the owner feels while a pack is loaded. Lowering it (or
+       making it a setting) is the next A/B, judged on the owner's machine.
    - **T4 mirror tables (2026-10-16).** `WriteT4Tile` ran 512 iterations per
      256-byte block, each doing two `(x, y)` table lookups and two
      `y * srcRowBytes` multiplies. The destination byte's two nibbles come from
