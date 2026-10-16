@@ -3466,7 +3466,12 @@ void PS2Runtime::run()
             // so counting frames drifts and the phase jumps every few pictures,
             // which reads as a glitch. Time does not drift.
             const double sincePicture = GetTime() - s_lastPictureTime;
-            const float phase = static_cast<float>(sincePicture * 60.0);
+            // PS2X_INTERP_PHASE_FIXED=<t> pins the phase instead of sweeping it.
+            // With no sweep there is nothing for a drifting or jumping phase to do,
+            // so a flicker that stops here is the phase and one that stays is not.
+            static const char *s_fixedPhase = std::getenv("PS2X_INTERP_PHASE_FIXED");
+            const float phase = s_fixedPhase != nullptr ? static_cast<float>(std::atof(s_fixedPhase))
+                                                       : static_cast<float>(sincePicture * 60.0);
             uint32_t synthWidth = 0, synthHeight = 0;
             const uint32_t synthTexture = m_gs.synthesizeFrame(phase, synthWidth, synthHeight);
             if (synthTexture != 0u && synthWidth != 0u && synthHeight != 0u)
