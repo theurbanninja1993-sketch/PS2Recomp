@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Assembles a self-contained, portable build for a USB stick.
+#
+#   tools/make_portable_build.sh [options]
+#
+#     --linux | --windows | --both   which builds to assemble (default: both)
+#     --out DIR                      output root (default: dist/)
+#     --game DIR                     extracted disc files (default: iso/extracted)
+#     --no-game-data                 do not copy the disc files
+#     --link-game                    symlink the disc files instead of copying
+#                                    (handy for testing; a stick needs a copy)
+#
+# Each platform lands in <out>/<platform>/ as:
+#
+#   ps2EntryRunner[.exe]   the port
+#   game/                  the disc's files (the boot file is found by name)
+#   prompts/               button-prompt packs
+#   music/                 the extra radio station's tracks
+#   mods/                  texture/cheat mods
+#   config/                created on first run (portable mode)
+#   portable.txt           marks the folder as portable: settings, generated
+#                          prompt art and logs stay in config/ next to the port
+#   run.sh / play.cmd      launcher
+#
+# On Linux the libraries the host may not carry (FFmpeg, libxml2, the DVD and
+# module-music readers) are bundled in lib/ and found through LD_LIBRARY_PATH.
+# The GL and X11 stack is deliberately not bundled: those must come from the
+# host, and a mismatched copy would be worse than none.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="$PWD/dist"
+GAME=""
+DO_LINUX=0 DO_WINDOWS=0 DO_GAME=1 LINK_GAME=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --linux) DO_LINUX=1 ;;
+        --windows) DO_WINDOWS=1 ;;
+        --both) DO_LINUX=1; DO_WINDOWS=1 ;;
+        --out) OUT="$2"; shift ;;
+        --game) GAME="$2"; shift ;;
+        --no-game-data) DO_GAME=0 ;;
+        --link-game) LINK_GAME=1 ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+    shift
+done
+[ $DO_LINUX -eq 0 ] && [ $DO_WINDOWS -eq 0 ] && { DO_LINUX=1; DO_WINDOWS=1; }
+
+say() { printf '%s\n' "$*"; }
+
+# Clears a platform folder before writing it, but keeps config/: that is the
+# player's settings, and re-running this script to update a build must not
+# throw them away.
+reset_dest() {
+    local dest="$1"
+    mkdir -p "$dest"
+    find "$dest" -mindepth 1 -maxdepth 1 ! -name config -exec rm -rf {} +
+}
+
+# Assets the port reads from its own folder (see ps2ExecutableDirectory users).
+copy_assets() {
+    local dest="$1" src="$2"
+    # -L: follow symlinks. The build tree may hold mods as links to a folder
+    # elsewhere, and a stick (exFAT, NTFS) cannot store a symlink at all.
+    for item in prompts music mods custom_logo.png vu1_programs.so vu1_programs.dll; do
+        [ -e "$src/$item" ] && cp -rL "$src/$item" "$dest/" || true
+    done
+    mkdir -p "$dest/mods"
+}
+
+copy_game() {
+    local dest="$1"
+    if [ $DO_GAME -eq 0 ]; then
+        mkdir -p "$dest/game"
+        say "    game/            (skipped: --no-game-data)"
+        return
+    fi
+    if [ $LINK_GAME -eq 1 ]; then
+        ln -sfn "$(cd "$GAME" && pwd)" "$dest/game"
+        say "    game/            -> $GAME (symlink)"
+        return
+    fi
+    say "    game/            copying $(du -sh "$GAME" | cut -f1) ..."
+    mkdir -p "$dest/game"
+    cp -rL "$GAME/." "$dest/game/"
+}
+
+# ---------------------------------------------------------------- Linux
+build_linux() {
+    local dest="$OUT/linux" src="$REPO/PS2Recomp/build/ps2xRuntime"
+    say "Linux -> $dest"
+    reset_dest "$dest"; mkdir -p "$dest/lib"
+
+    cp "$src/ps2EntryRunner" "$dest/ps2EntryRunner"
+    strip "$dest/ps2EntryRunner" 2>/dev/null || true
+    copy_assets "$dest" "$src"
+
+    # Only the C++ runtime is bundled. It is self-contained and the one thing a
+    # host is genuinely likely to be older at; everything else (the media stack,
+    # the SVG/GTK stack, X11, GL) is deliberately left to the host. Dragging in
+    # the whole transitive closure would copy the dynamic loader, the GL stack
+    # and systemd from the build machine, which is far more likely to break the
+    # target than to help it.
+    local bundled=0
+    local ldds
+    ldds=$(ldd "$dest/ps2EntryRunner" 2>/dev/null || true)
+    for lib in libstdc++.so.6 libgcc_s.so.1; do
+        local path
+        path=$(printf '%s\n' "$ldds" | awk -v want="$lib" '$1 == want { print $3; exit }') || true
+        if [ -n "$path" ] && [ -f "$path" ]; then
+            cp -n "$path" "$dest/lib/" || true
+            bundled=$((bundled + 1))
+        fi
+    done
+    say "    lib/             $bundled libraries (the C++ runtime; the rest comes from the host)"
+
+    printf '%s' '#!/bin/sh
+# Runs the port from this folder, whatever the current directory is.
+HERE=$(cd "$(dirname "$0")" && pwd)
+export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$HERE/ps2EntryRunner" "$@"' > "$dest/run.sh"
+    chmod +x "$dest/run.sh"
+    : > "$dest/portable.txt"
+    copy_game "$dest"
+    cp "$REPO/PS2Recomp/docs/PORTABLE.txt" "$dest/README.txt" 2>/dev/null || true
+}
+
+# -------------------------------------------------------------- Windows
+build_windows() {
+    local dest="$OUT/windows" src="$REPO/PS2Recomp/build-win/ps2xRuntime"
+    say "Windows -> $dest"
+    reset_dest "$dest"
+
+    cp "$src/ps2EntryRunner.exe" "$dest/"
+    # The build already places the FFmpeg DLLs next to the exe.
+    cp "$src"/*.dll "$dest/" 2>/dev/null || true
+    copy_assets "$dest" "$src"
+
+    printf '%s\r\n' '@echo off' \
+        'rem Runs the port from this folder, whatever the current directory is.' \
+        'cd /d "%~dp0"' \
+        'ps2EntryRunner.exe %*' > "$dest/play.cmd"
+    : > "$dest/portable.txt"
+    copy_game "$dest"
+    cp "$REPO/PS2Recomp/docs/PORTABLE.txt" "$dest/README.txt" 2>/dev/null || true
+}
+
+[ $DO_LINUX -eq 1 ] && build_linux
+[ $DO_WINDOWS -eq 1 ] && build_windows
+say ""
+say "Done. Copy the folders inside $OUT to the stick."

@@ -13,5 +13,6 @@ No game code or data lives here, only addresses and our own scripts.
 - `tools/`: map generator, MIPS/VU disassemblers, profiling helpers. Each
   script's usage line is at the top.
 
-Working copies outside this repo (`vcs-configs/`, `tools/`) were the
-originals; keep this copy in sync when changing them.
+These are now the authoritative copies. Older working copies outside the repo
+(`vcs-configs/`, `tools/` at the project root) are redundant and should be
+deleted rather than kept in sync.
