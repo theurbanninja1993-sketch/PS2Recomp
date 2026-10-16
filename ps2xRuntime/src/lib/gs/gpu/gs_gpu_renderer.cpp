@@ -3562,8 +3562,12 @@ void main()
             mid.up[i] = Ri[3 + i];
             mid.pos[i] = prev.pos[i] + t * (cur.pos[i] - prev.pos[i]);
         }
-        // (a, b) maps b -> a, so (mid, prev) maps prev -> mid: the warp we want.
-        const Ps2CameraHomography hm = ps2CameraHomography(mid, prev, depth);
+        // The shader samples the source at q for each output pixel, so it needs
+        // the mapping output(mid) -> source(prev). (a, b) maps b -> a, so that is
+        // (prev, mid) - not (mid, prev), which is its inverse. The inverse is the
+        // identity at t = 0, which is why a still camera looked right and every
+        // motion went the wrong way.
+        const Ps2CameraHomography hm = ps2CameraHomography(prev, mid, depth);
         if (!hm.usable)
             return false;
         const float inv = hm.m[8] != 0.0f ? 1.0f / hm.m[8] : 1.0f;
@@ -3613,7 +3617,7 @@ void main()
         {
             // Barely moving: the linear blend between the two views is exact
             // enough, and it needs no axis-angle path.
-            const Ps2CameraHomography hf = ps2CameraHomography(m_interpCamera, m_interpPrevCamera, s_depth);
+            const Ps2CameraHomography hf = ps2CameraHomography(m_interpPrevCamera, m_interpCamera, s_depth);
             if (!hf.usable)
                 return 0;
             const float inv = hf.m[8] != 0.0f ? 1.0f / hf.m[8] : 1.0f;
