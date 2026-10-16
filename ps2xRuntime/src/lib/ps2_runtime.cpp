@@ -3412,13 +3412,13 @@ void PS2Runtime::run()
         // The same test tells the host when the game produced nothing, which is
         // where a synthesized frame goes.
         static uint64_t s_lastCameraTick = ~0ull;
-        static uint32_t s_hostFramesSincePicture = 0;
+        static double s_lastPictureTime = 0.0;
         const uint64_t cameraTick = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
         const bool newPicture = cameraTick != s_lastCameraTick;
         if (newPicture)
         {
             s_lastCameraTick = cameraTick;
-            s_hostFramesSincePicture = 0;
+            s_lastPictureTime = GetTime();
             ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
             // g_ps2PresentedFrameCounter counts *pictures*, not host frames. It
             // used to advance with the host loop, which coincided at 60 Hz and
@@ -3429,10 +3429,7 @@ void PS2Runtime::run()
             static uint64_t s_pictures = 0;
             g_ps2PresentedFrameCounter.store(++s_pictures, std::memory_order_relaxed);
         }
-        else
-        {
-            ++s_hostFramesSincePicture;
-        }
+
         // The display rate drives the host cap. Above 60 the host presents faster
         // than the game produces pictures, and the frames in between are the ones
         // the interpolation fills in.
@@ -3463,11 +3460,13 @@ void PS2Runtime::run()
         g_gsFrameInterp.store(interp, std::memory_order_relaxed);
         if (interp && !newPicture)
         {
-            // Where this host frame sits between the two pictures it is between:
-            // one picture every rate/60 host frames.
-            const uint32_t perPicture =
-                std::max<uint32_t>(1u, g_gsFrameRate.load(std::memory_order_relaxed) / 60u);
-            const float phase = static_cast<float>(s_hostFramesSincePicture) / static_cast<float>(perPicture);
+            // Where this host frame sits between the two pictures it is between,
+            // as a *fraction of the picture interval* rather than a frame count:
+            // the host does not run at exactly the rate it targets (236, not 240),
+            // so counting frames drifts and the phase jumps every few pictures,
+            // which reads as a glitch. Time does not drift.
+            const double sincePicture = GetTime() - s_lastPictureTime;
+            const float phase = static_cast<float>(sincePicture * 60.0);
             uint32_t synthWidth = 0, synthHeight = 0;
             const uint32_t synthTexture = m_gs.synthesizeFrame(phase, synthWidth, synthHeight);
             if (synthTexture != 0u && synthWidth != 0u && synthHeight != 0u)
