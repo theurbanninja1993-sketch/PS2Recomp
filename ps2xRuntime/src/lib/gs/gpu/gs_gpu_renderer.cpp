@@ -770,8 +770,11 @@ void main()
         o_color = vec4(cur.rgb, 1.0);
         return;
     }
-    vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uv, 1.0);
-    vec2 prev = q.xy / q.z;
+    // v-down homography, v-up gl_FragCoord: see the synthesis shader's note.
+    vec2 uvD = vec2(uv.x, 1.0 - uv.y);
+    vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uvD, 1.0);
+    vec2 prevD = q.xy / q.z;
+    vec2 prev = vec2(prevD.x, 1.0 - prevD.y);
     vec2 motion = (uv - prev) * u_shutter * mask;
     vec4 acc = vec4(0.0);
     for (int i = 0; i < kTaps; ++i)
@@ -822,8 +825,14 @@ void main()
         o_color = vec4(cur.rgb, 1.0); // an overlay: do not move it
         return;
     }
-    vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uv, 1.0);
-    vec2 src = q.xy / q.z;
+    // The homography is built in the picture's v-down convention (see the note
+    // in ps2_camera.h) while gl_FragCoord is v-up, so flip around it. The
+    // identity case is unaffected - which is why this only ever showed as
+    // motion, and looked like the whole screen warping when the mouse moved.
+    vec2 uvD = vec2(uv.x, 1.0 - uv.y);
+    vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uvD, 1.0);
+    vec2 srcD = q.xy / q.z;
+    vec2 src = vec2(srcD.x, 1.0 - srcD.y);
     o_color = vec4(texture(u_source, clamp(src, vec2(0.0), vec2(1.0))).rgb, 1.0);
 }
 )";
