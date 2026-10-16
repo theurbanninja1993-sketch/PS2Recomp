@@ -3453,6 +3453,9 @@ void PS2Runtime::run()
         // synthesized. PS2X_FRAME_INTERP=1 forces it on regardless, for testing.
         static const bool s_forceInterp = std::getenv("PS2X_FRAME_INTERP") != nullptr;
         const bool interp = s_forceInterp || g_gsFrameRate.load(std::memory_order_relaxed) > 60u;
+        // Tell the renderer, so it builds the overlay mask: a synthesized frame
+        // must leave the HUD where it is.
+        g_gsFrameInterp.store(interp, std::memory_order_relaxed);
         if (interp && !newPicture)
         {
             // Where this host frame sits between the two pictures it is between:

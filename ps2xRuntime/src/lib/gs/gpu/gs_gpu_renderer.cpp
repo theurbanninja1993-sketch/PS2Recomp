@@ -27,6 +27,7 @@ namespace fs = std::filesystem;
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<bool> g_gsMotionBlurOff{false};
 std::atomic<uint32_t> g_gsFrameRate{60};
+std::atomic<bool> g_gsFrameInterp{false};
 std::atomic<bool> g_gsModernBlur{false};
 std::atomic<float> g_gsModernBlurStrength{0.0f};
 // The host window size, published by the main thread each frame (0 = unknown).
@@ -3155,7 +3156,8 @@ void main()
         // built whenever the blur is on; PS2X_OVERLAY_MASK forces it for testing.
         {
             static const bool s_force = std::getenv("PS2X_OVERLAY_MASK") != nullptr;
-            m_maskEnabled = s_force || g_gsModernBlur.load(std::memory_order_relaxed);
+            m_maskEnabled =
+                s_force || g_gsModernBlur.load(std::memory_order_relaxed) || g_gsFrameInterp.load(std::memory_order_relaxed);
         }
         // PS2X_OVERLAY_MASK_DUMP=<path>: once, write the frame's overlay mask out
         // as a PGM so the 3D/overlay split can be checked by eye. Dumped here, at
@@ -3518,7 +3520,12 @@ void main()
         setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         bindVao(m_emptyVao);
         gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        // The host draws this texture from its own context next, so the writes
+        // have to be visible: barrier, then submit. Without the flush the host can
+        // sample it before the pass has run, which shows as a black frame - the
+        // shared present path does the same thing for the same reason.
         gl.glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
+        gl.glFlush();
         outWidth = w;
         outHeight = hgt;
         return m_synthTexture[m_synthIndex];

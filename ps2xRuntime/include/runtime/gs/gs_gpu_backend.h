@@ -29,6 +29,10 @@ extern std::atomic<bool> g_gsMotionBlurOff;
 // Settings > Display > Frame rate. 60 shows only the game's own frames; above
 // that the host presents faster and the frames in between are synthesized.
 extern std::atomic<uint32_t> g_gsFrameRate;
+// True while the host is presenting faster than the game and synthesizing the
+// frames in between. The overlay mask is needed then as much as for the blur: a
+// synthesized frame must not move the HUD.
+extern std::atomic<bool> g_gsFrameInterp;
 // "Modern": blur the composed frame along the camera's motion, leaving the
 // screen-space overlays (the HUD, the minimap) sharp. Strength is how far the
 // smear reaches, in frames of camera motion.
