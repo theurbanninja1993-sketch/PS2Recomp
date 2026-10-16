@@ -781,7 +781,9 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
    - The owner has the self-contained contact sheet at
      `texdump/_contact_sheet.html` (open with the full file:// path).
 
-9. **Xbox One controller connected but unresponsive (owner report,
+9. **DONE (2026-10-16, owner-confirmed): Xbox One controller connected but
+   unresponsive.** Fixed; the original report and leads are kept below for
+   reference. **Xbox One controller connected but unresponsive (owner report,
    2026-10-13 late).** The DualSense works; the Xbox One pad is seen by the
    game but no input registers. Leads:
    - The pad selection logs `[pad] using controller <i>: <name> (connected: ...)`
@@ -1314,6 +1316,17 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       `interpolateCameraHomography` (`gs_gpu_renderer.cpp`), the pair is kept in
       `upscalePresentation`'s "frame about to be overwritten" block, and the host
       side is the interp block in `ps2_runtime.cpp`.
+
+      **Cleanup and perf (2026-10-16).** The diagnostics from the resolved hunts
+      are gone (`PS2X_PRESENT_SIZE_LOG`, `PS2X_SYNTH_FINISH`,
+      `PS2X_SYNTH_MASK_DEBUG`, `PS2X_INTERP_NO_MASK`, the per-frame `[cam]` log,
+      the host PPM dump), and the `[pad] reads=` line is now behind
+      `PS2X_PAD_DEBUG` instead of printing always (the boot log went from
+      thousands of lines to ~650). Host frame times with the synthesis on and off
+      are identical on this machine (60/16.67 ms at 60, 180/5.56 at 180,
+      240/4.17 at 240) and the emulation holds 60 throughout, but the boot scene
+      is too light to show the synthesis cost - a gameplay check on the owner's
+      machine is still the one that counts.
 
 ## Third-party assets (release-page credits)
 
