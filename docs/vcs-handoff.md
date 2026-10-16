@@ -265,8 +265,15 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
             image-then-extract.
           - **Verified:** `ps2x_iso extract /dev/sr0` (559 s, 17 files,
             3.9 GB) is byte-identical to extracting a `dd` image of the same
-            disc (dd: 532 s, 7.8 MB/s). Disc reading works on Linux. The
-            Windows drive path (`\\.\D:`) is still untested on hardware.
+            disc (dd: 532 s, 7.8 MB/s). Disc reading works on Linux.
+          - **Windows drive reading VERIFIED on hardware** (owner, 2026-10-16,
+            via the test build below): the drive was found and a real PS2 DVD
+            read correctly, and a disc that is not one of the two games is
+            reported as exactly that rather than as a failure. So the raw
+            `\\.\D:` path is good, needs no elevation, and the disc feature is
+            viable. The read failed only once, and that was a 0-byte copy on the
+            USB stick, not the code - the test tool now publishes a checksum for
+            that reason.
         - **Implemented:** `ps2x::opticalDrives()` and
           `IsoImage::open("/dev/sr0" | "D:")`, plus `ps2x_iso drives`. The
           owner has an external Blu-ray drive: test with `ps2x_iso drives`,
