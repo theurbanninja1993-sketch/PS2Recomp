@@ -1231,6 +1231,90 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       the old readback path for an A/B; measured here the two are visually
       identical (0.56/255 mean difference, filtering only).
 
+
+      **PARKED 2026-10-16: the interpolated picture warps. FOR THE NEXT PAIR OF
+      EYES.** Everything else about interpolation works - no black frames, the
+      HUD is protected, cutscenes and FMVs play, the picture stream is correct -
+      but with a moving camera the whole picture visibly warps against the
+      motion. Six real bugs were found and fixed on the way here, all worth
+      knowing because each one alone produced the same symptom:
+
+      1. **Context sharing** - the renderer's GL context was created before the
+         window existed, so it never joined the window's share group; a
+         synthesized frame is handed over as a texture, so the host drew a name
+         that meant something else. That was the original black flicker.
+         `GLContext::create` only tries the GLX share when the host context is
+         already published, and `GS::reset()` from the GS *constructor* brought
+         the renderer up before `InitWindow()`.
+      2. **Size** - the synthesized frame was handed over at the composed size
+         while the picture is handed over at the readback size, so the two kinds
+         of frame were resampled differently every other frame.
+      3. **Mask fetch** - the overlay mask texture is the scene target's full
+         extent (taller than the used region); the compose fetches it by texel
+         offset, the synth fetched it by normalized uv, so the HUD was not
+         protected and a phantom frozen band sat mid-screen.
+      4. **Cutscenes** - a cutscene's GS input arrives only a couple of times a
+         second, so the pair of composed frames stops advancing and the synthesis
+         warps a stale pair forever. Interpolation is now skipped while
+         `ps2_game_overrides::isInCutscene()` is true.
+      5. **The source copy** - `glBlitNamedFramebuffer` is affected by the
+         scissor test, and the game leaves its last scissor set from the draw
+         that ended the frame. The copy of the outgoing picture into the
+         interpolation source covered only that rect, leaving the source mostly
+         black - the "frozen black frame from before the fade-in".
+      6. **Convention and direction** - `ps2_camera.h` says outright that its K
+         matrices use the picture's **v-down** convention while `gl_FragCoord`
+         is v-up, and the shader samples the source at `q` for each *output*
+         pixel, so the homography must map **output(mid) -> source(prev)**. Both
+         were wrong: the warp was vertically mirrored, and it was the inverse of
+         the mapping needed. A standalone numeric check confirms the helper now
+         gives the identity at t=0 and exactly `ps2CameraHomography(prev, cur)`
+         at t=1.
+
+      **The warp survived all six fixes, so it is something else again.** What is
+      *known*:
+
+      - The homography math is exact and its direction is now verified.
+      - The warp is a no-op when the camera is still (which is why every
+        measurement taken standing still looked right).
+      - It scales with motion; the owner describes it as the whole screen warping
+        against the movement, worst on mouse turns.
+      - The display runs one picture behind by design (that is what
+        interpolation costs). If the remaining complaint is the *lag* rather
+        than a distortion, that is a trade-off, not a bug - worth asking.
+
+      **Next things to try, cheapest first:**
+      - `PS2X_INTERP_PHASE_FIXED=0.5` pins the phase: if the warp stops, it is
+        the phase sweep, not the warp.
+      - `PS2X_FRAME_INTERP_OFF=1` keeps the host rate and drops only the
+        synthesis - the reference for "does it need the synthesis at all".
+      - `PS2X_BLUR_DEPTH` sets the depth the homography's translation term uses
+        (default 200). The camera's *translation* is modelled at a single depth,
+        so the parallax is wrong everywhere else - small per frame, but it is the
+        one knowingly approximate part of the math, and worth an A/B.
+      - `PS2X_SYNTH_CHECK=1` has the renderer report the brightness of the
+        source and of the synthesized frame (the three outcomes and what they
+        mean are in the code).
+
+      **Diagnostics that exist** (all env-gated, all inert by default):
+      `PS2X_INTERP_LOG=1` - one line per host frame with picture/synth, phase,
+      drawn texture and size, a `composed=` counter and `camValid=` plus the
+      camera; `PS2X_INTERP_IN_CUTSCENE=1` bypasses the cutscene gate so the
+      synthesis can be exercised at the boot screen; `PS2X_SYNTH_WHY=1` says
+      which guard refused; `PS2X_SYNTH_MASK_DEBUG=1` the mask state;
+      `PS2X_HOST_FRAMECHECK=1` reads the presented frame back and reports synth
+      vs picture brightness; `PS2X_FRAME_INTERP_TEST=1` +
+      `PS2X_FRAME_INTERP_DUMP=<prefix>` + `PS2X_BLUR_FAKE_CAMERA=<deg>` dump a
+      source/synth PPM pair from a capture (the replay is deterministic with an
+      empty `PS2X_MODS_DIR`). `/tmp/opencode/dirtest/main.cpp` is a standalone
+      numeric check of the interpolation homography against the true camera
+      mapping - extend it rather than trusting a render.
+
+      The synthesis is `Renderer::synthesizeHostFrame` +
+      `interpolateCameraHomography` (`gs_gpu_renderer.cpp`), the pair is kept in
+      `upscalePresentation`'s "frame about to be overwritten" block, and the host
+      side is the interp block in `ps2_runtime.cpp`.
+
 ## Third-party assets (release-page credits)
 
 Both packs are by **AL2009man**, MIT-licensed, (c) 2024 Al. Lopez:
