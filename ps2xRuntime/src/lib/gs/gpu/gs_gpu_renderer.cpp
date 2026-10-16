@@ -4019,6 +4019,12 @@ void main()
             }
             else if (m_lastComposedTexture != 0)
             {
+                // glBlitNamedFramebuffer is affected by the scissor test, and the
+                // game leaves its last scissor set from the draw that ended the
+                // frame - so without this the copy covers only that small rect and
+                // the rest of the interpolation source stays black. That is the
+                // "frozen black frame from before the fade-in" the owner saw.
+                setScissorTest(false);
                 if (m_prevComposedTexture == 0 || m_prevComposedWidth != width || m_prevComposedHeight != height)
                 {
                     if (m_prevComposedTexture != 0)
@@ -4042,6 +4048,7 @@ void main()
                                           static_cast<GLint>(width), static_cast<GLint>(height), 0, 0,
                                           static_cast<GLint>(width), static_cast<GLint>(height), GL_COLOR_BUFFER_BIT,
                                           GL_NEAREST);
+                ++m_prevComposedCopies;
             }
             m_prevComposedWidth = width;
             m_prevComposedHeight = height;
