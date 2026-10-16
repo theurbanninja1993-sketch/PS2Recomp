@@ -5,7 +5,7 @@
 #
 #     --linux | --windows | --both   which builds to assemble (default: both)
 #     --out DIR                      output root (default: dist/)
-#     --game DIR                     extracted disc files (default: iso/extracted)
+#     --game DIR                     extracted disc files (required unless --no-game-data)
 #     --no-game-data                 do not copy the disc files
 #     --link-game                    symlink the disc files instead of copying
 #                                    (handy for testing; a stick needs a copy)
@@ -48,6 +48,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ $DO_LINUX -eq 0 ] && [ $DO_WINDOWS -eq 0 ] && { DO_LINUX=1; DO_WINDOWS=1; }
+if [ $DO_GAME -eq 1 ] && [ -z "$GAME" ]; then
+    echo "--game is required: point it at the extracted disc files (build.sh passes it)" >&2
+    exit 1
+fi
 
 say() { printf '%s\n' "$*"; }
 
@@ -83,14 +87,14 @@ copy_game() {
         say "    game/            -> $GAME (symlink)"
         return
     fi
-    say "    game/            copying $(du -sh "$GAME" | cut -f1) ..."
+    say "    game/            copying $(du -shL "$GAME" | cut -f1) ..."
     mkdir -p "$dest/game"
     cp -rL "$GAME/." "$dest/game/"
 }
 
 # ---------------------------------------------------------------- Linux
 build_linux() {
-    local dest="$OUT/linux" src="$REPO/PS2Recomp/build/ps2xRuntime"
+    local dest="$OUT/linux" src="$REPO/build/ps2xRuntime"
     say "Linux -> $dest"
     reset_dest "$dest"; mkdir -p "$dest/lib"
 
@@ -125,12 +129,12 @@ exec "$HERE/ps2EntryRunner" "$@"' > "$dest/run.sh"
     chmod +x "$dest/run.sh"
     : > "$dest/portable.txt"
     copy_game "$dest"
-    cp "$REPO/PS2Recomp/docs/PORTABLE.txt" "$dest/README.txt" 2>/dev/null || true
+    cp "$REPO/docs/PORTABLE.txt" "$dest/README.txt" 2>/dev/null || true
 }
 
 # -------------------------------------------------------------- Windows
 build_windows() {
-    local dest="$OUT/windows" src="$REPO/PS2Recomp/build-win/ps2xRuntime"
+    local dest="$OUT/windows" src="$REPO/build-win/ps2xRuntime"
     say "Windows -> $dest"
     reset_dest "$dest"
 
@@ -145,7 +149,7 @@ build_windows() {
         'ps2EntryRunner.exe %*' > "$dest/play.cmd"
     : > "$dest/portable.txt"
     copy_game "$dest"
-    cp "$REPO/PS2Recomp/docs/PORTABLE.txt" "$dest/README.txt" 2>/dev/null || true
+    cp "$REPO/docs/PORTABLE.txt" "$dest/README.txt" 2>/dev/null || true
 }
 
 [ $DO_LINUX -eq 1 ] && build_linux

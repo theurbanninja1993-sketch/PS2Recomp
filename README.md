@@ -8,6 +8,21 @@ recompiler configuration (addresses), and scripts. The game is generated on your
 machine, from your own disc. That is deliberate: the point is that nothing of
 Rockstar's is distributed here.
 
+## Built with AI
+
+This port was written with substantial help from AI. The code was produced by
+coding assistants under human direction, and every change was built and run
+before it was kept. The numbers in `docs/vcs-handoff.md` are measurements from
+real runs, and the things that did not work are written down there with the
+reason they were set aside.
+
+This is here, near the top, on purpose: some people would rather not use
+software made this way, and that is a fair position to hold. If it is yours, no
+argument from me — and you have found out before spending an evening on a build
+rather than after it.
+
+For everyone else, the licence is unchanged: GPL-3.0, inherited from PS2Recomp.
+
 ## Building it
 
 You need a PlayStation 2 copy of the game — the disc itself, or an `.iso` / `.bin`
@@ -28,7 +43,7 @@ It runs these stages, and each one is timed so you can see where the time goes:
 | 2 recompile | turns the game's ELF into C++ | ~1 s |
 | 3 install | copies it into the runtime | seconds |
 | 4 build | compiles the port (Linux, then Windows) | ~14 min |
-| 5 vu1 | runs the game to learn its VU1 microprograms, twice | ~10 min |
+| 5 vu1 | runs the game to learn its VU1 microprograms, twice | ~4 min |
 | 6 assemble | makes a ready-to-run folder | seconds |
 
 `--from N` / `--to N` resume a long build. The result lands in `dist/`.
