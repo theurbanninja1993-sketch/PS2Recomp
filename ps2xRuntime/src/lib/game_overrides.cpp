@@ -2110,6 +2110,13 @@ namespace ps2_game_overrides
     {
         vcsPublishCamera(rdram, g_vcsViewWindowX, g_vcsViewWindowY);
     }
+
+    // The cutscene flag, reachable from the runtime: the definition above is in
+    // this file's anonymous namespace.
+    bool isInCutscene(const uint8_t *rdram)
+    {
+        return vcsInCutscene(rdram);
+    }
 }
 
 PS2_REGISTER_GAME_OVERRIDE("GTA Vice City Stories (SLUS_215.90)", "SLUS_215.90", 0x001DD6A0u, 0u, &applyGtaVcsUs)

@@ -3470,8 +3470,13 @@ void PS2Runtime::run()
         // PS2X_FRAME_INTERP_OFF=1 keeps the host rate but drops the synthesis, so
         // "the host runs fast" and "the synthesis runs" can be told apart.
         static const bool s_interpOff = std::getenv("PS2X_FRAME_INTERP_OFF") != nullptr;
-        const bool interp =
-            !s_interpOff && (s_forceInterp || g_gsFrameRate.load(std::memory_order_relaxed) > 60u);
+        // Cutscenes are left alone: their pictures reach the GS only a couple of
+        // times a second, so the interpolation's pair of composed frames goes
+        // stale between them and the screen freezes on the last composable
+        // frame. Gameplay is where the interpolation belongs anyway.
+        const bool inCutscene = ps2_game_overrides::isInCutscene(m_memory.getRDRAM());
+        const bool interp = !s_interpOff && !inCutscene &&
+                            (s_forceInterp || g_gsFrameRate.load(std::memory_order_relaxed) > 60u);
         // Tell the renderer, so it builds the overlay mask: a synthesized frame
         // must leave the HUD where it is.
         g_gsFrameInterp.store(interp, std::memory_order_relaxed);

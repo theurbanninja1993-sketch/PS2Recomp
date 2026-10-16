@@ -3782,6 +3782,11 @@ void main()
             m_prevComposedTexture = 0;
             m_interpHavePrev = false;
         };
+        // Not interpolating (cutscene, or the rate is 60): drop the pair, so
+        // that when interpolation resumes it starts from two fresh composes
+        // rather than warping across the gap.
+        if (!g_gsFrameInterp.load(std::memory_order_relaxed))
+            dropInterpSource();
         static const bool s_fieldBob = std::getenv("PS2X_FIELD_BOB") != nullptr;
         if (s_fieldBob)
         {

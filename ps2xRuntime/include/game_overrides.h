@@ -35,6 +35,12 @@ namespace ps2_game_overrides
     // publishes at frames 1554, 1581, 1582, 1633, ...). The CCam itself is
     // updated every frame, so reading it here gives one fresh sample per picture.
     void publishCameraFrame(const uint8_t *rdram);
+
+    // True while the game is playing a cutscene (in-engine or FMV). The
+    // synthesis is skipped there: the cutscenes feed the GS only a couple of
+    // times a second, so the interpolation's picture pair goes stale and the
+    // screen freezes on the last composable frame.
+    bool isInCutscene(const uint8_t *rdram);
     void applyMatching(PS2Runtime &runtime, const std::string &elfPath, uint32_t entry, uint32_t crc32, bool crc32Valid);
 
     // Runtime helper for game-specific modules:
