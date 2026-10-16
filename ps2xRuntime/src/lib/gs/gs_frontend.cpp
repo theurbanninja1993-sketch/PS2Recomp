@@ -156,6 +156,12 @@ namespace
     struct GsCapture
     {
         FILE *file = nullptr;
+        // Records are collected here and written once at the end. Writing them
+        // out as they arrive stalls the game: a busy three-second capture is
+        // hundreds of megabytes (594 MB measured at the airport), which is far
+        // more than a USB stick can absorb while the emulation runs, and the
+        // writes happen on the game thread with the GS state mutex held.
+        std::vector<uint8_t> data;
         uint64_t startFrame = 0;
         uint64_t endFrame = 0;
         bool configured = false;
@@ -185,11 +191,13 @@ namespace
     {
         GsCapture &c = gsCapture();
         const uint32_t header[2] = {type, aSize + bSize};
-        std::fwrite(header, sizeof(header), 1, c.file);
+        const size_t at = c.data.size();
+        c.data.resize(at + sizeof(header) + aSize + bSize);
+        std::memcpy(c.data.data() + at, header, sizeof(header));
         if (aSize)
-            std::fwrite(a, 1, aSize, c.file);
+            std::memcpy(c.data.data() + at + sizeof(header), a, aSize);
         if (bSize)
-            std::fwrite(b, 1, bSize, c.file);
+            std::memcpy(c.data.data() + at + sizeof(header) + aSize, b, bSize);
     }
 }
 
@@ -238,8 +246,12 @@ static bool gsCaptureActive(GSRasterBackend *backend, bool hasLocalMemory)
     if (frame >= c.endFrame)
     {
         c.finished = true;
+        if (c.file != nullptr && !c.data.empty())
+            std::fwrite(c.data.data(), 1, c.data.size(), c.file);
         std::fclose(c.file);
         c.file = nullptr;
+        c.data.clear();
+        c.data.shrink_to_fit();
         std::cerr << "[gs:capture] done at frame " << frame << std::endl;
         return false;
     }

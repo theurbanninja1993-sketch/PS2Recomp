@@ -455,6 +455,14 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
    - Verification harness: `tools/gs_replay` frame diffs + comparing
      `[texrepl]` hit/hash counts before/after (identical hits = identical
      mirrored bytes).
+   - **F9 capture stalls fixed (2026-10-16).** Pressing F9 lagged the game
+     badly. `gsCaptureRecord` wrote every GIF packet and register with
+     `std::fwrite` as it arrived, on the game thread with the GS state mutex
+     held, so the GS serialized against the I/O for every record. A busy
+     three-second airport capture is **594 MB** (measured; a second one was
+     465 MB) - tens of thousands of small writes. It was not the disk (the owner
+     ran from the SSD): it was the per-record I/O under the mutex. Records are
+     now collected in memory and written once when the capture ends.
 4. Mods: file overrides (replace disc files from a mod folder). `.pnach`
    memory patches are now applied (be626b9): PCSX2 `patch=1,EE,ADDR,TYPE,VALUE`
    byte/short/word lines from enabled mod folders are written to EE RAM each
@@ -800,7 +808,11 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
      stock `xpad` only handles USB); an unmapped hid-generic node would
      explain "seen but dead".
 
-10. **Steam Controller (2026, Puck dongle) / Steam Input testing.** Goal:
+10. **DONE (2026-10-16, owner-tested): Steam Controller works through Steam.**
+    Adding `ps2EntryRunner` to Steam as a non-Steam game and using the Steam
+    Controller makes the game recognize it as a Steam controller and show the
+    correct prompts. The original goal and leads are kept below for reference.
+    Steam Controller (2026, Puck dongle) / Steam Input testing. Goal:
     exercise the Steam prompt set + the Steam device path without the Steam
     client. The owner has the **2026 Steam Controller** (Puck dongle
     `28de:1304`):
