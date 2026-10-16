@@ -5,6 +5,13 @@ This folder is self-contained. Copy it anywhere (a USB stick, another PC) and
 run it from there; nothing is installed and nothing outside this folder is
 touched.
 
+Built with AI
+-------------
+This port was written with substantial help from AI: coding assistants produced
+the code under human direction, and every change was built and run before it was
+kept. If you would rather not use software made this way, that is a fair position
+to hold - and now you know before you play rather than after.
+
 Running
 -------
 Linux     ./run.sh              (or double-click it, "Run as program")
