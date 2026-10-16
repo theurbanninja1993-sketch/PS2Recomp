@@ -2105,25 +2105,53 @@ namespace
     // vehicle is touched. Off unless Controls' "Analog throttle" is on.
     PS2Runtime::RecompiledFunction g_vcsOrigVehicleControl = nullptr;
 
-    void vcsVehicleControl(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    // The vehicle's update (FUN_001b5d68) calls the pedal readers around its own
+    // control update, and the control update smooths the pedal (it blends toward
+    // its 0/1 target), so a single write would be half overwritten: some readers
+    // would see the smoothed value and some ours, which is felt as the car
+    // surging. Writing immediately before every read is what makes it one
+    // consistent amount.
+    void vcsWritePlayerPedals(const uint8_t *rdram)
     {
-        if (g_vcsOrigVehicleControl != nullptr)
-            g_vcsOrigVehicleControl(rdram, ctx, runtime);
         if (!ps2HostSettings().analogThrottle)
             return;
         const uint32_t vehicle = findPlayerVehicle(rdram);
         if (vehicle == 0u)
             return;
-        // The vehicle's control block: gas pedal at +0x66C, brake at +0x670.
-        // FUN_001b8a68 writes them (from the button) and FUN_001b9360 /
-        // FUN_001ba600 read them as floats.
-        const auto writePedal = [rdram, vehicle](uint32_t offset, float value)
+        // The vehicle's control block: gas pedal at +0x66C, brake at +0x670
+        // (FUN_001b8a68), read as floats by FUN_001b9360 / FUN_001ba600.
+        uint8_t *ram = const_cast<uint8_t *>(rdram);
+        const auto writePedal = [ram, vehicle](uint32_t offset, float value)
         {
             if (vehicle + offset + 4u <= PS2_RAM_SIZE)
-                std::memcpy(rdram + vehicle + offset, &value, 4);
+                std::memcpy(ram + vehicle + offset, &value, 4);
         };
         writePedal(0x66Cu, g_ps2PadTriggerRight.load(std::memory_order_relaxed));
         writePedal(0x670u, g_ps2PadTriggerLeft.load(std::memory_order_relaxed));
+    }
+
+    PS2Runtime::RecompiledFunction g_vcsOrigPedalReadA = nullptr;
+    PS2Runtime::RecompiledFunction g_vcsOrigPedalReadB = nullptr;
+
+    void vcsPedalReadA(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        vcsWritePlayerPedals(rdram);
+        if (g_vcsOrigPedalReadA != nullptr)
+            g_vcsOrigPedalReadA(rdram, ctx, runtime);
+    }
+
+    void vcsPedalReadB(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        vcsWritePlayerPedals(rdram);
+        if (g_vcsOrigPedalReadB != nullptr)
+            g_vcsOrigPedalReadB(rdram, ctx, runtime);
+    }
+
+    void vcsVehicleControl(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (g_vcsOrigVehicleControl != nullptr)
+            g_vcsOrigVehicleControl(rdram, ctx, runtime);
+        vcsWritePlayerPedals(rdram);
     }
 
     void applyGtaVcsUs(PS2Runtime &runtime)
@@ -2138,6 +2166,10 @@ namespace
             runtime.replaceFunction(0x001B4688u, &vcsFrameUpdate);
         if ((g_vcsOrigVehicleControl = runtime.lookupFunction(0x001B8A68u)))
             runtime.replaceFunction(0x001B8A68u, &vcsVehicleControl);
+        if ((g_vcsOrigPedalReadA = runtime.lookupFunction(0x001B9360u)))
+            runtime.replaceFunction(0x001B9360u, &vcsPedalReadA);
+        if ((g_vcsOrigPedalReadB = runtime.lookupFunction(0x001BA600u)))
+            runtime.replaceFunction(0x001BA600u, &vcsPedalReadB);
         if ((g_vcsOrigSetViewWindow = runtime.lookupFunction(0x0018F2D8u)))
             runtime.replaceFunction(0x0018F2D8u, &vcsSetViewWindow);
         if ((g_vcsOrigSetFarClip = runtime.lookupFunction(0x0018F400u)))
