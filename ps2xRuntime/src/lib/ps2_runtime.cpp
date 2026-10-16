@@ -3452,6 +3452,7 @@ void PS2Runtime::run()
         // than the game produces pictures, and the frames in between have to be
         // synthesized. PS2X_FRAME_INTERP=1 forces it on regardless, for testing.
         static const bool s_forceInterp = std::getenv("PS2X_FRAME_INTERP") != nullptr;
+        static int s_hostCaptureLeft = 0;
         // PS2X_FRAME_INTERP_OFF=1 keeps the host rate but drops the synthesis, so
         // "the host runs fast" and "the synthesis runs" can be told apart.
         static const bool s_interpOff = std::getenv("PS2X_FRAME_INTERP_OFF") != nullptr;
@@ -3503,6 +3504,20 @@ void PS2Runtime::run()
         ps2ModsApplyPatches(m_memory.getRDRAM());
         if (IsKeyPressed(KEY_F9))
             ps2GsRequestCapture(180u); // ~3 s of GS input for tools/gs_replay
+        // F8: capture the next 24 frames the *host* draws. A synthesized frame only
+        // exists there, so a flicker that is not in the composed frame will show
+        // here and nowhere else. PS2X_HOST_CAPTURE sets the prefix.
+        if (IsKeyPressed(KEY_F8))
+            s_hostCaptureLeft = 24;
+        // PS2X_HOST_CAPTURE_AT=<hostFrame> starts the same capture without a key
+        // press, so the path can be checked on its own.
+        {
+            static const char *s_captureAt = std::getenv("PS2X_HOST_CAPTURE_AT");
+            static uint64_t s_hostFrames = 0;
+            ++s_hostFrames;
+            if (s_captureAt != nullptr && s_hostFrames == static_cast<uint64_t>(std::strtoull(s_captureAt, nullptr, 10)))
+                s_hostCaptureLeft = 24;
+        }
 #if !defined(PLATFORM_VITA)
         ps2HostSettingsApplyWindow();
 #endif
@@ -3599,21 +3614,20 @@ void PS2Runtime::run()
         }
         EndDrawing();
 
-        // PS2X_HOST_CAPTURE=<prefix>: capture the frame the host actually drew -
-        // not the composed one, because a bad synthesized frame only exists here.
-        // raylib wants this after EndDrawing; a short window keeps it cheap.
+        // F8 / PS2X_HOST_CAPTURE: the frame the host drew. TakeScreenshot reads
+        // after the swap, so a minority of these come back black - that is the
+        // capture, not the renderer. Treat an isolated black frame here as
+        // suspect; a run of them is real.
+        if (const char *capturePrefix = std::getenv("PS2X_HOST_CAPTURE");
+            capturePrefix != nullptr && s_hostCaptureLeft > 0)
         {
-            static const char *s_capture = std::getenv("PS2X_HOST_CAPTURE");
-            static uint64_t s_hostFrame = 0;
-            ++s_hostFrame;
-            if (s_capture != nullptr && s_hostFrame >= 600u && s_hostFrame <= 660u)
-            {
-                char path[1024];
-                std::snprintf(path, sizeof(path), "%s_%04llu.png", s_capture,
-                              static_cast<unsigned long long>(s_hostFrame));
-                TakeScreenshot(path);
-            }
+            char path[1024];
+            std::snprintf(path, sizeof(path), "%s_%04d.png", capturePrefix, 24 - s_hostCaptureLeft);
+            --s_hostCaptureLeft;
+            TakeScreenshot(path);
+            std::cerr << "[host] captured " << path << std::endl;
         }
+
 
         // Opt-in frame capture for headless bring-up: PS2X_SCREENSHOT_EVERY=<frames>
         // writes the presented guest frame (no debug UI) to frame_<n>.png in the cwd.
