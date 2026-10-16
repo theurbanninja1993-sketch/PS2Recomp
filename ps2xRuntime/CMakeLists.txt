@@ -419,6 +419,7 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_camera.cpp
     src/lib/ps2_mods.cpp
     src/lib/ps2_pad.cpp
+    src/lib/ps2_pad_rumble.cpp
     src/lib/ps2_prompt_art.cpp
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp

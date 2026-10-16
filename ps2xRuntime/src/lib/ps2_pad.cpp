@@ -775,6 +775,10 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     }
 
     uint16_t btns = 0xFFFFu;
+    // Analog pressure per PS2 button, indexed by its bit (Cross is 14, Square
+    // 15, ...). Filled from the analog triggers, which stand in for the
+    // pressure-sensitive face buttons the DualShock 2 had.
+    uint8_t pressure[16]{};
     auto clearBit = [&btns](uint16_t mask)
     { btns &= ~mask; };
     auto press = [&clearBit](int ps2Button)
@@ -833,15 +837,37 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             GAMEPAD_BUTTON_LEFT_FACE_UP, GAMEPAD_BUTTON_LEFT_FACE_DOWN, GAMEPAD_BUTTON_LEFT_FACE_LEFT,
             GAMEPAD_BUTTON_LEFT_FACE_RIGHT};
         bool hostDown[ps2controls::kHostButtonCount]{};
+        // How far each host button is pulled, for the analog triggers. The
+        // DualShock 2's face buttons were pressure-sensitive and the game reads
+        // that pressure - in a vehicle the triggers are accelerate and brake -
+        // so an all-or-nothing trigger makes driving either flat out or stopped.
+        float hostPressure[ps2controls::kHostButtonCount]{};
         bool anyDown = false;
         for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
         {
             bool down = IsGamepadButtonDown(kGamepad, kRaylibButton[b]);
             // Analog triggers (rest at -1) on pads without trigger buttons.
-            if (b == ps2controls::PadLT)
-                down = down || GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_TRIGGER) > 0.0f;
-            else if (b == ps2controls::PadRT)
-                down = down || GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.0f;
+            if (b == ps2controls::PadLT || b == ps2controls::PadRT)
+            {
+                const int trigger = (b == ps2controls::PadLT) ? 0 : 1;
+                const float axis = GetGamepadAxisMovement(
+                    kGamepad, trigger == 0 ? GAMEPAD_AXIS_LEFT_TRIGGER : GAMEPAD_AXIS_RIGHT_TRIGGER);
+                // raylib reports a trigger from -1 (released) to 1 (fully
+                // pulled). The lowest value ever seen is taken as the rest
+                // point, and the axis is only trusted as analog once it has
+                // rested low: a pad whose mapping has no trigger axis at all
+                // reports something else there, and must not become a throttle
+                // that creeps on its own.
+                static float s_triggerRest[2] = {0.0f, 0.0f};
+                s_triggerRest[trigger] = std::min(s_triggerRest[trigger], axis);
+                const float rest = s_triggerRest[trigger];
+                hostPressure[b] = (rest <= -0.5f)
+                                      ? std::clamp((axis - rest) / (1.0f - rest), 0.0f, 1.0f)
+                                      : 0.0f;
+                // A small deadzone counts as pressed, so the full travel feeds
+                // the pressure rather than only the upper half.
+                down = down || hostPressure[b] > 0.1f;
+            }
             hostDown[b] = down;
             anyDown = anyDown || down;
         }
@@ -851,13 +877,22 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         if (!s_padHeldByMenu)
             for (int b = 0; b < ps2controls::kHostButtonCount; ++b)
             {
-                if (!hostDown[b])
-                    continue;
                 // Every button follows the context's map: the menu context keeps
                 // the classic layout, so the D-pad (and everything else)
                 // navigates the game's menus under every gameplay layout.
                 // D-pad Down also holds the radio on/off toggle (above).
-                press(settings.gamepadMap[context][b]);
+                const int ps2Button = settings.gamepadMap[context][b];
+                // Pressure is recorded even below the press threshold: a light
+                // pull should modulate, not do nothing.
+                if (hostPressure[b] > 0.0f && ps2Button >= 0 && ps2Button < 16)
+                {
+                    const uint8_t value = static_cast<uint8_t>(std::lround(hostPressure[b] * 255.0f));
+                    if (value > pressure[ps2Button])
+                        pressure[ps2Button] = value;
+                }
+                if (!hostDown[b])
+                    continue;
+                press(ps2Button);
             }
 
         float lx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_X);
@@ -1037,6 +1072,9 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
+    // Analog pressure, by PS2 button bit, for readPadPortData to pick up.
+    for (int bit = 0; bit < 16; ++bit)
+        data[8 + bit] = pressure[bit];
     // PS2X_PAD_DEBUG=1: once a second, what a controller is doing - which pad
     // the port picked, whether the pinned name matched, the host buttons down
     // and the PS2 mask that resulted.
@@ -1068,12 +1106,16 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
                          ",ax=" + axes + ")";
             }
             const char *name = pad >= 0 ? GetGamepadName(pad) : nullptr;
+            std::string pressureText;
+            for (int bit = 0; bit < 16; ++bit)
+                if (pressure[bit] != 0)
+                    pressureText += " " + std::to_string(bit) + ":" + std::to_string(pressure[bit]);
             char line[1024];
             std::snprintf(line, sizeof(line),
-                          "[pad] active=%d '%s' pinned='%s' prompts='%s' connected:%s ps2mask=0x%04x axes=%u,%u,%u,%u\n",
+                          "[pad] active=%d '%s' pinned='%s' prompts='%s' connected:%s ps2mask=0x%04x axes=%u,%u,%u,%u pressure:%s\n",
                           pad, name ? name : "(none)", ps2HostSettings().controllerName.c_str(),
                           ps2CurrentPromptSet().c_str(), names.c_str(), static_cast<unsigned>(btns), data[6], data[7],
-                          data[4], data[5]);
+                          data[4], data[5], pressureText.empty() ? " none" : pressureText.c_str());
             ps2PadDebugLog(line);
         }
     }
@@ -1102,6 +1144,9 @@ void PSPadBackend::updateHostInput()
 {
     ps2SetHostThread();
     ps2MapUnrecognisedPads();
+    // Before the early returns below: the game's rumble must keep reaching the
+    // controller while the settings menu is open or the mouse is released.
+    ps2PadRumbleTick();
     // F7: a marker in the log (playtest notes: "it happened here").
     // F8: snapshot EE RAM to ram_f8_<frame>.bin (memory diffing while playing,
     // e.g. finding the radio station variable).

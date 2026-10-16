@@ -501,7 +501,42 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
    frame. New setting "Apply .pnach memory patches" (`pnach_cheats`, default
    on; Mods tab). `extended` writes and conditional/pointer code words are
    skipped. Unit tests in `ps2xTest/src/ps2_mods_tests.cpp`.
-5. Controllers: PlayStation button names in the menu, rumble.
+5. Controllers: PlayStation button names in the menu (done), rumble (done),
+   analog trigger pressure (done, needs an owner feel-test - see below).
+   - **Rumble.** The game drives the two DualShock motors through
+     `scePadSetActDirect`, which used to be a no-op. Nothing in the input stack
+     could pass it on: raylib's GLFW backend stubs `SetGamepadVibration` out
+     ("not available on target platform") and GLFW 3.4 exposes no rumble at all,
+     so each platform drives its own device layer - `src/lib/ps2_pad_rumble.cpp`
+     (its own translation unit so `<windows.h>` and raylib.h never meet, which is
+     what made the first Windows build fail). Linux: kernel force feedback on the
+     pad's evdev node (`EVIOCSFF`, the same `/dev/input` tree
+     `ps2BuildEvdevMapping` already walks), one `FF_RUMBLE` effect with
+     `replay.length = 0` updated in place; works for DualSense, Xbox and Switch
+     pads. Windows: XInput, loaded by hand, applied to every slot - Xbox-family
+     pads only; a DualSense/DS4/Switch pad on Windows needs HID output reports,
+     which this does not do. `PS2X_PAD_RUMBLE=0` disables it. Verified: the game
+     calls the stub with `port=0 slot=0` and a data pointer (bytes `00,e6` - the
+     large/left motor), and the host's effect upload+play is accepted by the
+     kernel (`effect=0 rc=0`).
+   - **Analog trigger pressure.** The DualShock 2's face buttons were
+     pressure-sensitive and the game reads that pressure (`scePadEnterPressMode`
+     is called; `buttonMask` stays 0xFFFF). In a vehicle the port maps RT to
+     Cross (accelerate) and LT to Square (brake), but collapsed the trigger to a
+     boolean at `GetGamepadAxisMovement(...) > 0.0f`. The pressure now flows:
+     `readState` turns the trigger axis into a 0..255 pressure for whichever PS2
+     button the trigger is mapped to (`data[8 + bit]`), `readPadPortData` copies
+     it into `PadInputState::pressure`, and `pressureValue` prefers it over the
+     digital answer. The rest point is detected (lowest axis value seen) rather
+     than assumed, so a pad whose mapping has no trigger axis cannot become a
+     throttle that creeps. A pull past ~10% sets the button bit too, so the game
+     gets both bit and pressure across the whole travel. Verified the value
+     reaches the game's read buffer (`[pad] ... pressure: 14:153` with
+     `PS2X_PAD_DEBUG=1`); **not yet verified that the game's driving responds to
+     it** - the scripted runs never get past the cutscenes, so this needs the
+     owner to drive and report. If it does nothing, the next things to try are
+     the pressure offset (the port writes the 12 pressure bytes at data[8..19],
+     right after the sticks) and whether the game wants the bit cleared harder.
 6. VU1 compiled-program coverage (captures in heavy areas, e.g. the airport;
    regenerate `vcs-vu1` with `vu1_recomp vcs-vu1 <captures...>`).
 7. **Player-selectable render API (Vulkan; D3D11 for Windows).** Owner's ask:

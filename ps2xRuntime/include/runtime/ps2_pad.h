@@ -18,6 +18,18 @@ void ps2SetPreferredGamepad(const std::string &name);
 // device can never be auto-selected or read.
 bool ps2IsRealGamepad(int pad);
 
+// The emulated game's rumble state, from scePadSetActDirect: the small
+// (right/weak) motor then the large (left/strong). This is a state, not an
+// event - the game sets it and it stays until changed - so it is stored here
+// and pushed to the active controller by updateHostInput on the host thread.
+// Nothing in raylib's GLFW backend can do this itself, so each platform drives
+// its own device layer (evdev force feedback on Linux, XInput on Windows).
+void ps2PadRumbleSetMotors(uint8_t small, uint8_t large);
+
+// Push the current motor state to the active controller. Host (window) thread,
+// once a frame, from updateHostInput.
+void ps2PadRumbleTick();
+
 // Installs the gamepad mappings GLFW does not ship (plus the user file in the
 // config folder). Safe to call at any time: it retries until GLFW is
 // initialised, so map it right after InitWindow and before the first pad read.

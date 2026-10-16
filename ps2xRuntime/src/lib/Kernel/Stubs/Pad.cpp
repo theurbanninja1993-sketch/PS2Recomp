@@ -4,6 +4,7 @@
 #include <sstream>
 #include "Common.h"
 #include "Pad.h"
+#include "runtime/ps2_pad.h"
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 
@@ -46,6 +47,13 @@ namespace ps2_stubs
             uint8_t ry = kPadAnalogCenter;
             uint8_t lx = kPadAnalogCenter;
             uint8_t ly = kPadAnalogCenter;
+            // Real pressure per PS2 button, indexed by its bit (Cross is 14,
+            // Square 15, ...). Zero means "no analog source", and the button is
+            // then reported as fully pressed or not pressed at all. The host
+            // fills this from the analog triggers, which stand in for the
+            // pressure-sensitive face buttons the DualShock 2 had (accelerate
+            // and brake in a vehicle).
+            uint8_t pressure[16] = {};
         };
 
         struct PadPortState
@@ -245,6 +253,20 @@ namespace ps2_stubs
             {
                 return 0u;
             }
+            // A real pressure - an analog trigger standing in for one of the
+            // DualShock 2's pressure-sensitive buttons - wins over the digital
+            // answer. Find the button's bit index to look it up.
+            int index = -1;
+            for (int bit = 0; bit < 16; ++bit)
+                if ((mask & (1u << bit)) != 0u)
+                {
+                    index = bit;
+                    break;
+                }
+            if (index >= 0 && state.pressure[index] != 0u)
+            {
+                return state.pressure[index];
+            }
             return ((state.buttons & mask) == 0u) ? 0xFFu : 0u;
         }
 
@@ -368,6 +390,10 @@ namespace ps2_stubs
                     state.ry = backendData[5];
                     state.lx = backendData[6];
                     state.ly = backendData[7];
+                    // The backend carries per-button pressure at offset 8, by bit
+                    // index (Cross is 14, Square 15, ...).
+                    for (int bit = 0; bit < 16; ++bit)
+                        state.pressure[bit] = backendData[8 + bit];
                     usedBackend = true;
                 }
                 else
@@ -458,6 +484,8 @@ namespace ps2_stubs
         portState->pressureEnabled = true;
         portState->reqState = 0u;
         queueExecCmdStateLocked(*portState);
+        if (ps2PadDebugEnabled())
+            ps2PadDebugLog("[pad] pressure mode enabled\n");
         setReturnS32(ctx, 1);
     }
 
@@ -787,8 +815,13 @@ namespace ps2_stubs
 
     void scePadSetActDirect(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        (void)rdram;
         (void)runtime;
+        // libpad hands over two actuator bytes: the small (right/weak) motor,
+        // then the large (left/strong). They are the game's rumble state rather
+        // than an event, so store them and let the host push them out.
+        const uint8_t *data = getConstMemPtr(rdram, getRegU32(ctx, 6));
+        if (data != nullptr)
+            ps2PadRumbleSetMotors(data[0], data[1]);
         setReturnS32(ctx, 1);
     }
 
@@ -804,6 +837,13 @@ namespace ps2_stubs
             portState->buttonMask = static_cast<uint16_t>(getRegU32(ctx, 6));
             portState->reqState = 0u;
             queueExecCmdStateLocked(*portState);
+            if (ps2PadDebugEnabled())
+            {
+                char line[96];
+                std::snprintf(line, sizeof line, "[pad] buttonMask=0x%04x (pressure requested for these)\n",
+                              static_cast<unsigned>(portState->buttonMask));
+                ps2PadDebugLog(line);
+            }
         }
         setReturnS32(ctx, 1);
     }
