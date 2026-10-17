@@ -189,7 +189,8 @@ if [ "$FROM" -le 0 ] && [ "$TO" -ge 0 ]; then
     stage_begin "0. checking the disc"
     if [ -d "$IMAGE" ]; then
         [ -f "$IMAGE/$game_boot_file" ] || die "no $game_boot_file in $IMAGE"
-        hash=$(xxh128sum "$IMAGE/$game_boot_file" | cut -d' ' -f1)
+        need_tool "$ps2_iso"
+        hash=$("$ps2_iso" hashfile "$IMAGE/$game_boot_file" | cut -d' ' -f1)
         note "extracted folder; boot $game_boot_file"
     else
         need_tool "$ps2_iso"

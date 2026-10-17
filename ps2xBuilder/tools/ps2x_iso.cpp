@@ -3,6 +3,8 @@
 //   ps2x_iso info <image>              volume, boot file, file count, size
 //   ps2x_iso list <image>              every entry
 //   ps2x_iso hash <image> [path]       XXH3-128 of the boot file (or path)
+//   ps2x_iso hashfile <path>           XXH3-128 of a file on disk (a disc already
+//                                      extracted to a folder, most often)
 //   ps2x_iso extract <image> <outdir>  every file, with progress
 #include "ps2x_iso9660.h"
 
@@ -13,11 +15,30 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
 namespace
 {
+    // XXH3-128 of a file on disk. The same value the disc path reports for the boot
+    // file, so a disc and a folder of files extracted from it check against each
+    // other - without needing xxhsum, which is often not installed.
+    int hashFile(const std::string &path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+        {
+            std::fprintf(stderr, "can't read %s\n", path.c_str());
+            return 1;
+        }
+        const std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const XXH128_hash_t h = XXH3_128bits(data.data(), data.size());
+        std::printf("%016" PRIx64 "%016" PRIx64 "  %s\n", h.high64, h.low64, path.c_str());
+        return 0;
+    }
+
     // The knows-good boot files, so a disc can be named rather than just hashed.
     std::string gameForHash(const std::string &hash)
     {
@@ -121,6 +142,8 @@ int main(int argc, char **argv)
         return checkIso({}, true);
     if (argc >= 2 && std::string(argv[1]) == "check")
         return checkIso(argc > 2 ? argv[2] : std::string{}, false);
+    if (argc >= 2 && std::string(argv[1]) == "hashfile")
+        return hashFile(argc > 2 ? argv[2] : std::string{});
     if (argc >= 2 && std::string(argv[1]) == "drives")
     {
         for (const std::string &drive : ps2x::opticalDrives())
