@@ -27,3 +27,6 @@ build-win/
 
 # ImGui window state, per machine; never part of the project
 imgui.ini
+
+# the fetched llvm-mingw cross-compiler: 673 MB, and this machine's copy
+toolchains/
