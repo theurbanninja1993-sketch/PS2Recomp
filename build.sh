@@ -373,14 +373,13 @@ if [ "$FROM" -le 4 ] && [ "$TO" -ge 4 ]; then
     note "configuring"
     run cmake -S "$PS2RECOMP" -B "$PS2RECOMP/build" -DCMAKE_BUILD_TYPE=Release -DPS2X_VU1_PROGRAMS="$vu1_dir"
     run cmake --build "$PS2RECOMP/build" --target ps2EntryRunner -j "$(nproc)"
-    # The Windows build is cross-compiled, so it only exists on a machine set up
-    # for it. Build it when it is configured; the else is not an error.
-    if [ -f "$PS2RECOMP/build-win/CMakeCache.txt" ]; then
-        note "windows build"
-        run cmake --build "$PS2RECOMP/build-win" --target ps2EntryRunner -j "$(nproc)"
-    else
-        note "no build-win configured; skipping the Windows build"
-    fi
+    # The Windows build is *not* done here. It is a cross-compile, and it has to
+    # come after stage 5 for a reason that is not obvious: ps2_vu1_programs is a
+    # link dependency of the runner, and without it on the link line the resolver
+    # takes raylib's CloseWindow/ShowCursor from USER32 instead and stops with
+    # "duplicate symbol". Stage 5 ends by configuring build-win with the VU1
+    # directory and building it, which is where it belongs and the only place it
+    # needs doing.
     stage_end
 fi
 
@@ -427,7 +426,11 @@ if [ "$FROM" -le 5 ] && [ "$TO" -ge 5 ]; then
     if [ "$DRY_RUN" -eq 0 ] && [ "$(find "$learn" -name 'vu1_learn_*.bin' | wc -l)" -eq 0 ]; then
         die "no VU1 captures recorded; the game may not have reached gameplay"
     fi
-    # Windows once, at the end: the passes only need the Linux runner.
+    # Windows once, at the end - and it must be after this stage, not before it:
+    # the VU1 programs are a link dependency of the runner, and a Windows link
+    # without them resolves raylib's CloseWindow/ShowCursor against USER32's and
+    # fails with "duplicate symbol". The passes themselves only need the Linux
+    # runner, so this is also the only time the Windows build is needed.
     if [ -f "$PS2RECOMP/build-win/CMakeCache.txt" ]; then
         run cmake -S "$PS2RECOMP" -B "$PS2RECOMP/build-win" -DPS2X_VU1_PROGRAMS="$vu1_dir"
         run cmake --build "$PS2RECOMP/build-win" --target ps2EntryRunner -j "$(nproc)"
