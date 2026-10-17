@@ -363,6 +363,37 @@ uint32_t GSGpuBackend::SynthesizeFrame(float phase, uint32_t &width, uint32_t &h
     return texture;
 }
 
+void GSGpuBackend::RequestSynthesis(double displayTime)
+{
+    if (m_synthInFlight.exchange(true))
+        return; // the previous request is still queued: it will serve
+    Command command = Command::make(CommandType::Call);
+    command.payload->call = [this, displayTime]()
+    {
+        uint32_t w = 0, h = 0;
+        const uint32_t texture = m_renderer ? m_renderer->synthesizeHostFrameAt(displayTime, w, h) : 0u;
+        {
+            std::lock_guard<std::mutex> lock(m_synthResultMutex);
+            m_synthResultTexture = texture;
+            m_synthResultWidth = w;
+            m_synthResultHeight = h;
+            ++m_synthResultSeq;
+        }
+        m_synthInFlight.store(false);
+    };
+    enqueue(std::move(command), true);
+}
+
+bool GSGpuBackend::LatestSynthesis(uint32_t &texture, uint32_t &width, uint32_t &height, uint64_t &seq)
+{
+    std::lock_guard<std::mutex> lock(m_synthResultMutex);
+    texture = m_synthResultTexture;
+    width = m_synthResultWidth;
+    height = m_synthResultHeight;
+    seq = m_synthResultSeq;
+    return m_synthResultSeq != 0;
+}
+
 bool GSGpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 {
     bool cleared = false;

@@ -853,6 +853,17 @@ uint32_t GS::latchedHostPresentationGlTexture(uint32_t &outWidth, uint32_t &outH
     return m_hostPresentationGlTexture;
 }
 
+void GS::requestSynthesis(double displayTime)
+{
+    if (m_backend)
+        m_backend->RequestSynthesis(displayTime);
+}
+
+bool GS::latestSynthesis(uint32_t &texture, uint32_t &width, uint32_t &height, uint64_t &seq)
+{
+    return m_backend && m_backend->LatestSynthesis(texture, width, height, seq);
+}
+
 uint32_t GS::synthesizeFrame(float phase, uint32_t &outWidth, uint32_t &outHeight)
 {
     outWidth = 0;

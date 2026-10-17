@@ -3458,12 +3458,19 @@ void PS2Runtime::run()
         // than the game produces pictures, and the frames in between are the ones
         // the interpolation fills in.
         {
-            static uint32_t s_appliedRate = 0;
-            const uint32_t wanted = std::max<uint32_t>(60u, g_gsFrameRate.load(std::memory_order_relaxed));
+            static int s_appliedRate = -1;
+            const uint32_t rate = std::max<uint32_t>(60u, g_gsFrameRate.load(std::memory_order_relaxed));
+            // With VSync on and interpolation running, VSync alone sets the pace:
+            // one interpolated frame per display refresh. Capping as well (120 on
+            // a 180 Hz display) makes the swap land on alternate 1- and 2-refresh
+            // intervals - frames shown for 5.6 / 11.1 ms in turn - which reads as
+            // a bouncing frame rate and juddering motion. VSync off: the setting
+            // caps the rate as before.
+            const int wanted = (rate > 60u && ps2HostSettings().vsync) ? 0 : static_cast<int>(rate);
             if (wanted != s_appliedRate)
             {
                 s_appliedRate = wanted;
-                SetTargetFPS(static_cast<int>(wanted));
+                SetTargetFPS(wanted);
             }
         }
         // Frame interpolation (PS2X_FRAME_INTERP=1): on a frame the game produced
@@ -3489,6 +3496,37 @@ void PS2Runtime::run()
         // must leave the HUD where it is.
         g_gsFrameInterp.store(interp, std::memory_order_relaxed);
         bool drewSynth = false;
+        static double s_synthMs = 0.0; // the previous host frame's synthesis round trip
+        // PS2X_HOST_TIMING=1: every 180 host frames, the spread of host frame
+        // times and of the synthesis round trip (frame pacing).
+        {
+            static const bool s_timing = std::getenv("PS2X_HOST_TIMING") != nullptr;
+            static std::vector<double> s_frames, s_synths;
+            if (s_timing)
+            {
+                s_frames.push_back(GetFrameTime() * 1000.0);
+                s_synths.push_back(s_synthMs);
+                if (s_frames.size() >= 180u)
+                {
+                    auto report = [](std::vector<double> v, const char *what)
+                    {
+                        std::sort(v.begin(), v.end());
+                        double sum = 0.0;
+                        for (double x : v)
+                            sum += x;
+                        std::fprintf(stderr, " %s avg=%.2f p50=%.2f p99=%.2f max=%.2f", what, sum / v.size(), v[v.size() / 2],
+                                     v[v.size() * 99 / 100], v.back());
+                    };
+                    std::fprintf(stderr, "[hosttiming]");
+                    report(s_frames, "frameMs");
+                    report(s_synths, "synthMs");
+                    std::fprintf(stderr, "\n");
+                    s_frames.clear();
+                    s_synths.clear();
+                }
+            }
+            s_synthMs = 0.0;
+        }
         float synthPhase = -1.0f;
         // Every frame is synthesized when interpolating: the display runs one
         // picture behind the game, and each host frame shows the position
@@ -3507,7 +3545,31 @@ void PS2Runtime::run()
             const float phase = s_fixedPhase != nullptr ? static_cast<float>(std::atof(s_fixedPhase)) : -1.0f;
             synthPhase = phase;
             uint32_t synthWidth = 0, synthHeight = 0;
-            const uint32_t synthTexture = m_gs.synthesizeFrame(phase, synthWidth, synthHeight);
+            const auto synthStart = std::chrono::steady_clock::now();
+            uint32_t synthTexture = 0;
+            if (s_fixedPhase != nullptr)
+            {
+                // Pinned phase (a test aid): the blocking form.
+                synthTexture = m_gs.synthesizeFrame(phase, synthWidth, synthHeight);
+            }
+            else
+            {
+                // Non-blocking: ask for the frame this refresh will show and draw
+                // the newest finished one. Waiting on the render thread here made
+                // the host frame time follow its load (spikes to 30 ms in busy
+                // scenes at 4x) - a bouncing frame rate on screen.
+                const int refresh = GetMonitorRefreshRate(GetCurrentMonitor());
+                const double period = (ps2HostSettings().vsync && refresh > 0)
+                                          ? 1.0 / refresh
+                                          : 1.0 / std::max<uint32_t>(60u, g_gsFrameRate.load(std::memory_order_relaxed));
+                const double now =
+                    std::chrono::duration<double>(synthStart.time_since_epoch()).count();
+                m_gs.requestSynthesis(now + period);
+                uint64_t seq = 0;
+                if (!m_gs.latestSynthesis(synthTexture, synthWidth, synthHeight, seq))
+                    synthTexture = 0;
+            }
+            s_synthMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - synthStart).count();
             if (synthTexture != 0u && synthWidth != 0u && synthHeight != 0u)
             {
                 {

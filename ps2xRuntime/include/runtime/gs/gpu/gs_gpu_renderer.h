@@ -58,6 +58,14 @@ namespace gsgpu
         // overlays alone. Returns the texture (0 if it cannot make one). Called
         // from the render thread, through the backend.
         GLuint synthesizeHostFrame(float phase, uint32_t &outWidth, uint32_t &outHeight);
+        // The same, with the phase taken for displayTime (steady_clock seconds).
+        GLuint synthesizeHostFrameAt(double displayTime, uint32_t &outWidth, uint32_t &outHeight)
+        {
+            m_synthDisplayTime = displayTime;
+            const GLuint texture = synthesizeHostFrame(-1.0f, outWidth, outHeight);
+            m_synthDisplayTime = 0.0;
+            return texture;
+        }
         bool clearFramebuffer(const GSContext &context, uint32_t rgba);
         uint32_t consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes);
 
@@ -392,6 +400,7 @@ namespace gsgpu
         static constexpr int kSynthRing = 6;
         GLuint m_synthTexture[kSynthRing] = {}, m_synthFramebuffer[kSynthRing] = {};
         uint32_t m_synthWidth = 0, m_synthHeight = 0;
+        double m_synthDisplayTime = 0.0; // > 0: the phase is for this moment
         int m_synthIndex = 0;
         // Downscaled copy of the synthesized frame at the readback size, so the
         // host draws it exactly as it draws the composed picture.

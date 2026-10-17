@@ -37,6 +37,20 @@ public:
         return 0;
     }
 
+    // The non-blocking form: ask for an interpolated frame for the moment it
+    // will be displayed (steady_clock seconds), and fetch the newest finished
+    // one. The host then never waits on a busy render thread - it shows the
+    // latest result, repeating it for a frame at worst.
+    virtual void RequestSynthesis(double displayTime) { (void)displayTime; }
+    virtual bool LatestSynthesis(uint32_t &texture, uint32_t &width, uint32_t &height, uint64_t &seq)
+    {
+        (void)texture;
+        (void)width;
+        (void)height;
+        (void)seq;
+        return false;
+    }
+
     virtual bool ClearFramebuffer(const GSContext &context, uint32_t rgba) = 0;
     virtual uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) = 0;
 

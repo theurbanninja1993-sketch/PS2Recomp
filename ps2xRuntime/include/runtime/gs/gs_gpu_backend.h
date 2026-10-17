@@ -82,6 +82,8 @@ public:
 
     // Blocking round trip to the render thread (see GSRasterBackend).
     uint32_t SynthesizeFrame(float phase, uint32_t &width, uint32_t &height) override;
+    void RequestSynthesis(double displayTime) override;
+    bool LatestSynthesis(uint32_t &texture, uint32_t &width, uint32_t &height, uint64_t &seq) override;
 
     bool ClearFramebuffer(const GSContext &context, uint32_t rgba) override;
     uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) override;
@@ -92,6 +94,11 @@ public:
     GSTransferSnapshot GetTransferSnapshot() const override;
 
 private:
+    // RequestSynthesis / LatestSynthesis: one request in flight at a time.
+    std::atomic<bool> m_synthInFlight{false};
+    std::mutex m_synthResultMutex;
+    uint32_t m_synthResultTexture = 0, m_synthResultWidth = 0, m_synthResultHeight = 0;
+    uint64_t m_synthResultSeq = 0;
     enum class CommandType : uint8_t
     {
         State, // draw state for the following Submits

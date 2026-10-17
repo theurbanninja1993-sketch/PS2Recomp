@@ -3954,7 +3954,7 @@ void main()
                 g_gsInterpShownYaw.store(cameraYawDeg(m_interpCamera), std::memory_order_relaxed);
                 return 0;
             }
-            const double elapsed = interpNow() - m_interpPairTime;
+            const double elapsed = (m_synthDisplayTime > 0.0 ? m_synthDisplayTime : interpNow()) - m_interpPairTime;
             // Waiting for the new picture's camera: hold the old picture (t=0),
             // which is what is already on screen.
             t = m_interpPending ? 0.0f : static_cast<float>(elapsed / m_interpInterval);

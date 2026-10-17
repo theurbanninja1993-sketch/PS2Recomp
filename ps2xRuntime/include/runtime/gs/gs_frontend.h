@@ -152,6 +152,11 @@ public:
     // immediately - and only meaningful when the renderer shares the host's
     // context, since the texture is a plain GL id.
     uint32_t synthesizeFrame(float phase, uint32_t &outWidth, uint32_t &outHeight);
+    // Non-blocking: request a frame for displayTime (steady_clock seconds);
+    // latestSynthesis returns the newest finished one (texture 0 = show the
+    // plain picture).
+    void requestSynthesis(double displayTime);
+    bool latestSynthesis(uint32_t &texture, uint32_t &width, uint32_t &height, uint64_t &seq);
 
     // Hands the latched frame to the caller (no copy when it is already packed
     // at its width, which the upscaled GPU path always is), so this is not
