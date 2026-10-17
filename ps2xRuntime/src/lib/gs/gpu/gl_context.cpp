@@ -8,6 +8,8 @@
 
 #include "runtime/gs/gpu/gl_context.h"
 
+#include <cstdio>
+
 namespace gsgpu
 {
     std::atomic<uintptr_t> g_hostSharedGlContext{0u};
@@ -137,15 +139,43 @@ namespace gsgpu
             const char *env = std::getenv("PS2X_GL_VERSION");
             return env != nullptr ? std::atoi(env) : 6;
         }();
+        // Each version is tried shared first, then unshared on the same DC. Sharing
+        // is what lets the composed picture be handed to the host with no readback,
+        // so it is worth knowing precisely which part a driver objects to: the share
+        // (fixable by matching the two contexts) or the DC itself (not). The Windows
+        // error code is the only thing that says which, and nothing was logging it.
         HGLRC context = nullptr;
+        // Whether the context that was actually made is sharing. Not the same as
+        // "a share context existed": the fallback below creates one that does not
+        // share, and the present path must not be told otherwise or it will hand the
+        // host a texture from a context it cannot see.
+        bool usedShare = false;
         for (int minor = requestedMinor; minor >= 5 && context == nullptr; --minor)
-            context = createContextAttribs ? [&]
+        {
+            if (createContextAttribs == nullptr)
+                break;
+            const int attributes[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, minor,
+                                      WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
+            context = createContextAttribs(dc, shareContext, attributes);
+            if (context != nullptr)
             {
-                const int attributes[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, minor,
-                                          WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
-                return createContextAttribs(dc, shareContext, attributes);
-            }() : nullptr;
-        m_shared = context != nullptr && shareContext != nullptr;
+                usedShare = shareContext != nullptr;
+                break;
+            }
+            if (shareContext != nullptr)
+            {
+                std::fprintf(stderr, "[gs:gpu] shared 4.%d core refused (Windows error %lu)\n", minor,
+                             static_cast<unsigned long>(GetLastError()));
+                context = createContextAttribs(dc, nullptr, attributes);
+                if (context != nullptr)
+                    std::fprintf(stderr, "[gs:gpu] 4.%d core works on this DC when unshared: it is the share it "
+                                         "objects to\n", minor);
+                else
+                    std::fprintf(stderr, "[gs:gpu] 4.%d core refused on this DC as well (Windows error %lu)\n", minor,
+                                 static_cast<unsigned long>(GetLastError()));
+            }
+        }
+        m_shared = context != nullptr && usedShare;
         wglMakeCurrent(nullptr, nullptr);
         wglDeleteContext(legacy);
         if (!context || !wglMakeCurrent(dc, context))
@@ -156,6 +186,34 @@ namespace gsgpu
             {
                 ReleaseDC(window, dc);
                 DestroyWindow(window);
+            }
+            // Second attempt, on a private window with nothing shared. A driver may
+            // refuse a core context on the host's DC, or refuse to share across the
+            // two context versions, and this is the arrangement that works when it
+            // does: the composed picture comes back through a framebuffer readback,
+            // which costs a round-trip per frame and is still a great deal better
+            // than the CPU rasterizer. What was happening instead - on a Windows
+            // laptop, with the host's DC and its context shared - was falling all
+            // the way to the rasterizer because this was the only attempt made.
+            //
+            // Once only, or this would recurse: the retry suppresses both published
+            // values, so the recursive call takes the private-window path.
+            static bool s_triedPrivate = false;
+            if (!s_triedPrivate && !ownDc)
+            {
+                s_triedPrivate = true;
+                const uintptr_t dcSaved = g_hostSharedGlDisplay.exchange(0u, std::memory_order_relaxed);
+                const uintptr_t ctxSaved = g_hostSharedGlContext.exchange(0u, std::memory_order_relaxed);
+                std::fprintf(stderr, "[gs:gpu] shared core context on the host's DC failed; retrying unshared, "
+                                     "on a private window\n");
+                const bool ok = create(error);
+                g_hostSharedGlDisplay.store(dcSaved, std::memory_order_relaxed);
+                g_hostSharedGlContext.store(ctxSaved, std::memory_order_relaxed);
+                if (ok)
+                {
+                    std::fprintf(stderr, "[gs:gpu] running unshared: the display will go through a readback\n");
+                    return true;
+                }
             }
             error = "wglCreateContextAttribsARB (GL 4.6 core) failed";
             return false;
