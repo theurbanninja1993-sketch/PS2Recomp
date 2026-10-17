@@ -26,6 +26,7 @@ namespace fs = std::filesystem;
 
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<uint64_t> g_gsComposedFrames{0}; // successful GPU composes, for the interp log
+std::atomic<float> g_gsInterpLastPhase{-1.0f}; // the phase the last synthesis used (PS2X_INTERP_LOG)
 
     // Anisotropic filtering for replacement textures. Owner-measured at the
     // airport with the HD pack: 16 taps per sample at grazing angles cost about
@@ -3458,8 +3459,15 @@ void main()
     // Reads the published camera, keeping the previous one. Called once per
     // compose whatever else is enabled: the interpolation deltas are between
     // composed frames, so this must not depend on the blur being on.
-    void Renderer::trackCamera()
+    // Seconds on the render thread's steady clock.
+    static double interpNow()
     {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    void Renderer::trackCamera(const GSPresentationRequest &request)
+    {
+        m_interpShifted = false;
         Ps2CameraState cur;
         // The same synthetic camera the blur uses, for testing from a capture
         // (which has no game running to publish a real one).
@@ -3480,21 +3488,49 @@ void main()
             cur.viewX = 0.7f;
             cur.viewY = 0.525f;
             cur.valid = true;
-            m_interpPrevCamera = m_interpCamera;
-            m_interpCamera = cur;
-            m_interpHavePrev = m_interpHavePrev || cur.valid;
-            return;
         }
-        for (int attempt = 0; attempt < 3; ++attempt)
+        else if (request.hasCamera)
         {
-            const uint64_t before = g_ps2CameraFrame.load(std::memory_order_relaxed);
-            cur = g_ps2Camera;
-            if (g_ps2CameraFrame.load(std::memory_order_relaxed) == before)
-                break;
+            // The camera latched with this very picture, on the game thread.
+            cur = request.camera;
         }
+        else
+        {
+            // No camera with the request (a replay): the last published one.
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                const uint64_t before = g_ps2CameraFrame.load(std::memory_order_relaxed);
+                cur = g_ps2Camera;
+                if (g_ps2CameraFrame.load(std::memory_order_relaxed) == before)
+                    break;
+            }
+        }
+        // A new game frame is a picture whose camera moved. VCS draws a new view
+        // every 2-4 VBlanks (15-30 fps) while a picture is composed every VBlank,
+        // so treating every compose as a frame gave pairs with no motion followed
+        // by one pair carrying the whole multi-VBlank step - swept in a single
+        // VBlank, which is the jitter, and warped across a large step, which is
+        // the visible warping. Repeats of the same view leave the pair alone.
+        const auto same = [](const Ps2CameraState &a, const Ps2CameraState &b)
+        {
+            for (int i = 0; i < 3; ++i)
+                if (a.front[i] != b.front[i] || a.pos[i] != b.pos[i] || a.up[i] != b.up[i])
+                    return false;
+            return a.viewX == b.viewX && a.viewY == b.viewY && a.valid == b.valid;
+        };
+        if (s_fake == nullptr && same(cur, m_interpCamera))
+            return;
+        const double now = interpNow();
+        const double gap = now - m_interpPairTime;
+        // The interval between game frames, averaged so the sweep has a steady
+        // length; a long gap (a load, a pause, a cutscene) is not a frame time.
+        if (m_interpHavePrev && gap > 0.004 && gap < 0.25)
+            m_interpInterval = std::clamp(m_interpInterval * 0.7 + gap * 0.3, 1.0 / 60.0, 1.0 / 10.0);
+        m_interpPairTime = now;
         m_interpPrevCamera = m_interpCamera;
         m_interpCamera = cur;
         m_interpHavePrev = m_interpHavePrev || cur.valid;
+        m_interpShifted = true;
     }
 
     // PS2X_GS_PRESENT_SHARE: -1 automatic, 1 forced shared, 0 forced readback.
@@ -3624,7 +3660,26 @@ void main()
         // newest picture - and the owner saw it: a camera that accelerates makes
         // the prediction wrong, and the whole frame wobbles around the static
         // HUD. Both endpoints are known here, so the positions are always right.
-        const float t = std::clamp(phase, 0.0f, 1.0f);
+        // phase < 0: the renderer's own phase - how far the sweep from the
+        // previous game frame to the current one has got, on the clock that
+        // timed the pair. The host's clock cannot know when the pair changed:
+        // it reset the phase at its own VBlank, and when that came before the
+        // compose it showed the *old* pair at t=0 - a step back, then forward.
+        float t = phase;
+        if (phase < 0.0f)
+        {
+            const double elapsed = interpNow() - m_interpPairTime;
+            t = static_cast<float>(elapsed / m_interpInterval);
+            // Swept through: the current picture *is* this view, with its own
+            // up-to-date content - show it as it is.
+            if (t >= 1.0f)
+            {
+                g_gsInterpLastPhase.store(1.0f, std::memory_order_relaxed);
+                return 0;
+            }
+        }
+        t = std::clamp(t, 0.0f, 1.0f);
+        g_gsInterpLastPhase.store(t, std::memory_order_relaxed);
         float ext[9];
         if (!interpolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext))
         {
@@ -3775,7 +3830,7 @@ void main()
     {
         // Every composed frame is a sample for the interpolation, whatever else is
         // enabled - so this runs before any early return.
-        trackCamera();
+        trackCamera(request);
         // The host draws the composed frame with raylib between our frames, and
         // if its context shares state with ours those calls change bindings
         // behind the cache's back. Dropping the cache here costs a handful of
@@ -4020,17 +4075,24 @@ void main()
             setUniform1f(p, uniform(p, "u_overlayToAlpha"), (reproject && overlayValid) ? 1.0f : 0.0f);
             setUniform1f(p, uniform(p, "u_overlayDebug"), s_overlayDebug ? 1.0f : 0.0f);
         }
-        // The frame about to be overwritten becomes the interpolation source:
-        // synthesized frames are warped between the previous picture and the
-        // current one, never beyond the newest.
+        // When this picture starts a new game frame, the last composed picture -
+        // the previous game frame - becomes the interpolation source. It is held
+        // across the repeats that follow (2-4 VBlanks per game frame), so it is
+        // always a copy of its own: the shared present ring is reused every
+        // compose. Repeats of the same view leave it alone.
         static const bool s_interpTestKeep = std::getenv("PS2X_FRAME_INTERP_TEST") != nullptr;
-        if (g_gsFrameInterp.load(std::memory_order_relaxed) || s_interpTestKeep)
+        bool sourceCopied = false;
+        const bool interpWanted = g_gsFrameInterp.load(std::memory_order_relaxed) || s_interpTestKeep;
+        if (interpWanted && m_interpShifted && m_lastComposedTexture != 0 && m_lastComposedWidth == width &&
+            m_lastComposedHeight == height)
         {
-            if (sharePresent && m_lastComposedTexture != 0)
-            {
-                m_prevComposedTexture = m_presentShared[m_presentSharedIndex];
-            }
-            else if (m_lastComposedTexture != 0)
+            GLuint sourceFramebuffer = 0;
+            if (m_lastComposedTexture == m_presentTexture)
+                sourceFramebuffer = m_presentFramebuffer;
+            for (int i = 0; i < 2 && sourceFramebuffer == 0; ++i)
+                if (m_lastComposedTexture == m_presentShared[i])
+                    sourceFramebuffer = m_presentSharedFramebuffer[i];
+            if (sourceFramebuffer != 0)
             {
                 // glBlitNamedFramebuffer is affected by the scissor test, and the
                 // game leaves its last scissor set from the draw that ended the
@@ -4045,8 +4107,6 @@ void main()
                         gl.glDeleteFramebuffers(1, &m_prevComposedFramebuffer);
                         gl.glDeleteTextures(1, &m_prevComposedTexture);
                     }
-                    m_prevComposedWidth = width;
-                    m_prevComposedHeight = height;
                     gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_prevComposedTexture);
                     gl.glTextureStorage2D(m_prevComposedTexture, 1, GL_RGBA8, static_cast<GLsizei>(width),
                                           static_cast<GLsizei>(height));
@@ -4057,15 +4117,21 @@ void main()
                                                  m_prevComposedTexture, 0);
                     gl.glNamedFramebufferDrawBuffer(m_prevComposedFramebuffer, GL_COLOR_ATTACHMENT0);
                 }
-                gl.glBlitNamedFramebuffer(m_presentFramebuffer, m_prevComposedFramebuffer, 0, 0,
-                                          static_cast<GLint>(width), static_cast<GLint>(height), 0, 0,
-                                          static_cast<GLint>(width), static_cast<GLint>(height), GL_COLOR_BUFFER_BIT,
-                                          GL_NEAREST);
+                gl.glBlitNamedFramebuffer(sourceFramebuffer, m_prevComposedFramebuffer, 0, 0, static_cast<GLint>(width),
+                                          static_cast<GLint>(height), 0, 0, static_cast<GLint>(width),
+                                          static_cast<GLint>(height), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                m_prevComposedWidth = width;
+                m_prevComposedHeight = height;
                 ++m_prevComposedCopies;
+                sourceCopied = true;
             }
-            m_prevComposedWidth = width;
-            m_prevComposedHeight = height;
         }
+        // A new game frame whose previous picture could not be kept (size
+        // change, no composed picture yet): the cameras moved on but the source
+        // did not, so warping it would be wrong. Show plain pictures until the
+        // next game frame re-establishes the pair.
+        if (interpWanted && m_interpShifted && !sourceCopied)
+            m_interpHavePrev = false;
         const GLuint displayFramebuffer =
             sharePresent ? m_presentSharedFramebuffer[m_presentSharedIndex] : m_presentFramebuffer;
         if (reproject)

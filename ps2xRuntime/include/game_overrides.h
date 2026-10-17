@@ -1,6 +1,7 @@
 #ifndef PS2_GAME_OVERRIDES_H
 #define PS2_GAME_OVERRIDES_H
 
+#include "runtime/ps2_camera.h"
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -35,6 +36,9 @@ namespace ps2_game_overrides
     // publishes at frames 1554, 1581, 1582, 1633, ...). The CCam itself is
     // updated every frame, so reading it here gives one fresh sample per picture.
     void publishCameraFrame(const uint8_t *rdram);
+    // The same camera, read without publishing it (safe from the game thread):
+    // what the GS latch attaches to each presented picture.
+    bool readCamera(const uint8_t *rdram, Ps2CameraState &out);
 
     // True while the game is playing a cutscene (in-engine or FMV). The
     // synthesis is skipped there: the cutscenes feed the GS only a couple of

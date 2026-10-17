@@ -351,6 +351,13 @@ namespace gsgpu
         // blur is on, because the interpolation deltas need it too.
         Ps2CameraState m_interpPrevCamera, m_interpCamera;
         bool m_interpHavePrev = false;
+        // Game frames, not VBlanks: VCS draws a new view only every 2-4 VBlanks
+        // while the renderer composes every VBlank, so the pair shifts only when
+        // the picture's camera changes. The shift time and the measured interval
+        // between game frames give the phase (render-thread clock).
+        bool m_interpShifted = false;    // this compose started a new game frame
+        double m_interpPairTime = 0.0;   // when the current pair was set (seconds)
+        double m_interpInterval = 1.0 / 30.0; // running average between game frames
         GLuint m_lastComposedTexture = 0;
         uint32_t m_lastComposedWidth = 0, m_lastComposedHeight = 0;
         // The picture composed before the newest one: the source the
@@ -373,7 +380,7 @@ namespace gsgpu
         uint32_t m_synthReadbackWidth = 0, m_synthReadbackHeight = 0;
         // Reads the published camera into m_interpCamera, tracking the previous
         // one. Called once per compose, whatever else is enabled.
-        void trackCamera();
+        void trackCamera(const GSPresentationRequest &request);
         void ensureBlurTargets(GL &gl, uint32_t width, uint32_t height);
         // Smears the frame the compose just drew along the camera's motion,
         // scaling the smear per pixel by the overlay mask in its alpha, and

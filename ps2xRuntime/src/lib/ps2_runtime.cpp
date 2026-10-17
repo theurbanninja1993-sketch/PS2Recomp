@@ -1043,6 +1043,13 @@ bool PS2Runtime::syncCoreSubsystems()
     }
 
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
+    // Each presented picture carries the camera that drew it, read on the game
+    // thread at the VBlank latch (frame interpolation pairs them).
+    {
+        static const uint8_t *s_rdram = nullptr;
+        s_rdram = m_memory.getRDRAM();
+        g_gsCameraSampler = [](Ps2CameraState &out) { return s_rdram && ps2_game_overrides::readCamera(s_rdram, out); };
+    }
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     { m_gs.processGIFPacket(data, size); });
     m_memory.setGifArbiter(&m_gifArbiter);
@@ -1660,6 +1667,7 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
 
 
 std::atomic<bool> g_ps2DumpRamRequest{false}; // F8 RAM snapshot (ps2_pad.cpp)
+extern std::atomic<float> g_gsInterpLastPhase;  // gs_gpu_renderer.cpp, for PS2X_INTERP_LOG
 bool g_ps2TraceBoolWrites = std::getenv("PS2X_WATCH_BOOL_WRITES") != nullptr;
 
 #if defined(__linux__)
@@ -3429,13 +3437,11 @@ void PS2Runtime::run()
         // The same test tells the host when the game produced nothing, which is
         // where a synthesized frame goes.
         static uint64_t s_lastCameraTick = ~0ull;
-        static double s_lastPictureTime = 0.0;
         const uint64_t cameraTick = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : 0u;
         const bool newPicture = cameraTick != s_lastCameraTick;
         if (newPicture)
         {
             s_lastCameraTick = cameraTick;
-            s_lastPictureTime = GetTime();
             ps2_game_overrides::publishCameraFrame(m_memory.getRDRAM());
             // g_ps2PresentedFrameCounter counts *pictures*, not host frames. It
             // used to advance with the host loop, which coincided at 60 Hz and
@@ -3490,18 +3496,14 @@ void PS2Runtime::run()
         // near 1, which is exactly the newest picture - so the two agree.
         if (interp)
         {
-            // Where this host frame sits between the two pictures it is between,
-            // as a *fraction of the picture interval* rather than a frame count:
-            // the host does not run at exactly the rate it targets (236, not 240),
-            // so counting frames drifts and the phase jumps every few pictures,
-            // which reads as a glitch. Time does not drift.
-            const double sincePicture = GetTime() - s_lastPictureTime;
-            // PS2X_INTERP_PHASE_FIXED=<t> pins the phase instead of sweeping it.
-            // With no sweep there is nothing for a drifting or jumping phase to do,
-            // so a flicker that stops here is the phase and one that stays is not.
+            // The phase is the renderer's (-1): it knows when the game frame it
+            // interpolates from began and how long game frames take, on its own
+            // clock. The host's VBlank clock does not - the pair changes when a
+            // picture is composed, not when the host notices the VBlank - and the
+            // game draws a new view only every 2-4 VBlanks anyway.
+            // PS2X_INTERP_PHASE_FIXED=<t> pins the phase instead (a test aid).
             static const char *s_fixedPhase = std::getenv("PS2X_INTERP_PHASE_FIXED");
-            const float phase = s_fixedPhase != nullptr ? static_cast<float>(std::atof(s_fixedPhase))
-                                                       : static_cast<float>(sincePicture * 60.0);
+            const float phase = s_fixedPhase != nullptr ? static_cast<float>(std::atof(s_fixedPhase)) : -1.0f;
             synthPhase = phase;
             uint32_t synthWidth = 0, synthHeight = 0;
             const uint32_t synthTexture = m_gs.synthesizeFrame(phase, synthWidth, synthHeight);
@@ -3582,6 +3584,7 @@ void PS2Runtime::run()
                 if (++s_hostFrame < 240000u)
                     std::cerr << "[interp] f=" << s_hostFrame << " picture=" << (newPicture ? 1 : 0)
                               << " synth=" << (drewSynth ? 1 : 0) << " phase=" << synthPhase
+                              << " t=" << g_gsInterpLastPhase.load(std::memory_order_relaxed)
                               << " draw=" << presentDraw.id << " size=" << presentWidth << "x" << presentHeight
                               << " screen=" << GetScreenWidth() << "x" << GetScreenHeight()
                               << " composed=" << g_gsComposedFrames.load(std::memory_order_relaxed)<< " camValid=" << g_ps2Camera.valid << " camPos=" << g_ps2Camera.pos[0] << ","

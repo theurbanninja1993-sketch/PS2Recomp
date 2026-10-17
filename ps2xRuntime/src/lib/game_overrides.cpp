@@ -1905,7 +1905,18 @@ namespace
     // position (+0x20) and the view window (tan(halfFov) wide). Published here
     // because this hook runs every frame with the camera in hand, after the
     // game has updated it.
+    Ps2CameraState vcsReadCamera(const uint8_t *rdram, float viewX, float viewY);
+    void vcsLogCamera(const Ps2CameraState &state);
+
     void vcsPublishCamera(const uint8_t *rdram, float viewX, float viewY)
+    {
+        const Ps2CameraState state = vcsReadCamera(rdram, viewX, viewY);
+        g_ps2Camera = state;
+        g_ps2CameraFrame.store(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        vcsLogCamera(state);
+    }
+
+    Ps2CameraState vcsReadCamera(const uint8_t *rdram, float viewX, float viewY)
     {
         // TheCamera.Cams[0]: Front +0x10, Source +0x20, Up +0x60. Fixed address,
         // the same camera the vehicle look rotates, so these are offsets the port
@@ -1930,8 +1941,13 @@ namespace
         const auto unit = [&](const float v[3]) { return std::fabs(len3(v) - 1.0f) < 0.05f; };
         state.valid = finite3(state.front) && finite3(state.pos) && finite3(state.up) && unit(state.front) &&
                       unit(state.up) && len3(state.pos) > 0.01f && std::isfinite(viewX) && viewX > 0.0f;
-        g_ps2Camera = state;
-        g_ps2CameraFrame.store(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return state;
+    }
+
+    void vcsLogCamera(const Ps2CameraState &state)
+    {
+        const auto len3 = [](const float v[3])
+        { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
         // PS2X_CAMERA_LOG=1: write the camera each frame to cameralog.txt next to
         // the executable. A file rather than stderr because the Windows build
         // has no console, and this is the data the reprojection pass is built
@@ -2164,6 +2180,12 @@ namespace ps2_game_overrides
     void publishCameraFrame(const uint8_t *rdram)
     {
         vcsPublishCamera(rdram, g_vcsViewWindowX, g_vcsViewWindowY);
+    }
+
+    bool readCamera(const uint8_t *rdram, Ps2CameraState &out)
+    {
+        out = vcsReadCamera(rdram, g_vcsViewWindowX, g_vcsViewWindowY);
+        return out.valid;
     }
 
     // The cutscene flag, reachable from the runtime: the definition above is in

@@ -663,6 +663,7 @@ void GS::refreshDisplaySnapshot()
 }
 
 std::atomic<bool> g_gsFlickerFilter{true};
+bool (*g_gsCameraSampler)(Ps2CameraState &out) = nullptr;
 
 GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 {
@@ -720,6 +721,8 @@ void GS::latchHostPresentationFrame()
         if (inputSeq == m_hostPresentationInputSeq)
             return;
         request = buildPresentationRequestUnlocked();
+        if (g_gsCameraSampler)
+            request.hasCamera = g_gsCameraSampler(request.camera);
     }
 
     PresentationFrame frame{};

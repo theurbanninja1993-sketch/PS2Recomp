@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include "runtime/ps2_camera.h"
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -288,7 +289,17 @@ struct GSPresentationRequest
     GSFrameReg preferredSource{};
     uint32_t preferredDestFbp = 0;
     bool hasPreferredSource = false;
+    // The game's camera when this picture was latched (on the game's own
+    // thread, at the VBlank that hands the picture over), so the renderer pairs
+    // each composed picture with the camera that drew it. Frame interpolation
+    // needs that pairing exact: a camera sampled by the host loop arrives a
+    // compose early or late, and the warp then sweeps to a view and snaps back.
+    Ps2CameraState camera{};
+    bool hasCamera = false;
 };
+
+// Set by the runtime: reads the game's current camera (game thread).
+extern bool (*g_gsCameraSampler)(Ps2CameraState &out);
 
 struct PresentationFrame
 {

@@ -1,7 +1,27 @@
 # GTA Vice City Stories (SLUS_215.90) recomp: handoff notes
 
-State as of 2026-10-12 (last commit `f3d6ca3`). Read this before changing
-anything. A reviewer will check work against it.
+State as of 2026-10-17 (last commit `50e1556`, and the launcher is its own repo at
+`11245ef`). Read this before changing anything. A reviewer will check work against
+it.
+
+## If you are reviewing this
+
+Three things are waiting for a second pair of eyes, and they are the three worth
+your time:
+
+- **The interpolated picture warps.** Search for `FOR THE NEXT PAIR OF EYES`. Frame
+  interpolation is otherwise complete - no black frames, the HUD is protected,
+  cutscenes and FMVs play - and this is the one defect left. Six earlier bugs with
+  the same symptom are written down next to it, because each one alone produced it.
+- **Modern motion blur**, implemented and calibrated against captures, parked behind
+  `PS2X_MODERN_BLUR=1` rather than offered in the menu.
+- **Windows**, which builds and runs but has had a fraction of Linux's attention.
+  The leads are under "Windows has had the least attention" below.
+
+Two things about this project are not like other recompilation projects, so they are
+worth knowing before judging anything: **no game code and no game data ship, ever** -
+the player's own disc produces the game - and the project is built by one owner with
+heavy AI assistance, which the READMEs state plainly.
 
 ## Ground rules
 
@@ -40,6 +60,23 @@ does pass the VU1 directory, which is why that one was fine.
 Found in a clone fetched from GitHub. Diffing the two `build-win/CMakeCache.txt`
 files came down to this single setting - everything else, including the toolchain
 binaries themselves, was byte-identical.
+
+### Windows has had the least attention
+
+It builds, and it runs - confirmed on real hardware and under Proton. It has not
+been optimised the way Linux has, and nothing performance-related in this file was
+measured on it. Three concrete leads, in order of how cheap they are to try:
+
+- **LTO is off on Windows and always has been.** It is *not* needed for the link to
+  succeed - that is the VU1 dependency described above - and nobody has tried LTO on
+  with those programs present. It may be free speed, or it may reproduce the
+  duplicate-symbol failure for a different reason; either answer is worth having.
+- **PGO.** The Linux builds use a profile directory (`build/pgo`), and a Windows
+  cache has `PS2X_PGO_DIR` set, but whether the Windows build is actually
+  profile-guided was never checked.
+- **The VU1 programs are learnt, not known.** Two passes found 15 on this machine.
+  A longer or more varied learning run would likely find more, and every one found
+  is interpreted work removed.
 
 ## Layout (project root `/mnt/2TBSSD/projects/Vice City Stories Recomp`)
 
