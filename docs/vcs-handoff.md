@@ -9,10 +9,14 @@ it.
 Three things are waiting for a second pair of eyes, and they are the three worth
 your time:
 
-- **The interpolated picture warps.** Search for `FOR THE NEXT PAIR OF EYES`. Frame
-  interpolation is otherwise complete - no black frames, the HUD is protected,
-  cutscenes and FMVs play - and this is the one defect left. Six earlier bugs with
-  the same symptom are written down next to it, because each one alone produced it.
+- **Frame interpolation is parked again, and what is left is pacing, not the
+  picture.** The warp is gone (the two-way blend and the static-pixel rule got it:
+  `cc5abea`, `7e5bf2d`), but on the owner's machine at 120-240 the frame times are
+  still not steady and the result tears, so the option is out of the menu and saved
+  rates above 60 are ignored (`d2df272`). The code is intact behind
+  `PS2X_FRAME_RATE=<hz>`. Search for `FOR THE NEXT PAIR OF EYES`; the six earlier bugs
+  that each produced the *same warp* are written down next to it and are still the
+  right reading of how it was fixed.
 - **Modern motion blur**, implemented and calibrated against captures, parked behind
   `PS2X_MODERN_BLUR=1` rather than offered in the menu.
 - **Windows**, which builds and runs but has had a fraction of Linux's attention.
@@ -64,19 +68,60 @@ binaries themselves, was byte-identical.
 ### Windows has had the least attention
 
 It builds, and it runs - confirmed on real hardware and under Proton. It has not
-been optimised the way Linux has, and nothing performance-related in this file was
-measured on it. Three concrete leads, in order of how cheap they are to try:
+been optimised the way Linux has.
 
-- **LTO is off on Windows and always has been.** It is *not* needed for the link to
-  succeed - that is the VU1 dependency described above - and nobody has tried LTO on
-  with those programs present. It may be free speed, or it may reproduce the
-  duplicate-symbol failure for a different reason; either answer is worth having.
-- **PGO.** The Linux builds use a profile directory (`build/pgo`), and a Windows
-  cache has `PS2X_PGO_DIR` set, but whether the Windows build is actually
-  profile-guided was never checked.
-- **The VU1 programs are learnt, not known.** Two passes found 15 on this machine.
-  A longer or more varied learning run would likely find more, and every one found
-  is interpreted work removed.
+**What the GPU renderer needed (2026-10-17, the owner's RTX 3050 laptop).** It was
+falling all the way to the CPU rasterizer. Creating a 4.6 core context on the
+host's DC failed and that was the only attempt made; the fix is a retry unshared on
+a private window, plus posting `NvOptimusEnablement` /
+`AmdPowerXpressRequestHighPerformance` so a two-GPU laptop picks the discrete GPU
+at all. The renderer now runs 4.6 there.
+
+**The window's context cannot be shared on Windows.** The renderer would rather
+hand the composed picture over as a texture and skip the readback entirely. The
+driver refuses: `wglCreateContextAttribsARB` with a share context returns null
+(Windows error 3221688541 = `0xC00710DD`) while the same DC accepts a 4.6 core
+context unshared. It is not a version gap - rebuilding raylib's own context at 4.3
+instead of 3.3 changed nothing - so **the readback is the present path on Windows
+and no amount of context work will remove it.** Worth knowing before anyone tries
+again.
+
+**The frame rate that is left is total CPU throughput, not a setting.** Measured on
+the laptop at native: 40 fps with *no* thread saturated - VU1 91% of a core, the
+game thread 56%, the NVIDIA driver 69%, and an in-process thread the port does not
+own at 58%. On this machine the same build runs at 60 with the driver threads at
+~6%. So that laptop spends a core and a bit outside the game, and has about three
+cores to spend. Resolution changes nothing because none of it is fill: the readback
+is capped to the window, and VU1 does not care.
+
+Two leads this file used to recommend are **dead**, measured on this machine by
+running the same scripted scene twice:
+
+- **VU1 program coverage buys almost nothing.** The learnt set covers only the boot
+  sequence and the lead looked strong, but interpreted VU1 costs 62.9 us a call
+  against 46.7 compiled - 1.35x (`PS2X_VU1_NO_COMPILED=1` for the all-interpreted
+  run). The VU stack is simply expensive: ~72% of a core at 60 fps here, on one
+  thread (`Vu1Worker`, the async VIF1 worker - `ps2_memory.cpp`), and it is that
+  thread the laptop runs out of. Learning more programs is not the fix.
+- **Running VIF1/VU1 inline is worse.** `PS2X_SYNC_VIF1=1` puts the work on the game
+  thread: 51 fps against 60, game thread pinned at 104%.
+
+Still open, in order of what they are worth:
+
+- **The Windows present path.** The NVIDIA driver costs about a core there against
+  ~0.06 here, and the readback is synchronous - a full flush and a driver copy every
+  frame (`glMemoryBarrier` + `glGetTextureSubImage` into a client pointer). An
+  asynchronous pixel-buffer readback is the first thing to try; it is the one route
+  left that cannot be blocked by the share refusal above.
+- **An unidentified in-process thread at 58%** of a core on the laptop. The log
+  names threads it can: ours by name, everyone else's by owning module
+  (`nvoglv64.dll:20504`). This one has a thread description and no module, so
+  something outside the port named it - an overlay or a recorder hook is the first
+  guess. Naming its module would settle it.
+- **LTO and PGO** are still untried on Windows. Neither is likely to be more than a
+  tenth, and LTO has the duplicate-symbol question in its way.
+- **The VU cost itself** (~72% of a core here, more there). Real, deep, and the only
+  thing that moves the laptop's ceiling rather than its headroom.
 
 ## Layout (project root `/mnt/2TBSSD/projects/Vice City Stories Recomp`)
 
@@ -1498,6 +1543,19 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       parallax approximation (`PS2X_BLUR_DEPTH`) on fast sideways movement
       near walls - camera-only interpolation can't fix that, but the steps
       are now small.
+
+      **Status 2026-10-17: the warp is fixed. What remains is frame pacing, and that
+      is why it is parked.** The two-way blend with the static-pixel rule (`cc5abea`)
+      and pairing each picture with its own camera (`7e5bf2d`) removed it, and the
+      owner confirms the picture is right now. But at 120-240 on the owner's machine
+      the frame times are still not steady and the result tears, so `d2df272` took the
+      option out of the menu and made saved rates above 60 be ignored;
+      `PS2X_FRAME_RATE=<hz>` still turns it on for testing. Related: `c16e562` had
+      VSync do the pacing and took the blocking round trip out of the synthesis, which
+      made host frame times even but did not make them *steady* at 4x on that machine.
+      **A reviewer should read the pacing, not the homography** - the homography is
+      verified exact against the true camera mapping, and the visible defect is now
+      uneven frame delivery rather than a distorted picture.
 
       **(Previous notes, kept for the record.) PARKED 2026-10-16: the
       interpolated picture warps. FOR THE NEXT PAIR OF EYES.** Everything else about interpolation works - no black frames, the
