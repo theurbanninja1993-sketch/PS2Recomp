@@ -1,12 +1,12 @@
 include(CheckIPOSupported)
 
-# Off on Windows, and not for performance reasons. raylib exports CloseWindow and
-# ShowCursor, which are also USER32 imports, so the same symbol is defined in
-# libraylib.a and in the import library. Without LTO the linker only consults the
-# import library for symbols nothing else defines, and it links; with LTO it
-# resolves both and stops with 'duplicate symbol: CloseWindow'. One line here beats
-# a flag everyone has to know about - the cross-compile in the handoff notes was
-# failing without it.
+# Off on Windows, matching the Windows build that has always been the working one.
+# It is *not* what makes a Windows link succeed: raylib exports CloseWindow and
+# ShowCursor, USER32 exports both as well, and whether that is fatal depends on the
+# link line rather than on LTO - the runner needs ps2_vu1_programs on it, or the
+# resolver takes USER32's copy and stops. See the note in build.sh. Kept off here
+# because it is the configuration the Windows build is tested in, and it was never
+# established to work with LTO on.
 if(WIN32)
     set(PS2X_LTO_DEFAULT OFF)
 else()

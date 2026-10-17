@@ -19,6 +19,28 @@ anything. A reviewer will check work against it.
   runs. `PS2X_EXIT_AFTER_FRAME=N` skips the launch menu and quits at frame N.
 - Don't ask the owner what to do next. Pick the most important open item.
 
+### A Windows link needs the VU1 programs on the link line
+
+Not for the microprograms themselves: for the link. raylib exports `CloseWindow` and
+`ShowCursor`, and Windows' USER32 exports both as well, so the symbol exists twice -
+once in `libraylib.a` and once in the import library. Which one wins depends on the
+link line. With `ps2_vu1_programs` on it, CMake records the dependency and repeats
+`libps2_runtime.a` later in the line, and the resolver takes raylib's. Without it,
+the resolver takes USER32's and stops:
+
+    ld.lld: error: duplicate symbol: CloseWindow
+    >>> defined at libraylib.a(rcore.c.obj)
+    >>> defined at USER32.dll
+
+So `PS2X_VU1_PROGRAMS` has to be set when build-win is configured, and the Windows
+build has to come *after* the VU1 stage. `build.sh` had it before, which meant a
+fresh tree could not produce a .exe at all; the handoff's own cross-compile command
+does pass the VU1 directory, which is why that one was fine.
+
+Found in a clone fetched from GitHub. Diffing the two `build-win/CMakeCache.txt`
+files came down to this single setting - everything else, including the toolchain
+binaries themselves, was byte-identical.
+
 ## Layout (project root `/mnt/2TBSSD/projects/Vice City Stories Recomp`)
 
 | Path | What |
