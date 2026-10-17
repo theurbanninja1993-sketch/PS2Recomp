@@ -11,6 +11,9 @@
 #     --work DIR     scratch for the intermediate steps (default: $PWD/build)
 #     --from N       start at stage N (resume a long build)
 #     --to N         stop after stage N
+#     --windows      also cross-compile the Windows build (Linux only: it needs a
+#                    Linux-hosted toolchain, which is fetched once if missing)
+#     --toolchain D  use this llvm-mingw instead of fetching one
 #     --dry-run      print what each stage would do, and change nothing
 #
 # Stages:
@@ -34,6 +37,8 @@ WORK="$PWD/build"
 FROM=0
 TO=99
 DRY_RUN=0
+WINDOWS=0
+TOOLCHAIN=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -43,8 +48,10 @@ while [ $# -gt 0 ]; do
         --work) WORK="$2"; shift ;;
         --from) FROM="$2"; shift ;;
         --to) TO="$2"; shift ;;
+        --windows) WINDOWS=1 ;;
+        --toolchain) TOOLCHAIN="$2"; shift ;;
         --dry-run) DRY_RUN=1 ;;
-        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
     shift
@@ -181,6 +188,75 @@ if [ "$needs_tools" -eq 1 ]; then
     for tool in "$ps2_recomp" "$ps2_iso" "$vu1_recomp"; do
         [ "$DRY_RUN" -eq 1 ] || [ -x "$tool" ] || die "$tool did not build"
     done
+    stage_end
+fi
+
+# ---------------------------------------------------------------- windows
+# The Windows build is a cross-compile, so its compiler runs here rather than
+# there: llvm-mingw, a Linux-hosted toolchain. It is a one-time 88 MB download and
+# it goes inside the source, which keeps a machine's copy with the tree that uses
+# it. An existing toolchain is preferred over fetching one, including the one an
+# already-configured build-win was built with.
+llvm_mingw_version="20241217"
+llvm_mingw_asset="llvm-mingw-${llvm_mingw_version}-ucrt-ubuntu-20.04-x86_64"
+llvm_mingw_url="https://github.com/mstorsjo/llvm-mingw/releases/download/${llvm_mingw_version}/${llvm_mingw_asset}.tar.xz"
+toolchain_dir="$PS2RECOMP/toolchains"
+
+toolchain_works() { [ -n "${1:-}" ] && [ -x "$1/bin/x86_64-w64-mingw32-clang++" ]; }
+
+ensure_toolchain() {
+    if toolchain_works "$TOOLCHAIN"; then
+        note "llvm-mingw: $TOOLCHAIN (given)"
+        return 0
+    fi
+    if toolchain_works "${LLVM_MINGW_ROOT:-}"; then
+        TOOLCHAIN="$LLVM_MINGW_ROOT"
+        note "llvm-mingw: $TOOLCHAIN (from LLVM_MINGW_ROOT)"
+        return 0
+    fi
+    if [ -f "$PS2RECOMP/build-win/CMakeCache.txt" ]; then
+        local cached
+        cached=$(sed -n 's/^LLVM_MINGW_ROOT:[^=]*=//p' "$PS2RECOMP/build-win/CMakeCache.txt" | head -1)
+        if toolchain_works "$cached"; then
+            TOOLCHAIN="$cached"
+            note "llvm-mingw: $TOOLCHAIN (the one this build-win used)"
+            return 0
+        fi
+    fi
+    if toolchain_works "$toolchain_dir/$llvm_mingw_asset"; then
+        TOOLCHAIN="$toolchain_dir/$llvm_mingw_asset"
+        note "llvm-mingw: $TOOLCHAIN (already fetched)"
+        return 0
+    fi
+    note "fetching llvm-mingw, 88 MB, once"
+    run mkdir -p "$toolchain_dir"
+    run curl -fL --retry 3 -o "$toolchain_dir/$llvm_mingw_asset.tar.xz" "$llvm_mingw_url"
+    run tar -xJf "$toolchain_dir/$llvm_mingw_asset.tar.xz" -C "$toolchain_dir"
+    TOOLCHAIN="$toolchain_dir/$llvm_mingw_asset"
+    if [ "$DRY_RUN" -eq 0 ] && ! toolchain_works "$TOOLCHAIN"; then
+        die "llvm-mingw did not unpack where expected ($TOOLCHAIN)"
+    fi
+}
+
+wants_windows=0
+if [ "$WINDOWS" -eq 1 ]; then
+    for stage in 4 5 6; do
+        if [ "$FROM" -le "$stage" ] && [ "$TO" -ge "$stage" ]; then
+            wants_windows=1
+        fi
+    done
+fi
+if [ "$WINDOWS" -eq 1 ] && [ "$wants_windows" -eq 0 ]; then
+    note "--windows given but no stage that uses it is in range; nothing to do"
+fi
+if [ "$wants_windows" -eq 1 ]; then
+    stage_begin "windows (configuring the cross-compile)"
+    ensure_toolchain
+    # Crossing needs the host's own build too: the VU1 microprograms are learnt by
+    # *running the game*, and the Linux runner is the one that can run here.
+    run cmake -S "$PS2RECOMP" -B "$PS2RECOMP/build-win" -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE="$PS2RECOMP/cmake/toolchains/llvm-mingw-x86_64.cmake" \
+        -DLLVM_MINGW_ROOT="$TOOLCHAIN"
     stage_end
 fi
 
@@ -364,11 +440,12 @@ if [ "$FROM" -le 6 ] && [ "$TO" -ge 6 ]; then
     stage_begin "6. assembling the portable folder"
     make_portable="$ROOT/tools/make_portable_build.sh"
     [ -x "$make_portable" ] || die "missing $make_portable"
-    # Only ask for what was actually built: a fresh clone has no Windows build
-    # (that is a cross-compile), and asking for one anyway aborted the whole run
-    # after the Linux folder had already been produced.
+    # Only ask for what was actually built. A configured build-win does not mean a
+    # Windows binary exists - --windows configures it before anything is compiled -
+    # and asking for one that is not there aborted the whole run after the Linux
+    # folder had already been produced.
     make_platforms="--linux"
-    if [ -f "$PS2RECOMP/build-win/CMakeCache.txt" ]; then
+    if [ -f "$PS2RECOMP/build-win/ps2xRuntime/ps2EntryRunner.exe" ]; then
         make_platforms="--linux --windows"
     fi
     run "$make_portable" $make_platforms --out "$OUT" --game "$disc_dir"
