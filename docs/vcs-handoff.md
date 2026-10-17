@@ -107,7 +107,7 @@ texture packs from `mods/`, Windows build under Wine.
 
 ### The launcher round trip: one env var is what makes "return" honest
 
-The launcher (its own repo, `ps2x-launcher`) starts a game with
+The launcher (its own repo, `thestoriescollection-launcher`) starts a game with
 `PS2X_LAUNCHED_FROM_LAUNCHER=1` in its environment, and the settings menu asks
 `ps2HostLaunchedFromLauncher()` before it labels the way out: started by the
 launcher it says "Return to game select", started on its own it still says "Quit
