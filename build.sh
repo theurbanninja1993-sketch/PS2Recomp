@@ -363,7 +363,14 @@ if [ "$FROM" -le 6 ] && [ "$TO" -ge 6 ]; then
     stage_begin "6. assembling the portable folder"
     make_portable="$ROOT/tools/make_portable_build.sh"
     [ -x "$make_portable" ] || die "missing $make_portable"
-    run "$make_portable" --linux --windows --out "$OUT" --game "$disc_dir"
+    # Only ask for what was actually built: a fresh clone has no Windows build
+    # (that is a cross-compile), and asking for one anyway aborted the whole run
+    # after the Linux folder had already been produced.
+    make_platforms="--linux"
+    if [ -f "$PS2RECOMP/build-win/CMakeCache.txt" ]; then
+        make_platforms="--linux --windows"
+    fi
+    run "$make_portable" $make_platforms --out "$OUT" --game "$disc_dir"
     [ "$DRY_RUN" -eq 1 ] || note "game folder: $OUT"
     stage_end
 fi
