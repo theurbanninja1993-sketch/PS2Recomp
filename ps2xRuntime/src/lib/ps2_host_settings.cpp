@@ -439,8 +439,9 @@ void ps2HostSettingsApplyRenderer()
     // PS2X_FRAME_RATE overrides it from the environment, like the other settings
     // that are worth A/B-ing from a launcher.
     static const char *s_envRate = std::getenv("PS2X_FRAME_RATE");
-    const uint32_t rate = s_envRate != nullptr ? static_cast<uint32_t>(std::max(60, std::atoi(s_envRate)))
-                                               : static_cast<uint32_t>(g_settings.frameRate);
+    // Interpolation is parked: a saved frame_rate above 60 is ignored; only
+    // PS2X_FRAME_RATE (testing) can turn it on.
+    const uint32_t rate = s_envRate != nullptr ? static_cast<uint32_t>(std::max(60, std::atoi(s_envRate))) : 60u;
     g_gsFrameRate.store(rate, std::memory_order_relaxed);
     // Both Off and Modern drop the game's own blur accumulation: Off leaves the
     // picture sharp, Modern replaces the smear with its own. Keeping the game's
