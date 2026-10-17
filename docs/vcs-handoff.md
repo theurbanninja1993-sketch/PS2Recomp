@@ -1557,6 +1557,19 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       verified exact against the true camera mapping, and the visible defect is now
       uneven frame delivery rather than a distorted picture.
 
+      **Interpolation cannot work on Windows as it is built, whatever the pacing
+      says.** The synthesized frame is handed to the host as a *texture* - the
+      renderer draws it into `m_synthTexture` and the host draws that, it is never
+      read back (the note in `ps2_runtime.cpp` says so) - so it needs the two GL
+      contexts to share. On Windows the driver refuses to share the window's context
+      at all, and after the fix above the renderer honestly reports `[own context]`,
+      so a host frame asking for a synthesized picture would draw a texture name from
+      a context that cannot see it: exactly the corrupt-frame case that the context
+      sharing fixed on Linux. So the feature is *doubly* unreachable there - it wants
+      a readback variant of the handover as well as the pacing work - and a Windows
+      player who sets `PS2X_FRAME_RATE` should expect a broken picture, not an
+      interpolated one.
+
       **(Previous notes, kept for the record.) PARKED 2026-10-16: the
       interpolated picture warps. FOR THE NEXT PAIR OF EYES.** Everything else about interpolation works - no black frames, the
       HUD is protected, cutscenes and FMVs play, the picture stream is correct -
