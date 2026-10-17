@@ -665,6 +665,71 @@ void GS::refreshDisplaySnapshot()
 std::atomic<bool> g_gsFlickerFilter{true};
 bool (*g_gsCameraSampler)(Ps2CameraState &out) = nullptr;
 
+// PS2X_FLIP_SEQ=1: one character per event, in order - P camera processed,
+// F frame copied to the display buffer, L new picture latched - to see how the game orders
+// them (frame interpolation pairs pictures with cameras by this order).
+void ps2InterpEvent(char event)
+{
+    static const bool s_on = std::getenv("PS2X_FLIP_SEQ") != nullptr;
+    if (!s_on)
+        return;
+    static std::mutex s_mutex;
+    static std::string s_line;
+    std::lock_guard lock(s_mutex);
+    s_line += event;
+    if (s_line.size() >= 100u)
+    {
+        std::cerr << "[flipseq] " << s_line << std::endl;
+        s_line.clear();
+    }
+}
+
+uint64_t ps2Vif1StreamCommitted(); // ps2_memory.cpp
+uint64_t ps2Vif1StreamPosition();
+
+// Camera snapshots in game order, stamped with how many VIF1 batches the game
+// had committed when it took them (after its camera update for a frame). The
+// draws of that frame are committed later, so the camera a picture was drawn
+// with is the latest snapshot stamped at or before the picture's batch -
+// however far behind the VIF1 / GS worker threads are running.
+namespace
+{
+    struct CameraStamp
+    {
+        uint64_t stamp = 0;
+        Ps2CameraState camera;
+    };
+    std::mutex g_cameraStreamMutex;
+    CameraStamp g_cameraStream[32];
+    uint64_t g_cameraStreamCount = 0;
+}
+
+void ps2CameraStreamPush(const Ps2CameraState &camera)
+{
+    const uint64_t stamp = ps2Vif1StreamCommitted();
+    std::lock_guard lock(g_cameraStreamMutex);
+    g_cameraStream[g_cameraStreamCount % 32u] = {stamp, camera};
+    ++g_cameraStreamCount;
+}
+
+// The camera of the work at stream position pos (~0: the latest).
+static bool cameraStreamLookup(uint64_t pos, Ps2CameraState &out)
+{
+    std::lock_guard lock(g_cameraStreamMutex);
+    const uint64_t available = std::min<uint64_t>(g_cameraStreamCount, 32u);
+    for (uint64_t i = 0; i < available; ++i)
+    {
+        const CameraStamp &entry = g_cameraStream[(g_cameraStreamCount - 1u - i) % 32u];
+        if (pos == ~0ull || entry.stamp <= pos)
+        {
+            out = entry.camera;
+            return out.valid;
+        }
+    }
+    return false;
+}
+
+
 GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 {
     GSPresentationRequest request{};
@@ -721,7 +786,14 @@ void GS::latchHostPresentationFrame()
         if (inputSeq == m_hostPresentationInputSeq)
             return;
         request = buildPresentationRequestUnlocked();
-        if (g_gsCameraSampler)
+        ps2InterpEvent('L');
+        if (m_hasDisplayCamera)
+        {
+            // The camera paired with the picture at the display copy.
+            request.camera = m_displayCamera;
+            request.hasCamera = true;
+        }
+        else if (g_gsCameraSampler)
             request.hasCamera = g_gsCameraSampler(request.camera);
     }
 
@@ -1962,6 +2034,24 @@ void GS::updatePreferredDisplaySourceForDraw(const GSPrimitiveBatch &batch)
 {
     const GSDrawState &state = batch.state;
     const GSContext &ctx = state.context;
+    // The compose reads the scene buffer directly, so a picture's camera is the
+    // camera of the latest draw into that buffer: the one the game had when it
+    // committed that draw (see cameraStreamLookup). Looked up only when the
+    // stream position moves - draws of one batch share it.
+    if (m_hasPreferredDisplaySource && ctx.frame.fbp * 32u == m_preferredDisplaySourceFrame.fbp)
+    {
+        const uint64_t pos = ps2Vif1StreamPosition();
+        if (pos != m_sceneCameraPos || pos == ~0ull)
+        {
+            m_sceneCameraPos = pos;
+            Ps2CameraState camera;
+            if (cameraStreamLookup(pos, camera))
+            {
+                m_displayCamera = camera;
+                m_hasDisplayCamera = true;
+            }
+        }
+    }
     if (m_hasPreferredDisplaySource && ctx.frame.fbp == m_preferredDisplayDestFbp)
         m_hasPreferredDisplaySource = false;
     if (state.prim.type != GS_PRIM_SPRITE || batch.vertexCount < 2u)
@@ -1985,6 +2075,9 @@ void GS::updatePreferredDisplaySourceForDraw(const GSPrimitiveBatch &batch)
                              x0 <= 0 && y0 <= 0 && xEnd >= 639 && yEnd >= 447;
     if (displayCopy)
     {
+        // The finished frame being copied to the display: its camera is the one
+        // the game had when it committed this frame's work.
+        ps2InterpEvent('F');
         m_preferredDisplaySourceFrame = {ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, 0u};
         m_preferredDisplayDestFbp = ctx.frame.fbp;
         m_hasPreferredDisplaySource = true;

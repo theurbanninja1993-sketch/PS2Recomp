@@ -27,6 +27,7 @@ namespace fs = std::filesystem;
 std::atomic<uint32_t> g_gsGpuScaleRequest{0};
 std::atomic<uint64_t> g_gsComposedFrames{0}; // successful GPU composes, for the interp log
 std::atomic<float> g_gsInterpLastPhase{-1.0f}; // the phase the last synthesis used (PS2X_INTERP_LOG)
+std::atomic<float> g_gsInterpShownYaw{0.0f};    // the camera yaw the host is shown (PS2X_INTERP_LOG)
 
     // Anisotropic filtering for replacement textures. Owner-measured at the
     // airport with the HD pack: 16 taps per sample at grazing angles cost about
@@ -3505,32 +3506,70 @@ void main()
                     break;
             }
         }
-        // A new game frame is a picture whose camera moved. VCS draws a new view
-        // every 2-4 VBlanks (15-30 fps) while a picture is composed every VBlank,
-        // so treating every compose as a frame gave pairs with no motion followed
-        // by one pair carrying the whole multi-VBlank step - swept in a single
-        // VBlank, which is the jitter, and warped across a large step, which is
-        // the visible warping. Repeats of the same view leave the pair alone.
-        const auto same = [](const Ps2CameraState &a, const Ps2CameraState &b)
+        m_requestCamera = cur;
+    }
+
+    static bool sameCamera(const Ps2CameraState &a, const Ps2CameraState &b)
+    {
+        for (int i = 0; i < 3; ++i)
+            if (a.front[i] != b.front[i] || a.pos[i] != b.pos[i] || a.up[i] != b.up[i])
+                return false;
+        return a.viewX == b.viewX && a.viewY == b.viewY && a.valid == b.valid;
+    }
+
+    // Frame interpolation pairs each picture with its camera by *picture
+    // change*, which the renderer sees exactly (the composed source's drawSeq).
+    // VCS draws a new view every 2-4 VBlanks while a picture is composed every
+    // VBlank, and the camera that comes with a picture can arrive a compose
+    // early or late - pairing by camera change instead made the "previous
+    // picture" sometimes already the new one, so the sweep overshot a whole
+    // step and snapped back: the jitter.
+    //   picture changed -> the old picture and its camera start the pair, and
+    //                      the pair waits (pending) for the new picture's camera
+    //   pending         -> the first camera that differs is the new picture's,
+    //                      early or late; none within two composes: still
+    void Renderer::interpPair(uint64_t contentSeq)
+    {
+        m_interpShifted = false;
+        m_interpPairedNow = false;
+        const bool pictureChanged = contentSeq != m_interpContentSeq;
+        m_interpContentSeq = contentSeq;
+        if (pictureChanged)
         {
-            for (int i = 0; i < 3; ++i)
-                if (a.front[i] != b.front[i] || a.pos[i] != b.pos[i] || a.up[i] != b.up[i])
-                    return false;
-            return a.viewX == b.viewX && a.viewY == b.viewY && a.valid == b.valid;
-        };
-        if (s_fake == nullptr && same(cur, m_interpCamera))
+            m_interpPrevPrevCamera = m_interpPrevCamera;
+            m_interpPrevCamera = m_interpCamera; // the camera the old picture was shown with
+            m_interpPending = true;
+            m_interpPendingComposes = 0;
+            m_interpShifted = true;
+        }
+        if (!m_interpPending)
             return;
-        const double now = interpNow();
-        const double gap = now - m_interpPairTime;
-        // The interval between game frames, averaged so the sweep has a steady
-        // length; a long gap (a load, a pause, a cutscene) is not a frame time.
-        if (m_interpHavePrev && gap > 0.004 && gap < 0.25)
-            m_interpInterval = std::clamp(m_interpInterval * 0.7 + gap * 0.3, 1.0 / 60.0, 1.0 / 10.0);
-        m_interpPairTime = now;
-        m_interpPrevCamera = m_interpCamera;
-        m_interpCamera = cur;
-        m_interpHavePrev = m_interpHavePrev || cur.valid;
-        m_interpShifted = true;
+        const bool cameraArrived = !sameCamera(m_requestCamera, m_interpPrevCamera);
+        if (cameraArrived || ++m_interpPendingComposes > 2)
+        {
+            m_interpCamera = cameraArrived ? m_requestCamera : m_interpPrevCamera;
+            // A cut, or the game snapping the camera round (it recentres by
+            // 100+ degrees in a frame or two): warping the old picture across
+            // that only smears it. Show plain pictures until the next pair.
+            if (cameraArrived)
+            {
+                const Ps2CameraState &a = m_interpPrevCamera, &b = m_interpCamera;
+                const float dot = a.front[0] * b.front[0] + a.front[1] * b.front[1] + a.front[2] * b.front[2];
+                const float dx = a.pos[0] - b.pos[0], dy = a.pos[1] - b.pos[1], dz = a.pos[2] - b.pos[2];
+                if (dot < 0.9659f /* 15 degrees */ || dx * dx + dy * dy + dz * dz > 9.0f /* 3 units */)
+                    m_interpPrevCamera = m_interpCamera;
+            }
+            m_interpPending = false;
+            const double now = interpNow();
+            const double gap = now - m_interpPairTime;
+            // The interval between game frames, averaged so the sweep has a
+            // steady length; a long gap (a load, a pause) is not a frame time.
+            if (m_interpHavePrev && gap > 0.004 && gap < 0.25)
+                m_interpInterval = std::clamp(m_interpInterval * 0.7 + gap * 0.3, 1.0 / 60.0, 1.0 / 10.0);
+            m_interpPairTime = now;
+            m_interpHavePrev = m_interpHavePrev || m_interpCamera.valid;
+            m_interpPairedNow = cameraArrived;
+        }
     }
 
     // PS2X_GS_PRESENT_SHARE: -1 automatic, 1 forced shared, 0 forced readback.
@@ -3625,10 +3664,85 @@ void main()
         return true;
     }
 
+    // PS2X_INTERP_ALIGN=1: at a new game frame, how well does the previous
+    // picture warped fully (t=1) to the new camera match the new picture? With
+    // the camera paired to the right picture, the warp should beat the unwarped
+    // picture; if the camera runs a frame ahead, warping with the pair one frame
+    // earlier wins instead. Mean |luma| difference over the central 60%.
+    void Renderer::interpAlignCheck()
+    {
+        static uint64_t s_n = 0;
+        if ((++s_n % 4u) != 0u || m_prevComposedTexture == 0 || m_lastComposedTexture == 0 || !m_interpHavePrev ||
+            !m_interpPrevCamera.valid || !m_interpCamera.valid)
+            return;
+        GL &gl = m_context.gl;
+        const auto read = [&](GLuint texture, uint32_t w, uint32_t h, std::vector<uint8_t> &out)
+        {
+            out.assign(size_t(w) * h * 4u, 0u);
+            gl.glGetTextureSubImage(texture, 0, 0, 0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h), 1, GL_RGBA,
+                                    GL_UNSIGNED_BYTE, static_cast<GLsizei>(out.size()), out.data());
+        };
+        const auto luma = [](const std::vector<uint8_t> &img, uint32_t w, uint32_t h, float u, float v)
+        {
+            const uint32_t x = std::min(w - 1u, static_cast<uint32_t>(u * w));
+            const uint32_t y = std::min(h - 1u, static_cast<uint32_t>(v * h));
+            const uint8_t *p = img.data() + (size_t(y) * w + x) * 4u;
+            return 0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2];
+        };
+        const uint32_t w = m_lastComposedWidth, h = m_lastComposedHeight;
+        std::vector<uint8_t> cur, prev, warped;
+        read(m_lastComposedTexture, w, h, cur);
+        read(m_prevComposedTexture, m_prevComposedWidth, m_prevComposedHeight, prev);
+        const auto error = [&](const std::vector<uint8_t> &img, uint32_t iw, uint32_t ih)
+        {
+            double sum = 0.0;
+            int n = 0;
+            for (int j = 0; j < 48; ++j)
+                for (int i = 0; i < 64; ++i)
+                {
+                    const float u = 0.2f + 0.6f * (i + 0.5f) / 64.0f, v = 0.2f + 0.6f * (j + 0.5f) / 48.0f;
+                    sum += std::fabs(luma(img, iw, ih, u, v) - luma(cur, w, h, u, v));
+                    ++n;
+                }
+            return sum / n;
+        };
+        const double eIdentity = error(prev, m_prevComposedWidth, m_prevComposedHeight);
+        const auto warpError = [&]() -> double
+        {
+            uint32_t sw = 0, sh = 0;
+            const GLuint synth = synthesizeHostFrame(1.0f, sw, sh);
+            if (synth == 0 || sw == 0 || sh == 0)
+                return -1.0;
+            read(synth, sw, sh, warped);
+            return error(warped, sw, sh);
+        };
+        const double eNow = warpError();
+        double eEarlier = -1.0;
+        if (m_interpPrevPrevCamera.valid)
+        {
+            const Ps2CameraState savedPrev = m_interpPrevCamera, savedCur = m_interpCamera;
+            m_interpCamera = m_interpPrevCamera;
+            m_interpPrevCamera = m_interpPrevPrevCamera;
+            eEarlier = warpError();
+            m_interpPrevCamera = savedPrev;
+            m_interpCamera = savedCur;
+        }
+        const float yaw = std::atan2(m_interpCamera.front[1], m_interpCamera.front[0]) -
+                          std::atan2(m_interpPrevCamera.front[1], m_interpPrevCamera.front[0]);
+        std::cerr << "[align] identity=" << eIdentity << " warpNow=" << eNow << " warpEarlierPair=" << eEarlier
+                  << " yawStepDeg=" << yaw * 57.29578f << std::endl;
+        invalidateGlState();
+    }
+
     // Warps the last composed frame forward by half the last camera motion and
     // writes it into m_synthTexture. Overlays are copied, not warped: the HUD is
     // identical in the two pictures it sits between, so moving it would be wrong.
     // Returns the texture, or 0 if it cannot make one.
+    static float cameraYawDeg(const Ps2CameraState &c)
+    {
+        return std::atan2(c.front[1], c.front[0]) * 57.29578f;
+    }
+
     GLuint Renderer::synthesizeHostFrame(float phase, uint32_t &outWidth, uint32_t &outHeight)
     {
         if (m_synth.id == 0 || m_prevComposedTexture == 0 || !m_interpHavePrev || !m_interpPrevCamera.valid ||
@@ -3652,7 +3766,11 @@ void main()
         static const float s_depth = []()
         {
             const char *env = std::getenv("PS2X_BLUR_DEPTH");
-            return env ? static_cast<float>(std::atof(env)) : 200.0f;
+            // 15: VCS's camera orbits the player at close range, so the near
+            // scene dominates the motion. PS2X_INTERP_ALIGN measured the warp
+            // removing ~25% of the frame-to-frame difference at 8-20 vs ~10% at
+            // 200 and ~2% for pure rotation.
+            return env ? static_cast<float>(std::atof(env)) : 15.0f;
         }();
         // Interpolation: this frame shows the picture a fraction t of the way
         // from the previous composed frame to the current one, warped by the
@@ -3668,20 +3786,45 @@ void main()
         float t = phase;
         if (phase < 0.0f)
         {
+            // A still camera: nothing to interpolate, show the newest picture.
+            // (The next pair starts from exactly this picture, so nothing jumps.)
+            if (!m_interpPending && sameCamera(m_interpPrevCamera, m_interpCamera))
+            {
+                g_gsInterpLastPhase.store(1.0f, std::memory_order_relaxed);
+                g_gsInterpShownYaw.store(cameraYawDeg(m_interpCamera), std::memory_order_relaxed);
+                return 0;
+            }
             const double elapsed = interpNow() - m_interpPairTime;
-            t = static_cast<float>(elapsed / m_interpInterval);
+            // Waiting for the new picture's camera: hold the old picture (t=0),
+            // which is what is already on screen.
+            t = m_interpPending ? 0.0f : static_cast<float>(elapsed / m_interpInterval);
             // Swept through: the current picture *is* this view, with its own
             // up-to-date content - show it as it is.
             if (t >= 1.0f)
             {
                 g_gsInterpLastPhase.store(1.0f, std::memory_order_relaxed);
+                g_gsInterpShownYaw.store(cameraYawDeg(m_interpCamera), std::memory_order_relaxed);
                 return 0;
             }
         }
         t = std::clamp(t, 0.0f, 1.0f);
         g_gsInterpLastPhase.store(t, std::memory_order_relaxed);
+        {
+            float a = cameraYawDeg(m_interpPrevCamera), b = cameraYawDeg(m_interpCamera);
+            if (b - a > 180.0f)
+                b -= 360.0f;
+            else if (a - b > 180.0f)
+                b += 360.0f;
+            g_gsInterpShownYaw.store(a + t * (b - a), std::memory_order_relaxed);
+        }
         float ext[9];
-        if (!interpolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext))
+        if (t == 0.0f)
+        {
+            // The old picture exactly as it was.
+            const float identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            std::copy(identity, identity + 9, ext);
+        }
+        else if (!interpolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext))
         {
             // Barely moving: the linear blend between the two views is exact
             // enough, and it needs no axis-angle path.
@@ -4075,6 +4218,8 @@ void main()
             setUniform1f(p, uniform(p, "u_overlayToAlpha"), (reproject && overlayValid) ? 1.0f : 0.0f);
             setUniform1f(p, uniform(p, "u_overlayDebug"), s_overlayDebug ? 1.0f : 0.0f);
         }
+        // Pair pictures with cameras (frame interpolation), by picture change.
+        interpPair(both ? std::max(top.target->drawSeq, c2.target->drawSeq) : top.target->drawSeq);
         // When this picture starts a new game frame, the last composed picture -
         // the previous game frame - becomes the interpolation source. It is held
         // across the repeats that follow (2-4 VBlanks per game frame), so it is
@@ -4150,6 +4295,32 @@ void main()
         m_lastComposedWidth = width;
         m_lastComposedHeight = height;
         g_gsComposedFrames.fetch_add(1u, std::memory_order_relaxed);
+        static const bool s_align = std::getenv("PS2X_INTERP_ALIGN") != nullptr;
+        if (s_align && m_interpPairedNow)
+            interpAlignCheck();
+        // PS2X_INTERP_SEQ=1: per compose, whether the camera changed (c) and
+        // whether the picture's content changed (p, one row across the middle),
+        // to measure how far the picture lags the camera latched with it.
+        static const bool s_seq = std::getenv("PS2X_INTERP_SEQ") != nullptr;
+        if (s_seq && m_lastComposedTexture != 0)
+        {
+            static std::vector<uint8_t> s_row, s_lastRow;
+            s_row.assign(size_t(width) * 4u, 0u);
+            gl.glGetTextureSubImage(m_lastComposedTexture, 0, 0, static_cast<GLint>(height / 2u), 0,
+                                    static_cast<GLsizei>(width), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                                    static_cast<GLsizei>(s_row.size()), s_row.data());
+            const bool pictureChanged = s_row != s_lastRow;
+            s_lastRow = s_row;
+            static std::string s_line;
+            // p: picture changed, c: its camera arrived (pair complete), B: both
+            s_line += m_interpPairedNow ? (m_interpShifted ? 'B' : 'c') : (m_interpShifted ? 'p' : '.');
+            (void)pictureChanged;
+            if (s_line.size() >= 80u)
+            {
+                std::cerr << "[seq] " << s_line << std::endl;
+                s_line.clear();
+            }
+        }
         if (sharePresent)
         {
             // Make the write visible to the host's context (it draws this

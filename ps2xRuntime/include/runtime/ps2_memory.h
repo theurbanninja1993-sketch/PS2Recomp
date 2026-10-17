@@ -462,6 +462,7 @@ public:
         bool drain = true;
         bool path2DirectHl = false;
         std::vector<uint8_t> data;
+        uint64_t streamPos = ~0ull; // see t_streamPos (ps2_memory.cpp)
     };
     void gsFrontendLoop();
     void enqueueGsWork(GsWorkItem &&item);

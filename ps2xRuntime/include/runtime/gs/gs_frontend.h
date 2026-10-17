@@ -249,6 +249,10 @@ private:
     GSFrameReg m_preferredDisplaySourceFrame{};
     uint32_t m_preferredDisplayDestFbp = 0;
     bool m_hasPreferredDisplaySource = false;
+    // The camera of the picture last copied to the display (frame interpolation).
+    Ps2CameraState m_displayCamera{};
+    bool m_hasDisplayCamera = false;
+    uint64_t m_sceneCameraPos = ~1ull; // stream position of the last scene-camera lookup
     std::vector<uint8_t> m_hostPresentationFrame;
     uint32_t m_hostPresentationWidth = 0;
     uint32_t m_hostPresentationRowPixels = 0; // 0: kHostFrameWidth

@@ -1668,6 +1668,7 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
 
 std::atomic<bool> g_ps2DumpRamRequest{false}; // F8 RAM snapshot (ps2_pad.cpp)
 extern std::atomic<float> g_gsInterpLastPhase;  // gs_gpu_renderer.cpp, for PS2X_INTERP_LOG
+extern std::atomic<float> g_gsInterpShownYaw;
 bool g_ps2TraceBoolWrites = std::getenv("PS2X_WATCH_BOOL_WRITES") != nullptr;
 
 #if defined(__linux__)
@@ -3585,6 +3586,7 @@ void PS2Runtime::run()
                     std::cerr << "[interp] f=" << s_hostFrame << " picture=" << (newPicture ? 1 : 0)
                               << " synth=" << (drewSynth ? 1 : 0) << " phase=" << synthPhase
                               << " t=" << g_gsInterpLastPhase.load(std::memory_order_relaxed)
+                              << " shownYaw=" << g_gsInterpShownYaw.load(std::memory_order_relaxed)
                               << " draw=" << presentDraw.id << " size=" << presentWidth << "x" << presentHeight
                               << " screen=" << GetScreenWidth() << "x" << GetScreenHeight()
                               << " composed=" << g_gsComposedFrames.load(std::memory_order_relaxed)<< " camValid=" << g_ps2Camera.valid << " camPos=" << g_ps2Camera.pos[0] << ","

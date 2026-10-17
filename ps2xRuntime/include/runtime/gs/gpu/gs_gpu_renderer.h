@@ -350,12 +350,21 @@ namespace gsgpu
         // is written into. The camera is tracked every compose, not just when the
         // blur is on, because the interpolation deltas need it too.
         Ps2CameraState m_interpPrevCamera, m_interpCamera;
+        Ps2CameraState m_interpPrevPrevCamera; // one more back, for PS2X_INTERP_ALIGN
+        void interpAlignCheck(); // PS2X_INTERP_ALIGN diagnostic
         bool m_interpHavePrev = false;
         // Game frames, not VBlanks: VCS draws a new view only every 2-4 VBlanks
         // while the renderer composes every VBlank, so the pair shifts only when
         // the picture's camera changes. The shift time and the measured interval
         // between game frames give the phase (render-thread clock).
         bool m_interpShifted = false;    // this compose started a new game frame
+        Ps2CameraState m_requestCamera;  // the camera that came with this compose's request
+        uint64_t m_interpContentSeq = ~0ull; // drawSeq of the composed source last time
+        bool m_interpPending = false;    // picture changed, its camera not seen yet
+        int m_interpPendingComposes = 0;
+        bool m_interpPairedNow = false;  // a pair completed this compose (diagnostics)
+        // Pairs pictures with cameras by picture change (see the definition).
+        void interpPair(uint64_t contentSeq);
         double m_interpPairTime = 0.0;   // when the current pair was set (seconds)
         double m_interpInterval = 1.0 / 30.0; // running average between game frames
         GLuint m_lastComposedTexture = 0;

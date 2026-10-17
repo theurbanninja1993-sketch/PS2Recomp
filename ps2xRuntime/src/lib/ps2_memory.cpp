@@ -20,10 +20,19 @@
 
 extern std::atomic<uint64_t> g_ps2PresentedFrameCounter;
 
+uint64_t ps2Vif1StreamCommitted();
+uint64_t ps2Vif1StreamPosition();
+
 namespace
 {
     // True on the async VIF1 worker thread (see PS2Memory::waitForAsyncVif1).
     thread_local bool t_onAsyncVif1Worker = false;
+    // Position in the game's VIF1 batch stream of the GS work being processed
+    // on this thread (~0: the game thread itself, i.e. "now"). Lets work done
+    // later on the worker threads be matched with what the game did before
+    // committing it - the camera a picture was drawn with (frame interpolation).
+    thread_local uint64_t t_streamPos = ~0ull;
+    std::atomic<uint64_t> g_vif1BatchesCommitted{0};
 }
 
 namespace
@@ -1849,6 +1858,16 @@ bool PS2Memory::onAsyncVif1Worker()
 
 void ps2PcSampleCurrentThread();
 
+uint64_t ps2Vif1StreamCommitted()
+{
+    return g_vif1BatchesCommitted.load(std::memory_order_acquire);
+}
+
+uint64_t ps2Vif1StreamPosition()
+{
+    return t_streamPos;
+}
+
 void PS2Memory::asyncVif1WorkerLoop()
 {
     t_onAsyncVif1Worker = true;
@@ -1865,6 +1884,8 @@ void PS2Memory::asyncVif1WorkerLoop()
                 return;
             batch = std::move(m_vif1Batches.front());
             m_vif1Batches.pop_front();
+            static uint64_t s_popped = 0;
+            t_streamPos = s_popped++; // batches are popped in commit order
             m_vif1WorkerActive = true;
         }
         for (PendingTransfer &transfer : batch)
@@ -1906,6 +1927,7 @@ bool PS2Memory::deferGsWork() const
 
 void PS2Memory::enqueueGsWork(GsWorkItem &&item)
 {
+    item.streamPos = t_streamPos;
     {
         std::unique_lock<std::mutex> lock(m_gsQueueMutex);
         // Bounded so the VU1 worker cannot run far ahead of the GS.
@@ -1939,6 +1961,7 @@ void PS2Memory::gsFrontendLoop()
         switch (item.kind)
         {
         case GsWorkItem::Kind::Packet:
+            t_streamPos = item.streamPos;
             submitGifPacketNow(item.path, item.data.data(), static_cast<uint32_t>(item.data.size()), item.drain,
                                item.path2DirectHl);
             break;
@@ -2282,6 +2305,7 @@ void PS2Memory::processPendingTransfers()
         {
             std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
             m_vif1Batches.push_back(std::move(batch));
+            g_vif1BatchesCommitted.fetch_add(1u, std::memory_order_release);
             if (!m_vif1Worker.joinable())
                 m_vif1Worker = std::thread([this]()
                                            {

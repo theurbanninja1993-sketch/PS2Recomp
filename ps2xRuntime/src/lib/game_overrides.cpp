@@ -1,4 +1,7 @@
 #include "runtime/ps2_music_station.h"
+#include "runtime/ps2_camera.h"
+void ps2CameraStreamPush(const Ps2CameraState &camera); // gs_frontend.cpp
+void ps2InterpEvent(char event); // gs_frontend.cpp
 #include "runtime/ps2_audio.h"
 #include "runtime/ps2_mods.h" // ps2CurrentPromptSet (button-prompt text)
 #include "game_overrides.h"
@@ -1460,6 +1463,7 @@ namespace
     // then 0x2A2ED0 on the same camera; on entry to that, the vehicle
     // camera's result is final and TheCamera is not built from it yet.
     PS2Runtime::RecompiledFunction g_vcsOrigAfterCamProcess = nullptr;
+    void vcsPushFrameCamera(const uint8_t *rdram); // after the camera reader below
 
     void vcsAfterCamProcess(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -1482,6 +1486,10 @@ namespace
         // camera) from the rotated vectors; only after it may the wall
         // raycast run (a guest call that can yield and unwind this frame).
         g_vcsOrigAfterCamProcess(rdram, ctx, runtime);
+        ps2InterpEvent('P');
+        // The camera this frame will be drawn with, stamped into the game's
+        // VIF1 stream order so the display copy can find it (interpolation).
+        vcsPushFrameCamera(rdram);
         if (rotated)
             vcsMeasureCarWall(rdram, ctx, runtime, cam);
     }
@@ -1914,6 +1922,13 @@ namespace
         g_ps2Camera = state;
         g_ps2CameraFrame.store(g_ps2PresentedFrameCounter.load(std::memory_order_relaxed), std::memory_order_relaxed);
         vcsLogCamera(state);
+    }
+
+    void vcsPushFrameCamera(const uint8_t *rdram)
+    {
+        const Ps2CameraState state = vcsReadCamera(rdram, g_vcsViewWindowX, g_vcsViewWindowY);
+        if (state.valid)
+            ps2CameraStreamPush(state);
     }
 
     Ps2CameraState vcsReadCamera(const uint8_t *rdram, float viewX, float viewY)
