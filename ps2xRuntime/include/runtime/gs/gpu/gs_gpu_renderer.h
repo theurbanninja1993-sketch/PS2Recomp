@@ -374,6 +374,16 @@ namespace gsgpu
         GLuint m_prevComposedTexture = 0, m_prevComposedFramebuffer = 0;
         uint32_t m_prevComposedWidth = 0, m_prevComposedHeight = 0;
         Program m_synth;
+        // The overlay mask of each composed picture, snapshotted right after the
+        // compose with its own coordinates. The scene's live mask is cleared and
+        // rebuilt as the game draws the next frame, so read later (when the host
+        // asks for an interpolated frame) it is usually empty - the HUD then got
+        // warped with the world. [m_interpMaskCur] is the newest picture's,
+        // the other the previous picture's.
+        Program m_maskSnap;
+        GLuint m_interpMask[2] = {0u, 0u}, m_interpMaskFramebuffer[2] = {0u, 0u};
+        uint32_t m_interpMaskWidth = 0, m_interpMaskHeight = 0;
+        int m_interpMaskCur = 0;
         // A ring, not a pair. The host *queues* its draws, so several synthesized
         // frames can be in flight at once: at 240 there are three per picture, and
         // a two-deep ring lets the renderer rewrite a texture before the host's

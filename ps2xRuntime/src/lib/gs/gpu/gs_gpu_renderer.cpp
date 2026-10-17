@@ -814,36 +814,68 @@ void main()
         const char *kSynthShader = R"(#version 450 core
 layout(binding = 0) uniform sampler2D u_source;
 layout(binding = 1) uniform sampler2D u_mask;
-uniform vec3 u_warp0; // the half-step extrapolation, column-major
+layout(binding = 2) uniform sampler2D u_next; // the newest picture
+uniform vec3 u_warp0; // output -> previous picture, column-major
 uniform vec3 u_warp1;
 uniform vec3 u_warp2;
+uniform vec3 u_back0; // output -> newest picture
+uniform vec3 u_back1;
+uniform vec3 u_back2;
+uniform float u_t;         // how far the sweep has got (0 = previous picture)
+uniform float u_nextValid;
 uniform vec2 u_size;
-uniform vec2 u_maskOrigin; // where the composed rect starts in the mask texture
 uniform vec2 u_maskCoordScale; // mask texels per output texel (1 when full size)
 uniform float u_maskValid;
+layout(binding = 3) uniform sampler2D u_maskNext; // the newest picture's overlay mask
 out vec4 o_color;
+// The pictures' own overlay masks (snapshotted at their compose, so always
+// complete and aligned), eroded by a texel so an edge cannot flicker.
+float maskAt(sampler2D m)
+{
+    ivec2 mp = ivec2(gl_FragCoord.xy * u_maskCoordScale);
+    return min(min(min(texelFetch(m, mp, 0).r, texelFetch(m, mp + ivec2(1, 0), 0).r),
+                   texelFetch(m, mp + ivec2(-1, 0), 0).r),
+               min(texelFetch(m, mp + ivec2(0, 1), 0).r, texelFetch(m, mp + ivec2(0, -1), 0).r));
+}
 void main()
 {
     vec2 uv = gl_FragCoord.xy / u_size;
-    vec4 cur = texture(u_source, uv);
-    // The mask texture is the scene target's full extent, which is taller than
-    // the composed frame (grow-only), so it must be fetched with the same texel
-    // offset the compose uses - a normalized uv would sample it at the wrong
-    // height and protect the wrong region. Take the minimum of the neighbours so
-    // its edge cannot land a texel either side and flicker.
-    float mask = 0.0;
     if (u_maskValid > 0.5)
     {
-        ivec2 mp = ivec2(u_maskOrigin) + ivec2(gl_FragCoord.xy * u_maskCoordScale);
-        mask = min(min(min(texelFetch(u_mask, mp, 0).r, texelFetch(u_mask, mp + ivec2(1, 0), 0).r),
-                       texelFetch(u_mask, mp + ivec2(-1, 0), 0).r),
-                   min(texelFetch(u_mask, mp + ivec2(0, 1), 0).r,
-                       texelFetch(u_mask, mp + ivec2(0, -1), 0).r));
+        // An overlay (HUD, minimap, text) does not move with the camera: show
+        // it where it is, from the newest picture if it is there.
+        if (maskAt(u_maskNext) > 0.0 && u_nextValid > 0.5)
+        {
+            o_color = vec4(texture(u_next, uv).rgb, 1.0);
+            return;
+        }
+        if (maskAt(u_mask) > 0.0)
+        {
+            o_color = vec4(texture(u_source, uv).rgb, 1.0);
+            return;
+        }
     }
-    if (mask > 0.0)
+    // Static pixels: identical at the same screen position in both pictures
+    // (with their neighbours) do not move - the HUD, the minimap, text. The
+    // overlay mask misses most of VCS's HUD, so this is what keeps it still;
+    // in the moving world a pixel almost never matches itself in place, and
+    // where it does (flat sky) showing it unwarped looks the same anyway.
+    if (u_nextValid > 0.5)
     {
-        o_color = vec4(cur.rgb, 1.0); // an overlay: do not move it
-        return;
+        vec2 texel = 1.0 / vec2(textureSize(u_next, 0));
+        float diff = 0.0;
+        for (int i = 0; i < 5; ++i)
+        {
+            vec2 o = i == 0 ? vec2(0.0) : (i == 1 ? vec2(texel.x, 0.0) : (i == 2 ? vec2(-texel.x, 0.0) :
+                     (i == 3 ? vec2(0.0, texel.y) : vec2(0.0, -texel.y))));
+            vec3 d = abs(texture(u_next, uv + o).rgb - texture(u_source, uv + o).rgb);
+            diff = max(diff, max(d.r, max(d.g, d.b)));
+        }
+        if (diff < 0.02)
+        {
+            o_color = vec4(texture(u_next, uv).rgb, 1.0);
+            return;
+        }
     }
     // The homography is built in the picture's v-down convention (see the note
     // in ps2_camera.h) while gl_FragCoord is v-up, so flip around it. The
@@ -853,7 +885,48 @@ void main()
     vec3 q = mat3(u_warp0, u_warp1, u_warp2) * vec3(uvD, 1.0);
     vec2 srcD = q.xy / q.z;
     vec2 src = vec2(srcD.x, 1.0 - srcD.y);
-    o_color = vec4(texture(u_source, clamp(src, vec2(0.0), vec2(1.0))).rgb, 1.0);
+    // Two-way: the previous picture warped forward and the newest one warped
+    // back, blended by how far the sweep has got. A single warped picture has
+    // nothing for the strip a turn uncovers at the screen edge (it was
+    // clamp-stretched: a smeared band appearing and vanishing every game frame)
+    // and slides near and far things alike against the true parallax; with two,
+    // an uncovered pixel comes from the picture that has it, and parallax
+    // errors meet in the middle instead of sliding and snapping.
+    vec3 r = mat3(u_back0, u_back1, u_back2) * vec3(uvD, 1.0);
+    vec2 nxtD = r.xy / r.z;
+    vec2 nxt = vec2(nxtD.x, 1.0 - nxtD.y);
+    const float edge = 0.002;
+    float inPrev = (all(greaterThanEqual(src, vec2(-edge))) && all(lessThanEqual(src, vec2(1.0 + edge))) && q.z > 0.0) ? 1.0 : 0.0;
+    float inNext = (u_nextValid > 0.5 && all(greaterThanEqual(nxt, vec2(-edge))) && all(lessThanEqual(nxt, vec2(1.0 + edge))) && r.z > 0.0) ? 1.0 : 0.0;
+    float wPrev = (1.0 - u_t) * inPrev;
+    float wNext = u_t * inNext;
+    if (wPrev + wNext <= 0.0)
+    {
+        // Neither covers it with weight: whichever covers it at all.
+        wPrev = inPrev;
+        wNext = inNext;
+    }
+    vec3 colour;
+    if (wPrev + wNext <= 0.0)
+        colour = texture(u_source, clamp(src, vec2(0.0), vec2(1.0))).rgb;
+    else
+        colour = (texture(u_source, clamp(src, vec2(0.0), vec2(1.0))).rgb * wPrev +
+                  texture(u_next, clamp(nxt, vec2(0.0), vec2(1.0))).rgb * wNext) / (wPrev + wNext);
+    o_color = vec4(colour, 1.0);
+}
+)";
+
+        // The composed picture's overlay mask, at the composed size, fetched
+        // exactly as the compose fetches it (u_rect1 of the top circuit).
+        const char *kMaskSnapShader = R"(#version 450 core
+layout(binding = 0) uniform sampler2D u_overlay;
+uniform ivec4 u_rect;
+uniform float u_valid;
+out float o_mask;
+void main()
+{
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    o_mask = (u_valid > 0.5 && p.x < u_rect.z && p.y < u_rect.w) ? texelFetch(u_overlay, u_rect.xy + p, 0).r : 0.0;
 }
 )";
 
@@ -1229,6 +1302,8 @@ void main()
                                      compileShader(gl, GL_FRAGMENT_SHADER, kBlurShader)});
         m_synth.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
                                       compileShader(gl, GL_FRAGMENT_SHADER, kSynthShader)});
+        m_maskSnap.id = linkProgram(gl, {compileShader(gl, GL_VERTEX_SHADER, kFullscreenVertexShader),
+                                         compileShader(gl, GL_FRAGMENT_SHADER, kMaskSnapShader)});
         // A source target that has no mask yet still has to write something: an
         // explicit zero, so the copy overwrites rather than leaving stale bits.
         if (m_zeroMask == 0)
@@ -3527,7 +3602,8 @@ void main()
     //   picture changed -> the old picture and its camera start the pair, and
     //                      the pair waits (pending) for the new picture's camera
     //   pending         -> the first camera that differs is the new picture's,
-    //                      early or late; none within two composes: still
+    //                      early or late (measured: at most one compose late);
+    //                      none by the next compose: a still camera
     void Renderer::interpPair(uint64_t contentSeq)
     {
         m_interpShifted = false;
@@ -3545,7 +3621,7 @@ void main()
         if (!m_interpPending)
             return;
         const bool cameraArrived = !sameCamera(m_requestCamera, m_interpPrevCamera);
-        if (cameraArrived || ++m_interpPendingComposes > 2)
+        if (cameraArrived || ++m_interpPendingComposes > 1)
         {
             m_interpCamera = cameraArrived ? m_requestCamera : m_interpPrevCamera;
             // A cut, or the game snapping the camera round (it recentres by
@@ -3593,7 +3669,7 @@ void main()
     // extrapolating past it predicts the future, and a camera that accelerates
     // makes the whole picture wobble around the static HUD.
     static bool interpolateCameraHomography(const Ps2CameraState &prev, const Ps2CameraState &cur, float t,
-                                            float depth, float out[9])
+                                            float depth, float out[9], float back[9])
     {
         // Basis rows (right, up, front), the same convention as ps2CameraHomography.
         const auto basis = [](const Ps2CameraState &c, float R[9]) -> bool
@@ -3656,11 +3732,16 @@ void main()
         // identity at t = 0, which is why a still camera looked right and every
         // motion went the wrong way.
         const Ps2CameraHomography hm = ps2CameraHomography(prev, mid, depth);
-        if (!hm.usable)
+        const Ps2CameraHomography hb = ps2CameraHomography(cur, mid, depth); // output(mid) -> newest
+        if (!hm.usable || !hb.usable)
             return false;
         const float inv = hm.m[8] != 0.0f ? 1.0f / hm.m[8] : 1.0f;
+        const float invB = hb.m[8] != 0.0f ? 1.0f / hb.m[8] : 1.0f;
         for (int i = 0; i < 9; ++i)
+        {
             out[i] = hm.m[i] * inv;
+            back[i] = hb.m[i] * invB;
+        }
         return true;
     }
 
@@ -3717,6 +3798,85 @@ void main()
             return error(warped, sw, sh);
         };
         const double eNow = warpError();
+        // PS2X_INTERP_DUMP_PAIR=<prefix>: once, the previous picture, the frame
+        // halfway between, and the newest picture as PPMs (a visual check).
+        if (const char *prefix = std::getenv("PS2X_INTERP_DUMP_PAIR"))
+        {
+            static int s_dumped = 0;
+            const float yawStep = std::fabs(std::atan2(m_interpCamera.front[1], m_interpCamera.front[0]) -
+                                            std::atan2(m_interpPrevCamera.front[1], m_interpPrevCamera.front[0]));
+            if (s_dumped < 1 && yawStep > 0.02f && yawStep < 0.5f)
+            {
+                ++s_dumped;
+                const auto writePpm = [&](const std::string &path, const std::vector<uint8_t> &img, uint32_t iw, uint32_t ih)
+                {
+                    if (FILE *f = std::fopen(path.c_str(), "wb"))
+                    {
+                        std::fprintf(f, "P6\n%u %u\n255\n", iw, ih);
+                        for (uint32_t y = 0; y < ih; ++y)
+                            for (uint32_t x = 0; x < iw; ++x)
+                                std::fwrite(img.data() + (size_t(ih - 1u - y) * iw + x) * 4u, 1, 3, f);
+                        std::fclose(f);
+                    }
+                };
+                writePpm(std::string(prefix) + "_prev.ppm", prev, m_prevComposedWidth, m_prevComposedHeight);
+                writePpm(std::string(prefix) + "_next.ppm", cur, w, h);
+                uint32_t sw = 0, sh = 0;
+                const GLuint mid = synthesizeHostFrame(0.5f, sw, sh);
+                if (mid != 0)
+                {
+                    read(mid, sw, sh, warped);
+                    writePpm(std::string(prefix) + "_mid.ppm", warped, sw, sh);
+                }
+                for (int i = 0; i < 2 && m_interpMask[i] != 0; ++i)
+                {
+                    std::vector<uint8_t> m(size_t(m_interpMaskWidth) * m_interpMaskHeight);
+                    gl.glGetTextureSubImage(m_interpMask[i], 0, 0, 0, 0, static_cast<GLsizei>(m_interpMaskWidth),
+                                            static_cast<GLsizei>(m_interpMaskHeight), 1, GL_RED, GL_UNSIGNED_BYTE,
+                                            static_cast<GLsizei>(m.size()), m.data());
+                    size_t on = 0;
+                    for (uint8_t v : m)
+                        on += v != 0;
+                    if (FILE *f = std::fopen((std::string(prefix) + "_mask" + std::to_string(i) + ".pgm").c_str(), "wb"))
+                    {
+                        std::fprintf(f, "P5\n%u %u\n255\n", m_interpMaskWidth, m_interpMaskHeight);
+                        for (uint32_t y = 0; y < m_interpMaskHeight; ++y)
+                            std::fwrite(m.data() + size_t(m_interpMaskHeight - 1u - y) * m_interpMaskWidth, 1, m_interpMaskWidth, f);
+                        std::fclose(f);
+                    }
+                    std::cerr << "[interp] mask[" << i << "] (" << (i == m_interpMaskCur ? "newest" : "previous")
+                              << ") " << m_interpMaskWidth << "x" << m_interpMaskHeight << " set=" << on << std::endl;
+                }
+                {
+                    Target *mt = m_overlayTarget;
+                    std::cerr << "[interp] overlayTarget=" << (mt ? mt->block : 0u) << " maskTex=" << (mt ? mt->maskTexture : 0u)
+                              << " maskEnabled=" << m_maskEnabled << std::endl;
+                }
+                std::cerr << "[interp] dumped a pair, yaw step " << yawStep * 57.29578f << " deg" << std::endl;
+            }
+        }
+        // FOV scale sweep (and the reversed direction): which projection makes
+        // the warp match the new picture best?
+        {
+            const Ps2CameraState savedPrev = m_interpPrevCamera, savedCur = m_interpCamera;
+            static const float kScales[] = {0.5f, 0.7f, 0.85f, 1.0f, 1.2f, 1.4f, 2.0f};
+            std::ostringstream line;
+            line << "[alignfov]";
+            for (float scale : kScales)
+            {
+                m_interpPrevCamera.viewX = savedPrev.viewX * scale;
+                m_interpPrevCamera.viewY = savedPrev.viewY * scale;
+                m_interpCamera.viewX = savedCur.viewX * scale;
+                m_interpCamera.viewY = savedCur.viewY * scale;
+                line << " s" << scale << "=" << warpError();
+            }
+            m_interpPrevCamera = savedCur;
+            m_interpCamera = savedPrev;
+            line << " reversed=" << warpError() << " viewX=" << savedCur.viewX << " viewY=" << savedCur.viewY;
+            m_interpPrevCamera = savedPrev;
+            m_interpCamera = savedCur;
+            std::cerr << line.str() << std::endl;
+        }
         double eEarlier = -1.0;
         if (m_interpPrevPrevCamera.valid)
         {
@@ -3817,26 +3977,29 @@ void main()
                 b += 360.0f;
             g_gsInterpShownYaw.store(a + t * (b - a), std::memory_order_relaxed);
         }
-        float ext[9];
+        float ext[9], back[9];
+        const float identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         if (t == 0.0f)
         {
-            // The old picture exactly as it was.
-            const float identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            // The old picture exactly as it was (the newest is not blended in).
             std::copy(identity, identity + 9, ext);
+            std::copy(identity, identity + 9, back);
         }
-        else if (!interpolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext))
+        else if (!interpolateCameraHomography(m_interpPrevCamera, m_interpCamera, t, s_depth, ext, back))
         {
             // Barely moving: the linear blend between the two views is exact
             // enough, and it needs no axis-angle path.
             const Ps2CameraHomography hf = ps2CameraHomography(m_interpPrevCamera, m_interpCamera, s_depth);
-            if (!hf.usable)
+            const Ps2CameraHomography hr = ps2CameraHomography(m_interpCamera, m_interpPrevCamera, s_depth);
+            if (!hf.usable || !hr.usable)
                 return 0;
             const float inv = hf.m[8] != 0.0f ? 1.0f / hf.m[8] : 1.0f;
+            const float invR = hr.m[8] != 0.0f ? 1.0f / hr.m[8] : 1.0f;
             for (int i = 0; i < 9; ++i)
-                ext[i] = t * hf.m[i] * inv;
-            ext[0] += 1.0f - t;
-            ext[4] += 1.0f - t;
-            ext[8] += 1.0f - t;
+            {
+                ext[i] = t * hf.m[i] * inv + (1.0f - t) * identity[i];
+                back[i] = (1.0f - t) * hr.m[i] * invR + t * identity[i];
+            }
         }
 
         GL &gl = m_context.gl;
@@ -3889,21 +4052,29 @@ void main()
         // Next slot in the ring: whatever is still in flight is left alone.
         m_synthIndex = (m_synthIndex + 1) % kSynthRing;
 
-        const Target *maskTarget = m_overlayTarget;
-        const bool maskValid = maskTarget != nullptr && maskTarget->maskTexture != 0;
+        const bool maskValid = m_interpMask[0] != 0 && m_interpMaskWidth == w && m_interpMaskHeight == hgt;
         Program &p = m_synth;
         useProgram(p.id);
         setUniform3f(p, uniform(p, "u_warp0"), ext[0], ext[1], ext[2]);
         setUniform3f(p, uniform(p, "u_warp1"), ext[3], ext[4], ext[5]);
         setUniform3f(p, uniform(p, "u_warp2"), ext[6], ext[7], ext[8]);
+        setUniform3f(p, uniform(p, "u_back0"), back[0], back[1], back[2]);
+        setUniform3f(p, uniform(p, "u_back1"), back[3], back[4], back[5]);
+        setUniform3f(p, uniform(p, "u_back2"), back[6], back[7], back[8]);
+        setUniform1f(p, uniform(p, "u_t"), t);
+        // The newest picture, for the two-way blend: the same size as the
+        // previous one, or it is left out.
+        const bool nextValid = m_lastComposedTexture != 0 && m_lastComposedWidth == w && m_lastComposedHeight == hgt;
+        setUniform1f(p, uniform(p, "u_nextValid"), nextValid ? 1.0f : 0.0f);
+        gl.glBindTextureUnit(2, nextValid ? m_lastComposedTexture : m_prevComposedTexture);
         setUniform2f(p, uniform(p, "u_size"), static_cast<float>(rw), static_cast<float>(rh));
-        setUniform2f(p, uniform(p, "u_maskOrigin"), static_cast<float>(m_overlayMaskOriginX),
-                     static_cast<float>(m_overlayMaskOriginY));
+
         setUniform2f(p, uniform(p, "u_maskCoordScale"), static_cast<float>(w) / static_cast<float>(rw),
                      static_cast<float>(hgt) / static_cast<float>(rh));
         setUniform1f(p, uniform(p, "u_maskValid"), maskValid ? 1.0f : 0.0f);
+        gl.glBindTextureUnit(3, maskValid ? m_interpMask[m_interpMaskCur] : m_zeroMask);
         gl.glBindTextureUnit(0, m_prevComposedTexture);
-        gl.glBindTextureUnit(1, maskValid ? maskTarget->maskTexture : m_synthTexture[m_synthIndex]);
+        gl.glBindTextureUnit(1, maskValid ? m_interpMask[m_interpMaskCur ^ 1] : m_zeroMask);
         bindFramebuffer(m_synthFramebuffer[m_synthIndex]);
         setViewport(0, 0, static_cast<GLsizei>(rw), static_cast<GLsizei>(rh));
         setScissorTest(false);
@@ -4271,6 +4442,10 @@ void main()
                 sourceCopied = true;
             }
         }
+        // The old picture's overlay mask goes with it (the newest slot is
+        // rewritten after this compose).
+        if (sourceCopied)
+            m_interpMaskCur ^= 1;
         // A new game frame whose previous picture could not be kept (size
         // change, no composed picture yet): the cameras moved on but the source
         // did not, so warping it would be wrong. Show plain pictures until the
@@ -4295,6 +4470,48 @@ void main()
         m_lastComposedWidth = width;
         m_lastComposedHeight = height;
         g_gsComposedFrames.fetch_add(1u, std::memory_order_relaxed);
+        if (interpWanted)
+        {
+            if (m_interpMask[0] == 0 || m_interpMaskWidth != width || m_interpMaskHeight != height)
+            {
+                for (int i = 0; i < 2; ++i)
+                {
+                    if (m_interpMask[i] != 0)
+                    {
+                        gl.glDeleteFramebuffers(1, &m_interpMaskFramebuffer[i]);
+                        gl.glDeleteTextures(1, &m_interpMask[i]);
+                    }
+                    gl.glCreateTextures(GL_TEXTURE_2D, 1, &m_interpMask[i]);
+                    gl.glTextureStorage2D(m_interpMask[i], 1, GL_R8, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+                    gl.glTextureParameteri(m_interpMask[i], GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                    gl.glTextureParameteri(m_interpMask[i], GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                    gl.glCreateFramebuffers(1, &m_interpMaskFramebuffer[i]);
+                    gl.glNamedFramebufferTexture(m_interpMaskFramebuffer[i], GL_COLOR_ATTACHMENT0, m_interpMask[i], 0);
+                    gl.glNamedFramebufferDrawBuffer(m_interpMaskFramebuffer[i], GL_COLOR_ATTACHMENT0);
+                    const float zero = 0.0f;
+                    gl.glClearNamedFramebufferfv(m_interpMaskFramebuffer[i], GL_COLOR, 0, &zero);
+                }
+                m_interpMaskWidth = width;
+                m_interpMaskHeight = height;
+            }
+            Target *snapTarget = m_overlayTarget != nullptr ? m_overlayTarget : top.target;
+            const bool snapValid = m_maskEnabled && snapTarget->maskTexture != 0;
+            Program &ms = m_maskSnap;
+            useProgram(ms.id);
+            const int sc = static_cast<int>(m_scale);
+            setUniform4i(ms, uniform(ms, "u_rect"), static_cast<GLint>(top.x * sc), static_cast<GLint>(top.y * sc),
+                         static_cast<GLint>(top.width * sc), static_cast<GLint>(top.height * sc));
+            setUniform1f(ms, uniform(ms, "u_valid"), snapValid ? 1.0f : 0.0f);
+            gl.glBindTextureUnit(0, snapValid ? snapTarget->maskTexture : m_zeroMask);
+            bindFramebuffer(m_interpMaskFramebuffer[m_interpMaskCur]);
+            setViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+            setScissorTest(false);
+            setBlend(false);
+            setDepthTest(false);
+            setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            bindVao(m_emptyVao);
+            gl.glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
         static const bool s_align = std::getenv("PS2X_INTERP_ALIGN") != nullptr;
         if (s_align && m_interpPairedNow)
             interpAlignCheck();
