@@ -1457,8 +1457,50 @@ disables the wall stop; `PS2X_CARLOOK_DEBUG=<file>` logs the whole path
       identical (0.56/255 mean difference, filtering only).
 
 
-      **PARKED 2026-10-16: the interpolated picture warps. FOR THE NEXT PAIR OF
-      EYES.** Everything else about interpolation works - no black frames, the
+      **The warp/jitter - cause and fix (Claude, 2026-10-17; code landed in
+      `aa6ede8`). Awaiting the owner's visual check.** The interpolation
+      assumed one game frame per VBlank. `PS2X_INTERP_LOG` with a scripted
+      turn (`PS2X_MOUSE_FAKE`) shows otherwise: a picture is composed every
+      VBlank, but the camera changes only every 2-4 VBlanks. VCS draws a new
+      view at 15-30 fps. So 2-3 of every 4 pairs had identical cameras (no
+      motion, a hold), and the next pair carried the whole multi-VBlank step,
+      swept inside one VBlank (t=0 then ~0.5, then the new picture). That is
+      the jitter. Warping the old image across that large step in a single
+      frame, with the translation modelled at one depth, is the visible
+      warping.
+
+      Two clocks made it worse. The phase came from the host noticing the
+      VBlank, while the pair changes when the render thread composes, so a
+      reset could show the old pair at t=0: a step back, then forward. And
+      the camera was published by the host loop, so a camera could arrive a
+      compose early or late relative to its picture.
+
+      The fix:
+      1. **Each picture carries its camera.** `GSPresentationRequest::camera`
+         is sampled on the game thread at the VBlank latch
+         (`g_gsCameraSampler` → `ps2_game_overrides::readCamera`).
+      2. **The pair shifts only on a new game frame** (the picture's camera
+         changed; `Renderer::trackCamera(request)`). The source picture is
+         copied then and held across the repeats.
+      3. **The renderer owns the phase:** `(now − pair time) / measured
+         game-frame interval`, on its own clock (running average, clamped
+         1/60–1/10 s). The host passes −1 unless `PS2X_INTERP_PHASE_FIXED`
+         is set.
+      4. **Once the sweep reaches 1, or the camera is still,** the synthesis
+         returns 0 and the host draws the newest picture as is (current
+         NPCs and cars, no warp).
+
+      Verified with the same scripted turn at 120: `t` now climbs 0.19 →
+      0.43 → 0.69 → 0.93 → next frame, evenly across each game frame, with
+      no resets mid-frame. A still camera shows plain pictures (`synth=0
+      t=1`). At 60 the synthesis never runs. `PS2X_INTERP_LOG` now also
+      prints the renderer's phase as `t=`. Still possible after this: the
+      parallax approximation (`PS2X_BLUR_DEPTH`) on fast sideways movement
+      near walls - camera-only interpolation can't fix that, but the steps
+      are now small.
+
+      **(Previous notes, kept for the record.) PARKED 2026-10-16: the
+      interpolated picture warps. FOR THE NEXT PAIR OF EYES.** Everything else about interpolation works - no black frames, the
       HUD is protected, cutscenes and FMVs play, the picture stream is correct -
       but with a moving camera the whole picture visibly warps against the
       motion. Six real bugs were found and fixed on the way here, all worth
