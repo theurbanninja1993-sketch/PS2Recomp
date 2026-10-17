@@ -1,6 +1,18 @@
 include(CheckIPOSupported)
 
-option(PS2X_ENABLE_LTO "Enable link-time optimization (IPO/LTO) for Release builds" ON)
+# Off on Windows, and not for performance reasons. raylib exports CloseWindow and
+# ShowCursor, which are also USER32 imports, so the same symbol is defined in
+# libraylib.a and in the import library. Without LTO the linker only consults the
+# import library for symbols nothing else defines, and it links; with LTO it
+# resolves both and stops with 'duplicate symbol: CloseWindow'. One line here beats
+# a flag everyone has to know about - the cross-compile in the handoff notes was
+# failing without it.
+if(WIN32)
+    set(PS2X_LTO_DEFAULT OFF)
+else()
+    set(PS2X_LTO_DEFAULT ON)
+endif()
+option(PS2X_ENABLE_LTO "Enable link-time optimization (IPO/LTO) for Release builds" ${PS2X_LTO_DEFAULT})
 
 check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
 
